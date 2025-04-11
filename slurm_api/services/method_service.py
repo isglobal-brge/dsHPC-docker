@@ -5,6 +5,7 @@ import hashlib
 import tarfile
 import tempfile
 import json
+import subprocess
 from typing import Dict, Any, Tuple, Optional, List
 from datetime import datetime
 
@@ -239,6 +240,106 @@ def calculate_directory_hash(directory_path: str) -> str:
     
     return hasher.hexdigest()
 
+def get_system_runtime_info() -> Dict[str, Any]:
+    """
+    Get information about the current runtime environment.
+    
+    Returns:
+        A dictionary containing runtime information
+    """
+    runtime_info = {}
+    
+    try:
+        # Get Python version
+        try:
+            python_version = subprocess.check_output(
+                ["/opt/venvs/system_python/bin/python", "-c", "import sys; print(sys.version)"],
+                universal_newlines=True
+            ).strip()
+            runtime_info["python_version"] = python_version
+        except Exception as e:
+            logger.warning(f"Error getting Python version: {e}")
+            runtime_info["python_version"] = "unknown"
+        
+        # Get Python packages
+        try:
+            pip_list = subprocess.check_output(
+                ["/opt/venvs/system_python/bin/pip", "list", "--format=json"],
+                universal_newlines=True
+            )
+            python_packages = json.loads(pip_list)
+            runtime_info["python_packages"] = {pkg["name"]: pkg["version"] for pkg in python_packages}
+        except Exception as e:
+            logger.warning(f"Error getting Python packages: {e}")
+            runtime_info["python_packages"] = {}
+        
+        # Get R version
+        try:
+            r_version = subprocess.check_output(
+                ["R", "--version"],
+                universal_newlines=True
+            ).strip().split("\n")[0]
+            runtime_info["r_version"] = r_version
+        except Exception as e:
+            logger.warning(f"Error getting R version: {e}")
+            runtime_info["r_version"] = "unknown"
+        
+        # Get R packages
+        try:
+            r_packages_output = subprocess.check_output(
+                ["Rscript", "-e", "cat(paste(rownames(installed.packages()), installed.packages()[, 'Version'], sep='=', collapse=';'))"],
+                universal_newlines=True
+            ).strip()
+            if r_packages_output:
+                r_packages = {}
+                for pkg in r_packages_output.split(';'):
+                    if '=' in pkg:
+                        name, version = pkg.split('=', 1)
+                        r_packages[name] = version
+                runtime_info["r_packages"] = r_packages
+            else:
+                runtime_info["r_packages"] = {}
+        except Exception as e:
+            logger.warning(f"Error getting R packages: {e}")
+            runtime_info["r_packages"] = {}
+        
+        # Get installed apt packages
+        try:
+            apt_list = subprocess.check_output(
+                ["dpkg-query", "-W", "-f=${Package}=${Version}\n"],
+                universal_newlines=True
+            ).strip()
+            apt_packages = {}
+            for line in apt_list.split("\n"):
+                if "=" in line:
+                    name, version = line.split("=", 1)
+                    apt_packages[name] = version
+            runtime_info["apt_packages"] = apt_packages
+        except Exception as e:
+            logger.warning(f"Error getting apt packages: {e}")
+            runtime_info["apt_packages"] = {}
+            
+        # Read from config files as a backup if they exist
+        config_files = {
+            "python_config": "/tmp/python.json",
+            "r_config": "/tmp/r.json",
+            "system_deps": "/tmp/system_deps.json"
+        }
+        
+        for key, path in config_files.items():
+            if os.path.exists(path):
+                try:
+                    with open(path, 'r') as f:
+                        runtime_info[key] = json.load(f)
+                except Exception as e:
+                    logger.warning(f"Error reading {key} from {path}: {e}")
+                    runtime_info[key] = {}
+        
+    except Exception as e:
+        logger.error(f"Error getting system runtime info: {e}")
+    
+    return runtime_info
+
 def register_method(method_data: Dict[str, Any], method_dir: str, force: bool = False) -> Tuple[bool, str, Optional[str]]:
     """
     Register a method in the database.
@@ -277,6 +378,16 @@ def register_method(method_data: Dict[str, Any], method_dir: str, force: bool = 
                     # Read and hash the file content
                     hasher.update(f.read())
         
+        # Get and add system runtime information to the hash
+        runtime_info = get_system_runtime_info()
+        
+        # Add runtime information to hash
+        runtime_json = json.dumps(runtime_info, sort_keys=True)
+        hasher.update(runtime_json.encode())
+        
+        # Log the runtime information used in hash calculation
+        logger.info(f"Adding runtime info to method hash: {runtime_json}")
+        
         function_hash = hasher.hexdigest()
         
         # Check if method with this hash already exists
@@ -301,7 +412,8 @@ def register_method(method_data: Dict[str, Any], method_dir: str, force: bool = 
             "version": method_data.get("version", "1.0.0"),
             "created_at": now,
             "updated_at": now,
-            "bundle": base64.b64encode(bundle).decode('utf-8')
+            "bundle": base64.b64encode(bundle).decode('utf-8'),
+            "runtime_info": runtime_info  # Store the runtime info in the method document
         }
         
         # Insert or replace method document

@@ -40,28 +40,34 @@ async def submit_job(job: JobSubmission):
             )
         
         # Check for duplicate jobs
-        duplicate_job = jobs_collection.find_one({
+        # Find any existing job with the same core identifiers
+        existing_job = jobs_collection.find_one({
             "function_hash": job.function_hash,
             "file_hash": job.file_hash,
-            "parameters": job.parameters,
-            "status": {"$in": [
-                JobStatus.PENDING,
-                JobStatus.RUNNING,
-                JobStatus.COMPLETING,
-                JobStatus.CONFIGURING,
-                JobStatus.COMPLETED
-            ]}
+            "parameters": job.parameters
         })
         
-        if duplicate_job:
-            logger.info(f"Duplicate job detected with hash {job.function_hash}, returning existing job_id: {duplicate_job['job_id']}")
-            return {
-                "message": "Duplicate job detected, returning existing job ID",
-                "job_id": duplicate_job['job_id'],
-                "duplicate": True
-            }
+        if existing_job:
+            # If the existing job is completed or still active, return it as duplicate
+            if existing_job['status'] in [
+                JobStatus.COMPLETED, 
+                JobStatus.PENDING, 
+                JobStatus.RUNNING, 
+                JobStatus.COMPLETING, 
+                JobStatus.CONFIGURING
+            ]:
+                logger.info(f"Identical job found (status: {existing_job['status']}) with hash {job.function_hash}, returning existing job_id: {existing_job['job_id']}")
+                return {
+                    "message": f"Identical job already exists with status {existing_job['status']}, returning existing job ID",
+                    "job_id": existing_job['job_id'],
+                    "duplicate": True
+                }
+            # If the existing job failed or was cancelled, allow resubmission (don't return duplicate)
+            else:
+                 logger.info(f"Found previous identical job (status: {existing_job['status']}) but allowing resubmission.")
+                 # Proceed to create new job below
         
-        # Create job in database
+        # If no completed or active duplicate found, create job in database
         job_id, job_doc = create_job(job)
         
         try:

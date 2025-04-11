@@ -138,31 +138,72 @@ def process_job_output(job_id: str, slurm_id: str, final_state: str) -> bool:
     """Process job output files and update job status."""
     output_path = f"/tmp/output_{job_id}.txt"
     exit_code_path = f"/tmp/exit_code_{job_id}"
+    exit_code = 1 # Default to error if exit code file not found or invalid
+    output = None
+    error = None
+    job_status = JobStatus.FAILED # Default to FAILED
     
-    try:
-        if os.path.exists(output_path):
+    # Read exit code if file exists
+    if os.path.exists(exit_code_path):
+        try:
+            with open(exit_code_path) as f:
+                exit_code = int(f.read().strip())
+        except ValueError:
+            error = "Invalid exit code format."
+            logger.warning(f"Invalid exit code format for job {job_id}")
+        except Exception as e:
+            error = f"Error reading exit code: {str(e)}"
+            logger.error(f"Error reading exit code for job {job_id}: {e}")
+    else:
+        error = "Exit code file not found."
+        logger.warning(f"Exit code file not found for job {job_id}")
+
+    # Read output file if exists
+    if os.path.exists(output_path):
+        try:
             with open(output_path) as f:
                 output = f.read()
-            
-            # Update job status based on final state
-            try:
-                update_job_status(job_id, JobStatus(final_state), output=output)
-            except ValueError:
-                # If we can't map the state, default to COMPLETED
-                logger.warning(f"Unknown Slurm state: {final_state}, defaulting to COMPLETED")
-                update_job_status(job_id, JobStatus.COMPLETED, output=output)
-            
-            # Clean up temporary files
+        except Exception as e:
+            error = f"{(error + ' ') if error else ''}Error reading output file: {str(e)}"
+            logger.error(f"Error reading output file for job {job_id}: {e}")
+    else:
+        error = f"{(error + ' ') if error else ''}Output file not found."
+        logger.warning(f"Output file not found for job {job_id}")
+
+    # Determine final job status based on exit code and Slurm state
+    if exit_code == 0:
+        try:
+            # If exit code is 0, use the Slurm final state if it's terminal
+            if final_state in [s.value for s in [JobStatus.COMPLETED, JobStatus.FAILED, JobStatus.CANCELLED, JobStatus.TIMEOUT, JobStatus.NODE_FAIL, JobStatus.OUT_OF_MEMORY, JobStatus.BOOT_FAIL, JobStatus.DEADLINE, JobStatus.PREEMPTED]]:
+                job_status = JobStatus(final_state)
+                if job_status != JobStatus.COMPLETED:
+                    # If Slurm state is failure/cancelled, use it and append exit code info
+                     error = f"{(error + ' ') if error else ''}Slurm state: {final_state}. Exit code: {exit_code}."
+                else:
+                     # If Slurm says completed and exit code 0, it's truly completed
+                     pass
+            else:
+                # If Slurm state is non-terminal (like RUNNING, PENDING) but exit code is 0, mark COMPLETED
+                job_status = JobStatus.COMPLETED
+        except ValueError:
+            # If Slurm state is unknown but exit code 0, mark COMPLETED
+            logger.warning(f"Unknown Slurm state: {final_state} for job {job_id}, using COMPLETED due to exit code 0.")
+            job_status = JobStatus.COMPLETED
+    else:
+        # If exit code is non-zero, always mark as FAILED
+        job_status = JobStatus.FAILED
+        error = f"{(error + ' ') if error else ''}Script exited with non-zero code: {exit_code}."
+        logger.info(f"Job {job_id} marked as FAILED due to non-zero exit code: {exit_code}")
+
+    # Update the job status in the database
+    try:
+        update_job_status(job_id, job_status, output=output, error=error)
+        # Clean up temporary files only after successful update
+        if os.path.exists(output_path):
             os.remove(output_path)
-            if os.path.exists(exit_code_path):
-                os.remove(exit_code_path)
-                
-            return True
-        else:
-            # No output file found, mark as failed
-            update_job_status(job_id, JobStatus.FAILED, error="No output file found")
-            return False
+        if os.path.exists(exit_code_path):
+            os.remove(exit_code_path)
+        return True
     except Exception as e:
-        logger.error(f"Error processing job output for {job_id}: {e}")
-        update_job_status(job_id, JobStatus.FAILED, error=str(e))
+        logger.error(f"Error updating job status for {job_id} after processing output: {e}")
         return False 
