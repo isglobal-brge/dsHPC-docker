@@ -9,6 +9,13 @@ from datetime import datetime
 from pymongo import MongoClient
 import json
 from enum import Enum
+import asyncio
+from fastapi.background import BackgroundTasks
+import logging
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # MongoDB setup
 MONGO_URI = os.getenv("MONGO_URI", "mongodb://mongo:27017/")
@@ -21,10 +28,21 @@ jobs_collection = db["jobs"]
 app = FastAPI(title="Slurm Job Submission API")
 
 class JobStatus(str, Enum):
-    PENDING = "PENDING"
-    RUNNING = "RUNNING"
-    COMPLETED = "COMPLETED"
-    FAILED = "FAILED"
+    PENDING = "PD"          # Job is queued and waiting for resources
+    RUNNING = "R"           # Job is running
+    COMPLETED = "CD"        # Job completed successfully
+    FAILED = "F"           # Job failed
+    CANCELLED = "CA"        # Job was cancelled by user or system
+    TIMEOUT = "TO"         # Job reached time limit
+    NODE_FAIL = "NF"       # Job failed due to node failure
+    OUT_OF_MEMORY = "OOM"  # Job experienced out of memory error
+    SUSPENDED = "S"        # Job has been suspended
+    STOPPED = "ST"         # Job has been stopped
+    BOOT_FAIL = "BF"       # Job failed during node boot
+    DEADLINE = "DL"        # Job terminated on deadline
+    COMPLETING = "CG"      # Job is in the process of completing
+    CONFIGURING = "CF"     # Job is in the process of configuring
+    PREEMPTED = "PR"       # Job was preempted by another job
 
 class JobSubmission(BaseModel):
     script: str
@@ -52,14 +70,101 @@ def update_job_status(job_id: str, status: JobStatus, output: str | None = None,
         {"$set": update_data}
     )
 
+async def check_job_status():
+    """Background task to check and update status of running jobs."""
+    while True:
+        try:
+            # Find all jobs that are in a non-terminal state
+            active_jobs = jobs_collection.find({
+                "status": {"$nin": [JobStatus.COMPLETED, JobStatus.FAILED, JobStatus.CANCELLED, 
+                                  JobStatus.TIMEOUT, JobStatus.NODE_FAIL, JobStatus.OUT_OF_MEMORY,
+                                  JobStatus.BOOT_FAIL, JobStatus.DEADLINE, JobStatus.PREEMPTED]},
+                "slurm_id": {"$ne": None}
+            })
+            
+            # Get all job statuses from Slurm
+            result = subprocess.run(
+                ["squeue", "--format=%i|%t|%j", "--noheader"],
+                capture_output=True,
+                text=True
+            )
+            
+            if result.returncode == 0:
+                # Create a dict of Slurm job statuses
+                slurm_statuses = {}
+                for line in result.stdout.strip().split("\n"):
+                    if line:
+                        job_id, state, name = line.split("|")
+                        slurm_statuses[job_id] = state
+                
+                # Check each active job
+                for job in active_jobs:
+                    slurm_id = job["slurm_id"]
+                    job_id = job["job_id"]
+                    
+                    # If job not in Slurm queue, check sacct for final status
+                    if slurm_id not in slurm_statuses:
+                        try:
+                            # Read the output file
+                            output_path = f"/tmp/output_{job_id}.txt"
+                            exit_code_path = f"/tmp/exit_code_{job_id}"
+                            
+                            # Get final status from sacct
+                            sacct_result = subprocess.run(
+                                ["sacct", "-j", slurm_id, "--format=State", "--noheader", "--parsable2"],
+                                capture_output=True,
+                                text=True
+                            )
+                            
+                            final_state = "CD"  # Default to completed
+                            if sacct_result.returncode == 0 and sacct_result.stdout.strip():
+                                state = sacct_result.stdout.strip().split("\n")[0]
+                                if state in [s.value for s in JobStatus]:
+                                    final_state = state
+                            
+                            if os.path.exists(output_path):
+                                with open(output_path) as f:
+                                    output = f.read()
+                                
+                                # Update job status based on final state
+                                update_job_status(job_id, JobStatus(final_state), output=output)
+                                
+                                # Clean up temporary files
+                                os.remove(output_path)
+                                if os.path.exists(exit_code_path):
+                                    os.remove(exit_code_path)
+                            else:
+                                # No output file found, mark as failed
+                                update_job_status(job_id, JobStatus.FAILED, error="No output file found")
+                        except Exception as e:
+                            logger.error(f"Error processing job output for {job_id}: {e}")
+                            update_job_status(job_id, JobStatus.FAILED, error=str(e))
+                    else:
+                        # Update status if job is still in queue
+                        slurm_state = slurm_statuses[slurm_id]
+                        if slurm_state != job["status"]:
+                            try:
+                                update_job_status(job_id, JobStatus(slurm_state))
+                            except ValueError:
+                                logger.warning(f"Unknown Slurm state: {slurm_state}")
+            
+        except Exception as e:
+            logger.error(f"Error in job status checking: {e}")
+        
+        # Wait before next check
+        await asyncio.sleep(5)  # Check every 5 seconds
+
+@app.on_event("startup")
+async def startup_event():
+    """Start the background task on application startup."""
+    asyncio.create_task(check_job_status())
+
 @app.post("/submit")
 async def submit_job(job: JobSubmission):
     try:
         # Generate a unique job ID
         job_id = str(uuid.uuid4())
         script_path = f"/tmp/job_{job_id}.sh"
-        output_path = f"/tmp/output_{job_id}.txt"
-        exit_code_path = f"/tmp/exit_code_{job_id}"
         
         # Create job document
         job_doc = {
@@ -79,27 +184,16 @@ async def submit_job(job: JobSubmission):
         jobs_collection.insert_one(job_doc)
         
         try:
-            # Write the job script to a file with error handling
+            # Write the job script to a file
             with open(script_path, "w") as f:
                 f.write("#!/bin/bash\n")
                 if job.name:
                     f.write(f"#SBATCH --job-name={job.name}\n")
-                
-                # Redirect output and set up error handling
-                f.write(f"""
-# Redirect all output to our output file
-exec 1> {output_path} 2>&1
-
-# Error handling
-set -e
-trap 'echo $? > {exit_code_path}; exit 1' ERR
-
-# Execute the actual job script
-{job.script}
-
-# If we get here, the job succeeded
-echo 0 > {exit_code_path}
-""")
+                # Capture output to a file
+                output_path = f"/tmp/output_{job_id}.txt"
+                f.write(f"exec 1> {output_path} 2>&1\n")  # Redirect both stdout and stderr
+                f.write(job.script)
+                f.write(f"\necho $? > /tmp/exit_code_{job_id}")
             
             # Make the script executable
             os.chmod(script_path, 0o755)
@@ -124,7 +218,7 @@ echo 0 > {exit_code_path}
             # Update job document with Slurm ID
             jobs_collection.update_one(
                 {"job_id": job_id},
-                {"$set": {"slurm_id": slurm_id, "status": JobStatus.RUNNING}}
+                {"$set": {"slurm_id": slurm_id}}
             )
             
             return {"message": result.stdout.strip(), "job_id": job_id}
@@ -144,6 +238,7 @@ echo 0 > {exit_code_path}
 
 @app.get("/queue")
 async def get_queue():
+    """Get current Slurm queue status."""
     try:
         result = subprocess.run(
             ["squeue", "--format=%i|%j|%u|%t|%M|%l|%D|%P"],
@@ -162,60 +257,10 @@ async def get_queue():
         headers = ["job_id", "name", "user", "state", "time", "time_limit", "nodes", "partition"]
         jobs = []
         
-        # Get all running jobs from MongoDB
-        running_jobs = list(jobs_collection.find({"status": JobStatus.RUNNING}))
-        running_jobs_dict = {job["slurm_id"]: job for job in running_jobs}
-        
-        # Track seen jobs
-        seen_slurm_ids = set()
-        
         for line in lines[1:]:  # Skip header line
-            values = line.split("|")
-            jobs.append(dict(zip(headers, values)))
-            seen_slurm_ids.add(values[0])
-        
-        # Check for completed jobs (those that were running but are no longer in queue)
-        for job in running_jobs:
-            if job["slurm_id"] not in seen_slurm_ids:
-                try:
-                    # Read the output file
-                    output_path = f"/tmp/output_{job['job_id']}.txt"
-                    exit_code_path = f"/tmp/exit_code_{job['job_id']}"
-                    
-                    output = None
-                    if os.path.exists(output_path):
-                        with open(output_path) as f:
-                            output = f.read()
-                    
-                    # Check exit code
-                    status = JobStatus.COMPLETED  # Default to completed
-                    if os.path.exists(exit_code_path):
-                        with open(exit_code_path) as f:
-                            exit_code = int(f.read().strip())
-                            if exit_code != 0:
-                                status = JobStatus.FAILED
-                    
-                    # Update job status
-                    update_data = {
-                        "status": status,
-                        "output": output
-                    }
-                    if status == JobStatus.FAILED:
-                        update_data["error"] = f"Job failed with exit code {exit_code}"
-                    
-                    jobs_collection.update_one(
-                        {"job_id": job["job_id"]},
-                        {"$set": update_data}
-                    )
-                    
-                    # Clean up temporary files
-                    if os.path.exists(output_path):
-                        os.remove(output_path)
-                    if os.path.exists(exit_code_path):
-                        os.remove(exit_code_path)
-                        
-                except Exception as e:
-                    print(f"Error processing job output: {e}")
+            if line:
+                values = line.split("|")
+                jobs.append(dict(zip(headers, values)))
         
         return {"jobs": jobs}
         
