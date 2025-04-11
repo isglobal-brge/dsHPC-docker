@@ -9,12 +9,21 @@ from slurm_api.services.slurm_service import submit_slurm_job, get_queue_status
 from slurm_api.utils.db_utils import update_job_status
 from slurm_api.config.db_config import jobs_collection
 from slurm_api.background.tasks import check_jobs_once
+from slurm_api.services.file_service import find_file_by_hash
 
 router = APIRouter()
 
 @router.post("/submit")
 async def submit_job(job: JobSubmission):
     try:
+        # Validate file_hash exists in database
+        file_doc = find_file_by_hash(job.file_hash)
+        if not file_doc:
+            raise HTTPException(
+                status_code=400,
+                detail=f"File with hash {job.file_hash} not found in database"
+            )
+            
         # Check for duplicate jobs
         duplicate_job = jobs_collection.find_one({
             "function_hash": job.function_hash,

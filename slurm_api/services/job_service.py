@@ -8,9 +8,23 @@ from slurm_api.config.logging_config import logger
 from slurm_api.models.job import JobStatus, JobSubmission
 from slurm_api.utils.db_utils import update_job_status
 from slurm_api.services.slurm_service import submit_slurm_job
+from slurm_api.services.file_service import find_file_by_hash, download_file, create_job_workspace
 
 def prepare_job_script(job_id: str, job: JobSubmission) -> str:
     """Prepare a job script file and return its path."""
+    # Check if file hash exists in database
+    file_doc = find_file_by_hash(job.file_hash)
+    if not file_doc:
+        raise ValueError(f"File with hash {job.file_hash} not found in database")
+    
+    # Create a unique workspace for the job
+    workspace_dir = create_job_workspace()
+    
+    # Download the file to the workspace
+    success, message, file_path = download_file(job.file_hash, workspace_dir)
+    if not success:
+        raise ValueError(f"Failed to download file: {message}")
+    
     script_path = f"/tmp/job_{job_id}.sh"
     
     # Write the job script to a file
@@ -21,6 +35,12 @@ def prepare_job_script(job_id: str, job: JobSubmission) -> str:
         # Capture output to a file
         output_path = f"/tmp/output_{job_id}.txt"
         f.write(f"exec 1> {output_path} 2>&1\n")  # Redirect both stdout and stderr
+        
+        # Add workspace directory and file path to environment variables
+        f.write(f"export JOB_WORKSPACE=\"{workspace_dir}\"\n")
+        f.write(f"export INPUT_FILE=\"{file_path}\"\n")
+        
+        # Write the original script
         f.write(job.script)
         f.write(f"\necho $? > /tmp/exit_code_{job_id}")
     

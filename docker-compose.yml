@@ -39,6 +39,8 @@ services:
       - MONGO_JOBS_DB=dshpc-jobs
       - MONGO_FILES_URI=mongodb://dshpc-files:27017/
       - MONGO_FILES_DB=dshpc-files
+    volumes:
+      - job_workspace:/workspace
     networks:
       - dshpc-network
 
@@ -69,6 +71,8 @@ volumes:
     name: dshpc-mongodb-jobs-data
   mongodb_files_data:
     name: dshpc-mongodb-files-data
+  job_workspace:
+    name: dshpc-job-workspace
 
 networks:
   dshpc-network:

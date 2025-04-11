@@ -102,12 +102,14 @@ RUN mkdir -p /var/run/munge \
     && mkdir -p /var/log/slurm \
     && mkdir -p /etc/munge \
     && mkdir -p /var/spool/slurmd \
+    && mkdir -p /workspace \
     && chown munge:munge /etc/munge \
     && chown munge:munge /var/run/munge \
     && chown slurm:slurm /var/run/slurm \
     && chown slurm:slurm /var/spool/slurm \
     && chown slurm:slurm /var/log/slurm \
-    && chown slurm:slurm /var/spool/slurmd
+    && chown slurm:slurm /var/spool/slurmd \
+    && chmod 777 /workspace
 
 # Copy configuration files and API
 COPY slurm/slurm.conf /etc/slurm/slurm.conf
