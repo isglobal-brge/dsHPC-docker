@@ -1,6 +1,28 @@
 version: '3.8'
 
 services:
+  dshpc-api:
+    container_name: dshpc-api
+    build:
+      context: .
+      dockerfile: ./dshpc_api/Dockerfile
+    ports:
+      - "8001:8001"
+    depends_on:
+      - dshpc-slurm
+      - dshpc-jobs
+      - dshpc-files
+    environment:
+      - SLURM_API_URL=http://dshpc-slurm:8000
+      - MONGO_JOBS_URI=mongodb://dshpc-jobs:27017/
+      - MONGO_JOBS_DB=dshpc-jobs
+      - MONGO_FILES_URI=mongodb://dshpc-files:27017/
+      - MONGO_FILES_DB=dshpc-files
+    volumes:
+      - ./dshpc_api:/app/dshpc_api
+    networks:
+      - dshpc-network
+
   dshpc-slurm:
     container_name: dshpc-slurm
     build: 
