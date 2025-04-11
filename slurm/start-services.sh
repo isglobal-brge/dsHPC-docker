@@ -14,6 +14,6 @@ service munge start
 service slurmctld start
 service slurmd start
 
-# Start FastAPI application using the API-specific Python environment
+# Start FastAPI application using API_PYTHON environment
 cd /app
-/opt/api_venv/bin/uvicorn slurm_api.main:app --host 0.0.0.0 --port 8000 --reload 
+/opt/venvs/api_python/bin/uvicorn slurm_api.main:app --host 0.0.0.0 --port 8000 --reload 

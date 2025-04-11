@@ -12,20 +12,43 @@ RUN apt-get update && apt-get install -y \
     python3 \
     python3-pip \
     python3-venv \
+    git \
+    curl \
+    build-essential \
+    libssl-dev \
+    zlib1g-dev \
+    libbz2-dev \
+    libreadline-dev \
+    libsqlite3-dev \
     cgroup-tools \
     && rm -rf /var/lib/apt/lists/*
 
-# Setup system Python (default Python for Slurm and users)
-RUN python3 -m pip install --upgrade pip
+# Install pyenv for managing Python versions
+RUN curl -L https://github.com/pyenv/pyenv-installer/raw/master/bin/pyenv-installer | bash
+ENV PYENV_ROOT="/root/.pyenv"
+ENV PATH="$PYENV_ROOT/bin:$PATH"
+RUN echo 'eval "$(pyenv init -)"' >> /root/.bashrc
 
-# Setup separate Python environment for the API
-RUN python3 -m venv /opt/api_venv
-ENV API_PYTHON=/opt/api_venv/bin/python
-ENV API_PIP=/opt/api_venv/bin/pip
+# Install an older Python version for system_python
+RUN pyenv install 3.8.10
+RUN pyenv global 3.8.10
 
-# Install Python dependencies in the API environment
-RUN $API_PIP install --upgrade pip && \
-    $API_PIP install fastapi uvicorn pymongo
+# Create Python virtual environments
+RUN mkdir -p /opt/venvs
+
+# 1. Create API Python environment (newer version)
+RUN python3 -m venv /opt/venvs/api_python
+RUN /opt/venvs/api_python/bin/pip install --upgrade pip
+RUN /opt/venvs/api_python/bin/pip install fastapi uvicorn pymongo
+
+# 2. Create System Python environment (older version)
+RUN $PYENV_ROOT/versions/3.8.10/bin/python -m venv /opt/venvs/system_python
+RUN /opt/venvs/system_python/bin/pip install --upgrade pip
+RUN /opt/venvs/system_python/bin/pip install pymongo
+
+# Add system_python to PATH and make it the default
+ENV PATH="/opt/venvs/system_python/bin:${PATH}"
+RUN echo 'source /opt/venvs/system_python/bin/activate' >> /root/.bashrc
 
 # Create necessary directories and set permissions
 RUN mkdir -p /var/run/munge \
