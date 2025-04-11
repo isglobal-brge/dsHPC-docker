@@ -1,6 +1,5 @@
 {
   "python_version": "3.8.10",
   "libraries": {
-    "requests": ">=2.27.1"
   }
 } 

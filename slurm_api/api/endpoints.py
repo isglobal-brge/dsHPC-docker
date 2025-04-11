@@ -1,5 +1,6 @@
 from fastapi import APIRouter, HTTPException
 from typing import Dict, Any
+import asyncio
 
 from slurm_api.config.logging_config import logger
 from slurm_api.models.job import JobSubmission, JobStatus
@@ -7,12 +8,35 @@ from slurm_api.services.job_service import create_job, prepare_job_script, get_j
 from slurm_api.services.slurm_service import submit_slurm_job, get_queue_status
 from slurm_api.utils.db_utils import update_job_status
 from slurm_api.config.db_config import jobs_collection
+from slurm_api.background.tasks import check_jobs_once
 
 router = APIRouter()
 
 @router.post("/submit")
 async def submit_job(job: JobSubmission):
     try:
+        # Check for duplicate jobs
+        duplicate_job = jobs_collection.find_one({
+            "function_hash": job.function_hash,
+            "file_hash": job.file_hash,
+            "parameters": job.parameters,
+            "status": {"$in": [
+                JobStatus.PENDING,
+                JobStatus.RUNNING,
+                JobStatus.COMPLETING,
+                JobStatus.CONFIGURING,
+                JobStatus.COMPLETED
+            ]}
+        })
+        
+        if duplicate_job:
+            logger.info(f"Duplicate job detected with hash {job.function_hash}, returning existing job_id: {duplicate_job['job_id']}")
+            return {
+                "message": "Duplicate job detected, returning existing job ID",
+                "job_id": duplicate_job['job_id'],
+                "duplicate": True
+            }
+        
         # Create job in database
         job_id, job_doc = create_job(job)
         
@@ -35,6 +59,9 @@ async def submit_job(job: JobSubmission):
                 {"job_id": job_id},
                 {"$set": {"slurm_id": slurm_id}}
             )
+            
+            # Trigger job status check immediately
+            asyncio.create_task(check_jobs_once())
             
             return {"message": message, "job_id": job_id}
             
