@@ -29,9 +29,13 @@ RUN apt-get update && apt-get install -y \
     cgroup-tools \
     && rm -rf /var/lib/apt/lists/*
 
-# Install system dependencies from config file
+# Install system dependencies from config file if not empty
 RUN apt-get update && \
-    jq -r '.apt_packages[]' /tmp/system_deps.json | xargs apt-get install -y && \
+    if [ $(jq '.apt_packages | length' /tmp/system_deps.json) -gt 0 ]; then \
+        jq -r '.apt_packages[]' /tmp/system_deps.json | xargs apt-get install -y; \
+    else \
+        echo "No additional system packages specified, skipping..."; \
+    fi && \
     rm -rf /var/lib/apt/lists/*
 
 # Install pyenv for managing Python versions
@@ -58,9 +62,13 @@ RUN PYTHON_VERSION=$(jq -r '.python_version' /tmp/python.json) && \
     $PYENV_ROOT/versions/$PYTHON_VERSION/bin/python -m venv /opt/venvs/system_python
 RUN /opt/venvs/system_python/bin/pip install --upgrade pip
 
-# Install requirements from config
-RUN jq -r '.requirements | to_entries[] | "\(.key) \(.value)"' /tmp/python.json > /tmp/requirements.txt && \
-    /opt/venvs/system_python/bin/pip install -r /tmp/requirements.txt
+# Install Python libraries from config if not empty
+RUN if [ $(jq '.libraries | length' /tmp/python.json) -gt 0 ]; then \
+        jq -r '.libraries | to_entries[] | "\(.key) \(.value)"' /tmp/python.json > /tmp/requirements.txt && \
+        /opt/venvs/system_python/bin/pip install -r /tmp/requirements.txt; \
+    else \
+        echo "No Python libraries specified, skipping..."; \
+    fi
 
 # Add system_python to PATH and make it the default
 ENV PATH="/opt/venvs/system_python/bin:${PATH}"
@@ -78,10 +86,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && R --version | grep -q "R version" \
     && rm -rf /var/lib/apt/lists/*
 
-# Install R packages from config
-RUN mkdir -p /tmp/r_packages \
-    && jq -r '.packages | keys[]' /tmp/r.json > /tmp/r_packages.txt \
-    && Rscript -e 'install.packages(readLines("/tmp/r_packages.txt"), repos="https://cloud.r-project.org/")'
+# Install R packages from config if not empty
+RUN if [ $(jq '.packages | length' /tmp/r.json) -gt 0 ]; then \
+        mkdir -p /tmp/r_packages && \
+        jq -r '.packages | keys[]' /tmp/r.json > /tmp/r_packages.txt && \
+        Rscript -e 'pkgs <- readLines("/tmp/r_packages.txt"); if(length(pkgs) > 0) install.packages(pkgs, repos="https://cloud.r-project.org/")'; \
+    else \
+        echo "No R packages specified, skipping..."; \
+    fi
 
 # Create necessary directories and set permissions
 RUN mkdir -p /var/run/munge \
