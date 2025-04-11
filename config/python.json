@@ -1,11 +1,6 @@
 {
   "python_version": "3.8.10",
   "requirements": {
-    "pymongo": ">=4.3.0",
-    "numpy": ">=1.22.0",
-    "pandas": ">=1.3.5",
-    "scikit-learn": ">=1.0.2",
-    "matplotlib": ">=3.5.1",
     "requests": ">=2.27.1"
   }
 } 

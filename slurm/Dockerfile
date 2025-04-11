@@ -3,7 +3,12 @@ FROM ubuntu:22.04
 # Prevent interactive prompts during package installation
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Install necessary packages
+# Copy configuration files
+COPY config/python.json /tmp/python.json
+COPY config/r.json /tmp/r.json
+COPY config/system_deps.json /tmp/system_deps.json
+
+# Install base packages
 RUN apt-get update && apt-get install -y \
     slurmd \
     slurmctld \
@@ -24,14 +29,16 @@ RUN apt-get update && apt-get install -y \
     cgroup-tools \
     && rm -rf /var/lib/apt/lists/*
 
+# Install system dependencies from config file
+RUN apt-get update && \
+    jq -r '.apt_packages[]' /tmp/system_deps.json | xargs apt-get install -y && \
+    rm -rf /var/lib/apt/lists/*
+
 # Install pyenv for managing Python versions
 RUN curl -L https://github.com/pyenv/pyenv-installer/raw/master/bin/pyenv-installer | bash
 ENV PYENV_ROOT="/root/.pyenv"
 ENV PATH="$PYENV_ROOT/bin:$PATH"
 RUN echo 'eval "$(pyenv init -)"' >> /root/.bashrc
-
-# Copy the Python configuration file
-COPY config/python.json /tmp/python.json
 
 # Install Python version from config 
 RUN PYTHON_VERSION=$(jq -r '.python_version' /tmp/python.json) && \
@@ -58,6 +65,23 @@ RUN jq -r '.requirements | to_entries[] | "\(.key) \(.value)"' /tmp/python.json 
 # Add system_python to PATH and make it the default
 ENV PATH="/opt/venvs/system_python/bin:${PATH}"
 RUN echo 'source /opt/venvs/system_python/bin/activate' >> /root/.bashrc
+
+# Install R from CRAN
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    software-properties-common \
+    dirmngr \
+    && apt-key adv --keyserver keyserver.ubuntu.com --recv-keys E298A3A825C0D65DFD57CBB651716619E084DAB9 \
+    && add-apt-repository "deb https://cloud.r-project.org/bin/linux/ubuntu $(lsb_release -cs)-cran40/" \
+    && apt-get update \
+    && R_VERSION=$(jq -r '.r_version' /tmp/r.json) \
+    && apt-get install -y --no-install-recommends r-base r-base-dev \
+    && R --version | grep -q "R version" \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install R packages from config
+RUN mkdir -p /tmp/r_packages \
+    && jq -r '.packages | keys[]' /tmp/r.json > /tmp/r_packages.txt \
+    && Rscript -e 'install.packages(readLines("/tmp/r_packages.txt"), repos="https://cloud.r-project.org/")'
 
 # Create necessary directories and set permissions
 RUN mkdir -p /var/run/munge \
