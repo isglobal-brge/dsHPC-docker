@@ -1,0 +1,21 @@
+version: '3.8'
+
+services:
+  slurm:
+    build: 
+      context: ./slurm
+    privileged: true
+    ports:
+      - "8000:8000"
+    depends_on:
+      - mongo
+    environment:
+      - MONGO_URI=mongodb://mongo:27017/
+      - MONGO_DB=outputs
+
+  mongo:
+    image: mongo:latest
+    ports:
+      - "27017:27017"
+    volumes:
+      - ./outputs/mongo_data:/data/db 

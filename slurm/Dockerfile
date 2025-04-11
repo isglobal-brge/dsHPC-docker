@@ -15,7 +15,7 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Python dependencies
-RUN pip3 install fastapi uvicorn
+RUN pip3 install fastapi uvicorn pymongo
 
 # Create necessary directories and set permissions
 RUN mkdir -p /var/run/munge \
