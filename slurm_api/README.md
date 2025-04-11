@@ -38,13 +38,17 @@ Submit a new job to Slurm.
     "time": "00:10:00",
     "ntasks": 1,
     "partition": "debug"
-  }
+  },
+  "file_hash": "hash_of_input_file",
+  "function_hash": "hash_of_function_code"
 }
 ```
 
 - `script`: The content of the Slurm batch script (required)
 - `name`: Name for the job (optional)
 - `parameters`: Additional parameters to pass to Slurm (optional)
+- `file_hash`: Hash of the input file (required)
+- `function_hash`: Hash of the function code (required)
 
 **Response**:
 ```json
@@ -168,8 +172,18 @@ Jobs can have the following status values:
 
 ### Environment Variables
 
-- `MONGO_URI`: MongoDB connection URI (default: mongodb://mongo:27017/)
-- `MONGO_DB`: MongoDB database name (default: outputs)
+- `MONGO_URI`: MongoDB connection URI (default: mongodb://dshpc-mongo:27017/)
+- `MONGO_DB`: MongoDB database name (default: dshpc-outputs)
+
+### Docker Containers
+
+The application runs in two containers:
+- `dshpc-slurm`: Main API service container
+- `dshpc-mongo`: MongoDB container with persistent storage
+
+### Data Persistence
+
+MongoDB data is stored in a named volume `dshpc-mongodb-data` to ensure data persistence between container restarts.
 
 ## Examples
 
@@ -180,7 +194,9 @@ curl -X POST http://localhost:8000/submit \
   -H "Content-Type: application/json" \
   -d '{
     "script": "#!/bin/bash\n#SBATCH --time=00:05:00\n\necho \"Hello from Slurm\"\nsleep 30",
-    "name": "hello-job"
+    "name": "hello-job",
+    "file_hash": "example_file_hash",
+    "function_hash": "example_function_hash"
   }'
 ```
 

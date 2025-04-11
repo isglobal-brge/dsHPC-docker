@@ -1,7 +1,8 @@
 version: '3.8'
 
 services:
-  slurm:
+  dshpc-slurm:
+    container_name: dshpc-slurm
     build: 
       context: .
       dockerfile: ./slurm/Dockerfile
@@ -9,14 +10,27 @@ services:
     ports:
       - "8000:8000"
     depends_on:
-      - mongo
+      - dshpc-mongo
     environment:
-      - MONGO_URI=mongodb://mongo:27017/
-      - MONGO_DB=outputs
+      - MONGO_URI=mongodb://dshpc-mongo:27017/
+      - MONGO_DB=dshpc-outputs
+    networks:
+      - dshpc-network
 
-  mongo:
+  dshpc-mongo:
+    container_name: dshpc-mongo
     image: mongo:latest
     ports:
       - "27017:27017"
     volumes:
-      - ./outputs/mongo_data:/data/db 
+      - mongodb_data:/data/db
+    networks:
+      - dshpc-network
+
+volumes:
+  mongodb_data:
+    name: dshpc-mongodb-data
+
+networks:
+  dshpc-network:
+    name: dshpc-network 
