@@ -74,7 +74,22 @@ async def list_all_files():
     List all files from the files database.
     """
     try:
-        files = await get_files()
+        db_files = await get_files()
+        
+        # Transform the files to match the FileResponse model
+        files = []
+        for file in db_files:
+            if "file_hash" in file:  # Ensure the file has a hash
+                file_response = {
+                    "file_hash": file.get("file_hash"),
+                    "filename": file.get("filename"),
+                    "content_type": file.get("content_type", "application/octet-stream"),
+                    "upload_date": file.get("upload_date"),
+                    "last_checked": file.get("last_checked"),
+                    "metadata": file.get("metadata")
+                }
+                files.append(file_response)
+        
         return files
     except Exception as e:
         raise HTTPException(

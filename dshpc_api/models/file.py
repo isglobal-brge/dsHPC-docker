@@ -1,5 +1,5 @@
 from pydantic import BaseModel, Field
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 from datetime import datetime
 
 
@@ -9,7 +9,7 @@ class FileUpload(BaseModel):
     content: str  # Base64 encoded content
     filename: Optional[str] = None
     content_type: Optional[str] = "application/octet-stream"  # MIME type of the content
-    metadata: Optional[dict] = None
+    metadata: Optional[Dict[str, Any]] = None
 
 
 class FileResponse(BaseModel):
@@ -17,9 +17,9 @@ class FileResponse(BaseModel):
     file_hash: str
     filename: Optional[str] = None
     content_type: Optional[str] = "application/octet-stream"
-    upload_date: datetime
-    last_checked: datetime
-    metadata: Optional[dict] = None
+    upload_date: Optional[datetime] = None
+    last_checked: Optional[datetime] = None
+    metadata: Optional[Dict[str, Any]] = None
 
 
 class HashCheckRequest(BaseModel):
