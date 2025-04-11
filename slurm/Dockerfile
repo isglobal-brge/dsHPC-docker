@@ -93,7 +93,9 @@ RUN if [ $(jq '.packages | length' /tmp/r.json) -gt 0 ]; then \
         Rscript -e 'pkgs <- readLines("/tmp/r_packages.txt"); if(length(pkgs) > 0) install.packages(pkgs, repos="https://cloud.r-project.org/")'; \
     else \
         echo "No R packages specified, skipping..."; \
-    fi
+    fi && \
+    # Install jsonlite package for parameter parsing
+    Rscript -e "install.packages('jsonlite', repos='https://cloud.r-project.org/')"
 
 # Create necessary directories and set permissions
 RUN mkdir -p /var/run/munge \
