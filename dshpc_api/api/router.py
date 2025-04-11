@@ -1,8 +1,9 @@
-from fastapi import APIRouter, HTTPException, Depends, status
+from fastapi import APIRouter, HTTPException, Depends, status, Security
 import requests
 from typing import Dict, Any, List
 
 from dshpc_api.config.settings import get_settings
+from dshpc_api.api.auth import get_api_key
 from dshpc_api.services.db_service import upload_file, check_hashes, get_files
 from dshpc_api.services.job_service import simulate_job, simulate_multiple_jobs
 from dshpc_api.models.file import FileUpload, FileResponse, HashCheckRequest, HashCheckResponse
@@ -14,7 +15,7 @@ from dshpc_api.models.job import (
 router = APIRouter()
 
 @router.post("/files/upload", response_model=FileResponse, status_code=status.HTTP_201_CREATED)
-async def upload_new_file(file_data: FileUpload):
+async def upload_new_file(file_data: FileUpload, api_key: str = Security(get_api_key)):
     """
     Upload a new file to the database.
     If a file with the same hash already exists, the upload will be rejected.
@@ -52,7 +53,7 @@ async def upload_new_file(file_data: FileUpload):
         )
 
 @router.post("/files/check-hashes", response_model=HashCheckResponse)
-async def check_file_hashes(hash_data: HashCheckRequest):
+async def check_file_hashes(hash_data: HashCheckRequest, api_key: str = Security(get_api_key)):
     """
     Check which hashes from the provided list already exist in the database.
     """
@@ -69,7 +70,7 @@ async def check_file_hashes(hash_data: HashCheckRequest):
         )
 
 @router.get("/files", response_model=List[FileResponse])
-async def list_all_files():
+async def list_all_files(api_key: str = Security(get_api_key)):
     """
     List all files from the files database.
     """
@@ -98,7 +99,7 @@ async def list_all_files():
         )
 
 @router.get("/services/status")
-async def get_services_status():
+async def get_services_status(api_key: str = Security(get_api_key)):
     """
     Check status of all connected services.
     """
@@ -127,7 +128,7 @@ async def health_check():
     return {"status": "ok"}
 
 @router.post("/simulate-job", response_model=JobSimulationResponse)
-async def simulate_job_endpoint(job_data: JobSimulationRequest):
+async def simulate_job_endpoint(job_data: JobSimulationRequest, api_key: str = Security(get_api_key)):
     """
     Simulate a job execution based on file_hash, method_name, and parameters.
     
@@ -159,7 +160,7 @@ async def simulate_job_endpoint(job_data: JobSimulationRequest):
         )
 
 @router.post("/simulate-jobs", response_model=MultiJobSimulationResponse)
-async def simulate_multiple_jobs_endpoint(job_data: MultiJobSimulationRequest):
+async def simulate_multiple_jobs_endpoint(job_data: MultiJobSimulationRequest, api_key: str = Security(get_api_key)):
     """
     Simulate multiple job executions based on a list of job configurations.
     

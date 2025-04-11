@@ -21,6 +21,7 @@ services:
       - MONGO_FILES_DB=dshpc-files
       - MONGO_METHODS_URI=mongodb://dshpc-methods:27017/
       - MONGO_METHODS_DB=dshpc-methods
+      - API_KEY=${DSHPC_API_KEY}
     volumes:
       - ./dshpc_api:/app/dshpc_api
     networks:

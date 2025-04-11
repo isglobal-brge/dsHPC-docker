@@ -20,6 +20,7 @@ class Settings(BaseSettings):
     
     # API settings
     API_PORT: int = int(os.getenv("API_PORT", 8001))
+    API_KEY: str
     
     class Config:
         env_file = ".env"
