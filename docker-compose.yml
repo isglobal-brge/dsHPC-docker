@@ -7,7 +7,7 @@ services:
       context: .
       dockerfile: ./dshpc_api/Dockerfile
     ports:
-      - "8001:8001"
+      - "${DSHPC_API_EXTERNAL_PORT:-8001}:8001"
     depends_on:
       - dshpc-slurm
       - dshpc-jobs
@@ -24,7 +24,8 @@ services:
     volumes:
       - ./dshpc_api:/app/dshpc_api
     networks:
-      - dshpc-network
+      - dshpc-public-network
+      - dshpc-internal-network
 
   dshpc-slurm:
     container_name: dshpc-slurm
@@ -32,8 +33,8 @@ services:
       context: .
       dockerfile: ./slurm/Dockerfile
     privileged: true
-    ports:
-      - "8000:8000"
+    expose:
+      - "8000"
     depends_on:
       - dshpc-jobs
       - dshpc-files
@@ -50,39 +51,39 @@ services:
       - job_workspace:/workspace
       - ./methods:/methods
     networks:
-      - dshpc-network
+      - dshpc-internal-network
 
   dshpc-jobs:
     container_name: dshpc-jobs
     image: mongo:latest
-    ports:
-      - "27017:27017"
+    expose:
+      - "27017"
     volumes:
       - mongodb_jobs_data:/data/db
     networks:
-      - dshpc-network
+      - dshpc-internal-network
     command: mongod --port 27017
 
   dshpc-files:
     container_name: dshpc-files
     image: mongo:latest
-    ports:
-      - "27018:27017"
+    expose:
+      - "27017"
     volumes:
       - mongodb_files_data:/data/db
     networks:
-      - dshpc-network
+      - dshpc-internal-network
     command: mongod --port 27017
 
   dshpc-methods:
     container_name: dshpc-methods
     image: mongo:latest
-    ports:
-      - "27019:27017"
+    expose:
+      - "27017"
     volumes:
       - mongodb_methods_data:/data/db
     networks:
-      - dshpc-network
+      - dshpc-internal-network
     command: mongod --port 27017
 
 volumes:
@@ -96,5 +97,8 @@ volumes:
     name: dshpc-job-workspace
 
 networks:
-  dshpc-network:
-    name: dshpc-network 
+  dshpc-internal-network:
+    name: dshpc-internal-network
+    internal: true
+  dshpc-public-network:
+    name: dshpc-public-network 
