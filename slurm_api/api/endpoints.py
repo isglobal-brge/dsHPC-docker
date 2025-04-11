@@ -79,6 +79,20 @@ async def submit_job(job: JobSubmission):
             detail=f"Internal server error: {str(e)}"
         )
 
+@router.get("/check-jobs")
+async def trigger_job_check():
+    """Manually trigger a job status check."""
+    try:
+        # Run job status check
+        await check_jobs_once()
+        return {"message": "Job status check completed successfully"}
+    except Exception as e:
+        logger.error(f"Error running job status check: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Internal server error: {str(e)}"
+        )
+
 @router.get("/queue")
 async def get_queue():
     """Get current Slurm queue status."""
