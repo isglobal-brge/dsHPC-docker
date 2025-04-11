@@ -1,66 +1,79 @@
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, HTTPException, Depends, status
 import requests
 from typing import Dict, Any, List
 
 from dshpc_api.config.settings import get_settings
-from dshpc_api.services.slurm_service import get_job, submit_job, check_jobs
-from dshpc_api.services.db_service import get_files
+from dshpc_api.services.db_service import upload_file, check_hashes, get_files
+from dshpc_api.models.file import FileUpload, FileResponse, HashCheckRequest, HashCheckResponse
 
 router = APIRouter()
 
-@router.get("/jobs/check")
-async def trigger_job_check():
+@router.post("/files/upload", response_model=FileResponse, status_code=status.HTTP_201_CREATED)
+async def upload_new_file(file_data: FileUpload):
     """
-    Trigger a job status check in the Slurm API.
-    """
-    try:
-        result = await check_jobs()
-        return result
-    except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Error checking jobs: {str(e)}"
-        )
-
-@router.get("/jobs/{job_id}")
-async def get_job_status(job_id: str):
-    """
-    Get status of a job from the Slurm API.
+    Upload a new file to the database.
+    If a file with the same hash already exists, the upload will be rejected.
+    
+    All file content should be base64 encoded, regardless of file type.
+    Set the appropriate content_type (e.g., "image/jpeg", "application/zip", "text/csv") 
+    to indicate the file format.
     """
     try:
-        job = await get_job(job_id)
-        return job
+        # Prepare data for database
+        db_file_data = {
+            "file_hash": file_data.file_hash,
+            "content": file_data.content,
+            "filename": file_data.filename,
+            "content_type": file_data.content_type,
+            "metadata": file_data.metadata
+        }
+        
+        # Upload file
+        success, message, uploaded_file = await upload_file(db_file_data)
+        
+        if not success:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=message
+            )
+        
+        return uploaded_file
     except Exception as e:
+        if isinstance(e, HTTPException):
+            raise e
         raise HTTPException(
-            status_code=500,
-            detail=f"Error getting job status: {str(e)}"
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error uploading file: {str(e)}"
         )
 
-@router.post("/jobs")
-async def submit_new_job(job_data: Dict[str, Any]):
+@router.post("/files/check-hashes", response_model=HashCheckResponse)
+async def check_file_hashes(hash_data: HashCheckRequest):
     """
-    Submit a new job to the Slurm API.
+    Check which hashes from the provided list already exist in the database.
     """
     try:
-        result = await submit_job(job_data)
-        return result
+        existing_hashes, missing_hashes = await check_hashes(hash_data.hashes)
+        return {
+            "existing_hashes": existing_hashes,
+            "missing_hashes": missing_hashes
+        }
     except Exception as e:
         raise HTTPException(
-            status_code=500,
-            detail=f"Error submitting job: {str(e)}"
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error checking hashes: {str(e)}"
         )
 
-@router.get("/files")
-async def list_files():
+@router.get("/files", response_model=List[FileResponse])
+async def list_all_files():
     """
-    List files from the files database.
+    List all files from the files database.
     """
     try:
         files = await get_files()
-        return {"files": files}
+        return files
     except Exception as e:
         raise HTTPException(
-            status_code=500,
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error listing files: {str(e)}"
         )
 
@@ -86,4 +99,9 @@ async def get_services_status():
     except Exception as e:
         status["databases"] = {"status": "error", "error": str(e)}
     
-    return status 
+    return status
+
+@router.get("/health")
+async def health_check():
+    """Simple health check endpoint."""
+    return {"status": "ok"} 

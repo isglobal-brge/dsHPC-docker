@@ -1,6 +1,7 @@
 from pymongo import MongoClient
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Tuple
 import asyncio
+from datetime import datetime
 from motor.motor_asyncio import AsyncIOMotorClient
 
 from dshpc_api.config.settings import get_settings
@@ -53,10 +54,77 @@ async def get_files(limit: int = 100) -> List[Dict[str, Any]]:
         files.append(file)
     return files
 
-async def add_file(file_data: Dict[str, Any]) -> str:
+async def file_exists(file_hash: str) -> bool:
     """
-    Add a file to the files database.
+    Check if a file with the given hash exists in the database.
     """
     db = await get_files_db()
+    count = await db.files.count_documents({"file_hash": file_hash})
+    return count > 0
+
+async def upload_file(file_data: Dict[str, Any]) -> Tuple[bool, str, Dict[str, Any]]:
+    """
+    Upload a file to the files database.
+    
+    Returns:
+        Tuple containing:
+        - success (bool): Whether the upload was successful
+        - message (str): Success or error message
+        - data (Dict): Data of the uploaded file
+    """
+    # Check if file with same hash already exists
+    if await file_exists(file_data["file_hash"]):
+        return False, "File with this hash already exists", None
+    
+    # Add timestamps
+    now = datetime.utcnow()
+    file_data["upload_date"] = now
+    file_data["last_checked"] = now
+    
+    # Upload to database
+    db = await get_files_db()
     result = await db.files.insert_one(file_data)
-    return str(result.inserted_id) 
+    
+    # Get the uploaded file
+    uploaded_file = await db.files.find_one({"_id": result.inserted_id})
+    if uploaded_file:
+        uploaded_file["_id"] = str(uploaded_file["_id"])
+    
+    return True, "File uploaded successfully", uploaded_file
+
+async def check_hashes(hashes: List[str]) -> Tuple[List[str], List[str]]:
+    """
+    Check which hashes already exist in the database.
+    
+    Args:
+        hashes: List of file hashes to check
+        
+    Returns:
+        Tuple containing:
+        - existing_hashes: List of hashes that already exist
+        - missing_hashes: List of hashes that don't exist
+    """
+    db = await get_files_db()
+    
+    # Find all documents with hashes in the provided list
+    cursor = db.files.find({"file_hash": {"$in": hashes}}, {"file_hash": 1})
+    
+    # Extract the hashes that exist
+    existing_hashes = []
+    async for doc in cursor:
+        existing_hashes.append(doc["file_hash"])
+    
+    # Find missing hashes
+    missing_hashes = [h for h in hashes if h not in existing_hashes]
+    
+    return existing_hashes, missing_hashes
+
+async def get_file_by_hash(file_hash: str) -> Dict[str, Any]:
+    """
+    Get a file by its hash.
+    """
+    db = await get_files_db()
+    file = await db.files.find_one({"file_hash": file_hash})
+    if file:
+        file["_id"] = str(file["_id"])
+    return file 
