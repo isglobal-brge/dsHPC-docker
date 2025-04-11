@@ -32,9 +32,9 @@ RUN mkdir -p /var/run/munge \
     && chown slurm:slurm /var/spool/slurmd
 
 # Copy configuration files and API
-COPY slurm.conf /etc/slurm/slurm.conf
-COPY api.py /app/api.py
-COPY start-services.sh /start-services.sh
+COPY slurm/slurm.conf /etc/slurm/slurm.conf
+COPY slurm_api /app/slurm_api
+COPY slurm/start-services.sh /start-services.sh
 
 # Make the startup script executable
 RUN chmod +x /start-services.sh
