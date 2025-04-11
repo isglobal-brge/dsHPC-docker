@@ -69,8 +69,8 @@ async def submit_job(job: JobSubmission):
                 {"$set": {"slurm_id": slurm_id}}
             )
             
-            # Trigger job status check immediately
-            asyncio.create_task(check_jobs_once())
+            # Trigger job status check immediately and wait for it to complete
+            await check_jobs_once()
             
             return {"message": message, "job_id": job_id}
             
