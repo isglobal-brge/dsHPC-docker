@@ -4,9 +4,12 @@ from typing import Dict, Any, List
 
 from dshpc_api.config.settings import get_settings
 from dshpc_api.services.db_service import upload_file, check_hashes, get_files
-from dshpc_api.services.job_service import simulate_job
+from dshpc_api.services.job_service import simulate_job, simulate_multiple_jobs
 from dshpc_api.models.file import FileUpload, FileResponse, HashCheckRequest, HashCheckResponse
-from dshpc_api.models.job import JobSimulationRequest, JobSimulationResponse
+from dshpc_api.models.job import (
+    JobSimulationRequest, JobSimulationResponse,
+    MultiJobSimulationRequest, MultiJobSimulationResponse, MultiJobResult
+)
 
 router = APIRouter()
 
@@ -138,4 +141,47 @@ async def simulate_job_endpoint(job_data: JobSimulationRequest):
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error simulating job: {str(e)}"
+        )
+
+@router.post("/simulate-jobs", response_model=MultiJobSimulationResponse)
+async def simulate_multiple_jobs_endpoint(job_data: MultiJobSimulationRequest):
+    """
+    Simulate multiple job executions based on a list of job configurations.
+    
+    This endpoint:
+    1. Processes all job configurations in parallel
+    2. For each job:
+       a. Checks for the most recent hash of the specified method
+       b. Checks if a job with the same parameters already exists
+       c. Based on the job status, either returns results or submits a new job
+    3. Returns a consolidated response with results for all jobs
+    
+    Jobs with statuses that are not 'completed', 'in progress', etc. will be resubmitted 
+    following the same logic as in the single job endpoint.
+    """
+    try:
+        # Convert the job configurations to dictionaries
+        job_configs = [job.dict() for job in job_data.jobs]
+        
+        # Process all jobs
+        result = await simulate_multiple_jobs(job_configs)
+        
+        # Prepare the response
+        response = MultiJobSimulationResponse(
+            results=[MultiJobResult(**r) for r in result.get('results', [])],
+            total_jobs=result.get('total_jobs', 0),
+            successful_submissions=result.get('successful_submissions', 0),
+            failed_submissions=result.get('failed_submissions', 0),
+            completed_jobs=result.get('completed_jobs', 0),
+            in_progress_jobs=result.get('in_progress_jobs', 0),
+            resubmitted_jobs=result.get('resubmitted_jobs', 0)
+        )
+        
+        return response
+    except Exception as e:
+        if isinstance(e, HTTPException):
+            raise e
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error simulating multiple jobs: {str(e)}"
         ) 

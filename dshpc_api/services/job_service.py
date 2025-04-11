@@ -1,6 +1,7 @@
 import aiohttp
 import requests
-from typing import Dict, Any, Optional, Tuple
+import asyncio
+from typing import Dict, Any, Optional, Tuple, List
 from datetime import datetime
 
 from dshpc_api.config.settings import get_settings
@@ -270,4 +271,93 @@ async def simulate_job(file_hash: str, method_name: str, parameters: Optional[Di
             "job_id": None,
             "new_status": None,
             "message": f"Error simulating job: {str(e)}"
-        } 
+        }
+
+async def simulate_multiple_jobs(job_configs: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """
+    Simulate multiple jobs in parallel, checking for existing jobs and conditionally submitting new ones.
+    
+    Args:
+        job_configs: List of job configurations, each containing file_hash, method_name, and optional parameters
+        
+    Returns:
+        A dictionary containing the results for all jobs, with statistics
+    """
+    # Process all job simulations in parallel
+    result_tasks = []
+    for job_config in job_configs:
+        file_hash = job_config.get('file_hash')
+        method_name = job_config.get('method_name')
+        parameters = job_config.get('parameters', {})
+        
+        # Schedule the job simulation task
+        task = asyncio.create_task(
+            process_single_job(file_hash, method_name, parameters)
+        )
+        result_tasks.append(task)
+    
+    # Wait for all tasks to complete
+    job_results = await asyncio.gather(*result_tasks)
+    
+    # Count statistics
+    total_jobs = len(job_results)
+    successful_submissions = 0
+    failed_submissions = 0
+    completed_jobs = 0
+    in_progress_jobs = 0
+    resubmitted_jobs = 0
+    
+    # Analyze results
+    for result in job_results:
+        if result.get('new_status') in COMPLETED_STATUSES:
+            completed_jobs += 1
+        elif result.get('new_status') in IN_PROGRESS_STATUSES:
+            in_progress_jobs += 1
+            
+        if result.get('old_status') is not None and result.get('new_status') is not None:
+            resubmitted_jobs += 1
+            
+        if result.get('job_id') is not None and result.get('message', '').startswith('New job'):
+            successful_submissions += 1
+        elif result.get('message', '').startswith('Error'):
+            failed_submissions += 1
+    
+    return {
+        'results': job_results,
+        'total_jobs': total_jobs,
+        'successful_submissions': successful_submissions,
+        'failed_submissions': failed_submissions,
+        'completed_jobs': completed_jobs,
+        'in_progress_jobs': in_progress_jobs,
+        'resubmitted_jobs': resubmitted_jobs
+    }
+
+async def process_single_job(file_hash: str, method_name: str, parameters: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """
+    Process a single job by checking for existing jobs and conditionally submitting a new one.
+    This is a wrapper around simulate_job that adds the input parameters to the result for identification.
+    
+    Args:
+        file_hash: The hash of the input file
+        method_name: The name of the method
+        parameters: The job parameters
+        
+    Returns:
+        A dictionary containing the job simulation results with added input parameters
+    """
+    if parameters is None:
+        parameters = {}
+    
+    # Get the function hash before simulating to include in the result
+    function_hash = await get_latest_method_hash(method_name)
+    
+    # Run the job simulation
+    result = await simulate_job(file_hash, method_name, parameters)
+    
+    # Add the input parameters to the result for identification
+    result['file_hash'] = file_hash
+    result['method_name'] = method_name
+    result['function_hash'] = function_hash
+    result['parameters'] = parameters
+    
+    return result 
