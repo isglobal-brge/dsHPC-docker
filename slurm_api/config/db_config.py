@@ -1,14 +1,30 @@
 import os
 from pymongo import MongoClient
 
-# MongoDB setup
-MONGO_URI = os.getenv("MONGO_URI", "mongodb://dshpc-mongo:27017/")
-MONGO_DB = os.getenv("MONGO_DB", "dshpc-outputs")
+# Jobs MongoDB setup
+MONGO_JOBS_URI = os.getenv("MONGO_JOBS_URI", "mongodb://dshpc-jobs:27017/")
+MONGO_JOBS_DB = os.getenv("MONGO_JOBS_DB", "dshpc-jobs")
 
-def get_db_client():
-    client = MongoClient(MONGO_URI)
-    db = client[MONGO_DB]
+# Files MongoDB setup
+MONGO_FILES_URI = os.getenv("MONGO_FILES_URI", "mongodb://dshpc-files:27017/")
+MONGO_FILES_DB = os.getenv("MONGO_FILES_DB", "dshpc-files")
+
+def get_jobs_db_client():
+    """Get client for the jobs database."""
+    client = MongoClient(MONGO_JOBS_URI)
+    db = client[MONGO_JOBS_DB]
     return db
 
-db = get_db_client()
-jobs_collection = db["jobs"] 
+def get_files_db_client():
+    """Get client for the files database."""
+    client = MongoClient(MONGO_FILES_URI)
+    db = client[MONGO_FILES_DB]
+    return db
+
+# Initialize database connections
+jobs_db = get_jobs_db_client()
+files_db = get_files_db_client()
+
+# Collections
+jobs_collection = jobs_db["jobs"]
+files_collection = files_db["files"] 

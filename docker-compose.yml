@@ -10,26 +10,43 @@ services:
     ports:
       - "8000:8000"
     depends_on:
-      - dshpc-mongo
+      - dshpc-jobs
+      - dshpc-files
     environment:
-      - MONGO_URI=mongodb://dshpc-mongo:27017/
-      - MONGO_DB=dshpc-outputs
+      - MONGO_JOBS_URI=mongodb://dshpc-jobs:27017/
+      - MONGO_JOBS_DB=dshpc-jobs
+      - MONGO_FILES_URI=mongodb://dshpc-files:27017/
+      - MONGO_FILES_DB=dshpc-files
     networks:
       - dshpc-network
 
-  dshpc-mongo:
-    container_name: dshpc-mongo
+  dshpc-jobs:
+    container_name: dshpc-jobs
     image: mongo:latest
     ports:
       - "27017:27017"
     volumes:
-      - mongodb_data:/data/db
+      - mongodb_jobs_data:/data/db
     networks:
       - dshpc-network
+    command: mongod --port 27017
+
+  dshpc-files:
+    container_name: dshpc-files
+    image: mongo:latest
+    ports:
+      - "27018:27017"
+    volumes:
+      - mongodb_files_data:/data/db
+    networks:
+      - dshpc-network
+    command: mongod --port 27017
 
 volumes:
-  mongodb_data:
-    name: dshpc-mongodb-data
+  mongodb_jobs_data:
+    name: dshpc-mongodb-jobs-data
+  mongodb_files_data:
+    name: dshpc-mongodb-files-data
 
 networks:
   dshpc-network:
