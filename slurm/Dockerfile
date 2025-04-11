@@ -103,21 +103,30 @@ RUN mkdir -p /var/run/munge \
     && mkdir -p /etc/munge \
     && mkdir -p /var/spool/slurmd \
     && mkdir -p /workspace \
+    && mkdir -p /methods \
+    && mkdir -p /methods/commands \
+    && mkdir -p /methods/scripts \
+    && mkdir -p /app/scripts \
     && chown munge:munge /etc/munge \
     && chown munge:munge /var/run/munge \
     && chown slurm:slurm /var/run/slurm \
     && chown slurm:slurm /var/spool/slurm \
     && chown slurm:slurm /var/log/slurm \
     && chown slurm:slurm /var/spool/slurmd \
-    && chmod 777 /workspace
+    && chmod 777 /workspace \
+    && chmod 777 /methods
 
 # Copy configuration files and API
 COPY slurm/slurm.conf /etc/slurm/slurm.conf
 COPY slurm_api /app/slurm_api
 COPY slurm/start-services.sh /start-services.sh
+COPY slurm/load-methods.sh /load-methods.sh
+COPY scripts /app/scripts
 
-# Make the startup script executable
-RUN chmod +x /start-services.sh
+# Make the startup scripts executable
+RUN chmod +x /start-services.sh \
+    && chmod +x /load-methods.sh \
+    && chmod +x /app/scripts/register_method.py
 
 # Expose port for FastAPI
 EXPOSE 8000

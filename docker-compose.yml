@@ -12,12 +12,15 @@ services:
       - dshpc-slurm
       - dshpc-jobs
       - dshpc-files
+      - dshpc-methods
     environment:
       - SLURM_API_URL=http://dshpc-slurm:8000
       - MONGO_JOBS_URI=mongodb://dshpc-jobs:27017/
       - MONGO_JOBS_DB=dshpc-jobs
       - MONGO_FILES_URI=mongodb://dshpc-files:27017/
       - MONGO_FILES_DB=dshpc-files
+      - MONGO_METHODS_URI=mongodb://dshpc-methods:27017/
+      - MONGO_METHODS_DB=dshpc-methods
     volumes:
       - ./dshpc_api:/app/dshpc_api
     networks:
@@ -34,13 +37,18 @@ services:
     depends_on:
       - dshpc-jobs
       - dshpc-files
+      - dshpc-methods
     environment:
       - MONGO_JOBS_URI=mongodb://dshpc-jobs:27017/
       - MONGO_JOBS_DB=dshpc-jobs
       - MONGO_FILES_URI=mongodb://dshpc-files:27017/
       - MONGO_FILES_DB=dshpc-files
+      - MONGO_METHODS_URI=mongodb://dshpc-methods:27017/
+      - MONGO_METHODS_DB=dshpc-methods
+      - METHODS_DIR=/methods
     volumes:
       - job_workspace:/workspace
+      - ./methods:/methods
     networks:
       - dshpc-network
 
@@ -66,11 +74,24 @@ services:
       - dshpc-network
     command: mongod --port 27017
 
+  dshpc-methods:
+    container_name: dshpc-methods
+    image: mongo:latest
+    ports:
+      - "27019:27017"
+    volumes:
+      - mongodb_methods_data:/data/db
+    networks:
+      - dshpc-network
+    command: mongod --port 27017
+
 volumes:
   mongodb_jobs_data:
     name: dshpc-mongodb-jobs-data
   mongodb_files_data:
     name: dshpc-mongodb-files-data
+  mongodb_methods_data:
+    name: dshpc-mongodb-methods-data
   job_workspace:
     name: dshpc-job-workspace
 

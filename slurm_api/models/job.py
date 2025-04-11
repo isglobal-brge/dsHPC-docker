@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, validator
 from typing import Dict, Any, Optional
 from enum import Enum
 
@@ -20,8 +20,15 @@ class JobStatus(str, Enum):
     PREEMPTED = "PR"       # Job was preempted by another job
 
 class JobSubmission(BaseModel):
-    script: str
-    name: str | None = None
-    parameters: Dict[str, Any] | None = None
+    script: Optional[str] = None
+    name: Optional[str] = None
+    parameters: Optional[Dict[str, Any]] = None
     file_hash: str
     function_hash: str
+    
+    @validator('script')
+    def validate_script_or_function_hash(cls, v, values):
+        """Validate that either script or function_hash is provided."""
+        if v is None and ('function_hash' not in values or values['function_hash'] is None):
+            raise ValueError("Either script or function_hash must be provided")
+        return v

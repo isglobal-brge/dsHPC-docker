@@ -1,5 +1,5 @@
 from fastapi import APIRouter, HTTPException
-from typing import Dict, Any
+from typing import Dict, Any, List
 import asyncio
 
 from slurm_api.config.logging_config import logger
@@ -10,6 +10,7 @@ from slurm_api.utils.db_utils import update_job_status
 from slurm_api.config.db_config import jobs_collection
 from slurm_api.background.tasks import check_jobs_once
 from slurm_api.services.file_service import find_file_by_hash
+from slurm_api.services.method_service import find_method_by_hash, list_available_methods
 
 router = APIRouter()
 
@@ -23,7 +24,21 @@ async def submit_job(job: JobSubmission):
                 status_code=400,
                 detail=f"File with hash {job.file_hash} not found in database"
             )
-            
+        
+        # Validate function_hash exists if provided
+        if job.function_hash:
+            method_doc = find_method_by_hash(job.function_hash)
+            if not method_doc:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Method with hash {job.function_hash} not found in database"
+                )
+        elif not job.script:
+            raise HTTPException(
+                status_code=400,
+                detail="Either script or function_hash must be provided"
+            )
+        
         # Check for duplicate jobs
         duplicate_job = jobs_collection.find_one({
             "function_hash": job.function_hash,
@@ -87,6 +102,38 @@ async def submit_job(job: JobSubmission):
             status_code=500,
             detail=f"Internal server error: {str(e)}"
         )
+
+@router.get("/methods", response_model=List[Dict[str, Any]])
+async def get_methods():
+    """Get all available methods."""
+    try:
+        methods = list_available_methods()
+        return methods
+    except Exception as e:
+        logger.error(f"Error retrieving methods: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Internal server error: {str(e)}"
+        )
+
+@router.get("/methods/{function_hash}")
+async def get_method(function_hash: str):
+    """Get method information by hash."""
+    method = find_method_by_hash(function_hash)
+    if not method:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Method with hash {function_hash} not found"
+        )
+    
+    # Remove bundle to avoid sending large data
+    if "bundle" in method:
+        del method["bundle"]
+    
+    # Convert ObjectId to string
+    method["_id"] = str(method["_id"])
+    
+    return method
 
 @router.get("/check-jobs")
 async def trigger_job_check():
