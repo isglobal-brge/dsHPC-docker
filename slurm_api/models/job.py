@@ -22,4 +22,6 @@ class JobStatus(str, Enum):
 class JobSubmission(BaseModel):
     script: str
     name: str | None = None
-    parameters: Dict[str, Any] | None = None 
+    parameters: Dict[str, Any] | None = None
+    file_hash: str
+    function_hash: str

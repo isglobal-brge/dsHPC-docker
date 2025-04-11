@@ -6,7 +6,6 @@ from typing import Dict, Any, Tuple
 from slurm_api.config.db_config import jobs_collection
 from slurm_api.config.logging_config import logger
 from slurm_api.models.job import JobStatus, JobSubmission
-from slurm_api.utils.hashing import mock_function_hash, mock_file_hash
 from slurm_api.utils.db_utils import update_job_status
 from slurm_api.services.slurm_service import submit_slurm_job
 
@@ -39,8 +38,8 @@ def create_job(job: JobSubmission) -> Tuple[str, Dict[str, Any]]:
     job_doc = {
         "job_id": job_id,
         "slurm_id": None,
-        "function_hash": mock_function_hash(job.script),
-        "file_hash": mock_file_hash(),
+        "function_hash": job.function_hash,
+        "file_hash": job.file_hash,
         "parameters": job.parameters,
         "status": JobStatus.PENDING,
         "created_at": datetime.utcnow(),
