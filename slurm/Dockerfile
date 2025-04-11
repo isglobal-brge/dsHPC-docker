@@ -11,11 +11,21 @@ RUN apt-get update && apt-get install -y \
     munge \
     python3 \
     python3-pip \
+    python3-venv \
     cgroup-tools \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Python dependencies
-RUN pip3 install fastapi uvicorn pymongo
+# Setup system Python (default Python for Slurm and users)
+RUN python3 -m pip install --upgrade pip
+
+# Setup separate Python environment for the API
+RUN python3 -m venv /opt/api_venv
+ENV API_PYTHON=/opt/api_venv/bin/python
+ENV API_PIP=/opt/api_venv/bin/pip
+
+# Install Python dependencies in the API environment
+RUN $API_PIP install --upgrade pip && \
+    $API_PIP install fastapi uvicorn pymongo
 
 # Create necessary directories and set permissions
 RUN mkdir -p /var/run/munge \
