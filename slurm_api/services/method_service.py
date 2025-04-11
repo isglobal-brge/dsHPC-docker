@@ -234,13 +234,14 @@ def calculate_directory_hash(directory_path: str) -> str:
     
     return hasher.hexdigest()
 
-def register_method(method_data: Dict[str, Any], method_dir: str) -> Tuple[bool, str, Optional[str]]:
+def register_method(method_data: Dict[str, Any], method_dir: str, force: bool = False) -> Tuple[bool, str, Optional[str]]:
     """
     Register a method in the database.
     
     Args:
         method_data: Method metadata
         method_dir: Path to the method directory
+        force: Whether to override an existing method with the same hash
         
     Returns:
         Tuple containing:
@@ -253,18 +254,35 @@ def register_method(method_data: Dict[str, Any], method_dir: str) -> Tuple[bool,
         if not os.path.isdir(method_dir):
             return False, f"Method directory {method_dir} does not exist", None
         
+        # Calculate a stable hash based on method content
+        hasher = hashlib.sha256()
+        
+        # Add key metadata to hash - this ensures the hash changes if critical metadata changes
+        for key in ["name", "command", "script_path", "version"]:
+            if key in method_data:
+                hasher.update(str(method_data[key]).encode())
+        
+        # Hash all script files in the directory
+        for item in os.listdir(method_dir):
+            item_path = os.path.join(method_dir, item)
+            if os.path.isfile(item_path):
+                # Add the filename to ensure files with same content but different names hash differently
+                hasher.update(item.encode())
+                with open(item_path, 'rb') as f:
+                    # Read and hash the file content
+                    hasher.update(f.read())
+        
+        function_hash = hasher.hexdigest()
+        
+        # Check if method with this hash already exists
+        existing_method = methods_collection.find_one({"function_hash": function_hash})
+        if existing_method and not force:
+            return False, f"Method with hash {function_hash} already exists", function_hash
+        
         # Compress the method directory
         success, message, bundle = compress_method_directory(method_dir)
         if not success:
             return False, message, None
-        
-        # Calculate hash for the bundle
-        bundle_hash = hashlib.sha256(bundle).hexdigest()
-        
-        # Check if method with this hash already exists
-        existing_method = methods_collection.find_one({"function_hash": bundle_hash})
-        if existing_method:
-            return False, f"Method with hash {bundle_hash} already exists", bundle_hash
         
         # Prepare method document
         now = datetime.utcnow().isoformat()
@@ -274,17 +292,20 @@ def register_method(method_data: Dict[str, Any], method_dir: str) -> Tuple[bool,
             "command": method_data.get("command", "python"),
             "script_path": method_data.get("script_path", ""),
             "parameters": method_data.get("parameters", []),
-            "function_hash": bundle_hash,
+            "function_hash": function_hash,
             "version": method_data.get("version", "1.0.0"),
             "created_at": now,
             "updated_at": now,
             "bundle": base64.b64encode(bundle).decode('utf-8')
         }
         
-        # Insert method document
-        methods_collection.insert_one(method_doc)
-        
-        return True, "Method registered successfully", bundle_hash
+        # Insert or replace method document
+        if existing_method and force:
+            methods_collection.replace_one({"function_hash": function_hash}, method_doc)
+            return True, f"Method with hash {function_hash} updated", function_hash
+        else:
+            methods_collection.insert_one(method_doc)
+            return True, "Method registered successfully", function_hash
         
     except Exception as e:
         logger.error(f"Error registering method: {e}")
