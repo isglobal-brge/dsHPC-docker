@@ -10,7 +10,7 @@ from slurm_api.utils.db_utils import update_job_status
 from slurm_api.config.db_config import jobs_collection
 from slurm_api.background.tasks import check_jobs_once
 from slurm_api.services.file_service import find_file_by_hash
-from slurm_api.services.method_service import find_method_by_hash, list_available_methods
+from slurm_api.services.method_service import find_method_by_hash, list_available_methods, register_method, prepare_method_execution, find_method_by_name, list_method_versions
 
 router = APIRouter()
 
@@ -186,4 +186,35 @@ async def get_job(job_id: str):
             detail=f"Job {job_id} not found"
         )
     
-    return job 
+    return job
+
+@router.get("/methods/by-name/{method_name}")
+async def get_method_by_name(method_name: str, latest: bool = True):
+    """Get method information by name, optionally returning the latest version."""
+    method = find_method_by_name(method_name, latest)
+    if not method:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Method with name {method_name} not found"
+        )
+    
+    # Remove bundle to avoid sending large data
+    if "bundle" in method:
+        del method["bundle"]
+    
+    # Convert ObjectId to string
+    method["_id"] = str(method["_id"])
+    
+    return method
+
+@router.get("/methods/versions/{method_name}")
+async def get_method_versions(method_name: str):
+    """Get all versions of a method by name, sorted by creation time (newest first)."""
+    methods = list_method_versions(method_name)
+    if not methods:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No methods found with name {method_name}"
+        )
+    
+    return methods 

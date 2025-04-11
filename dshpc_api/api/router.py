@@ -4,7 +4,9 @@ from typing import Dict, Any, List
 
 from dshpc_api.config.settings import get_settings
 from dshpc_api.services.db_service import upload_file, check_hashes, get_files
+from dshpc_api.services.job_service import simulate_job
 from dshpc_api.models.file import FileUpload, FileResponse, HashCheckRequest, HashCheckResponse
+from dshpc_api.models.job import JobSimulationRequest, JobSimulationResponse
 
 router = APIRouter()
 
@@ -104,4 +106,36 @@ async def get_services_status():
 @router.get("/health")
 async def health_check():
     """Simple health check endpoint."""
-    return {"status": "ok"} 
+    return {"status": "ok"}
+
+@router.post("/simulate-job", response_model=JobSimulationResponse)
+async def simulate_job_endpoint(job_data: JobSimulationRequest):
+    """
+    Simulate a job execution based on file_hash, method_name, and parameters.
+    
+    This endpoint will:
+    1. Check for the most recent hash of the specified method
+    2. Check if a job with the same parameters already exists
+    3. Based on the job status, either return results or submit a new job
+    """
+    try:
+        result = await simulate_job(
+            job_data.file_hash,
+            job_data.method_name,
+            job_data.parameters
+        )
+        
+        if not result.get("job_id") and not result.get("message").startswith("Error"):
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=result.get("message", "Method or file not found")
+            )
+            
+        return result
+    except Exception as e:
+        if isinstance(e, HTTPException):
+            raise e
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error simulating job: {str(e)}"
+        ) 

@@ -14,6 +14,10 @@ class Settings(BaseSettings):
     MONGO_FILES_URI: str = os.getenv("MONGO_FILES_URI", "mongodb://dshpc-files:27017/")
     MONGO_FILES_DB: str = os.getenv("MONGO_FILES_DB", "dshpc-files")
     
+    # Methods database settings
+    MONGO_METHODS_URI: str = os.getenv("MONGO_METHODS_URI", "mongodb://dshpc-methods:27017/")
+    MONGO_METHODS_DB: str = os.getenv("MONGO_METHODS_DB", "dshpc-methods")
+    
     # API settings
     API_PORT: int = int(os.getenv("API_PORT", 8001))
     

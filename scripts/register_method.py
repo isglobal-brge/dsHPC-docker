@@ -17,6 +17,7 @@ import sys
 import json
 import argparse
 from pymongo import MongoClient
+import datetime
 
 # Add the parent directory to the Python path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -56,6 +57,9 @@ def main():
         if field not in method_data:
             print(f"Error: Required field '{field}' is missing from method JSON")
             sys.exit(1)
+    
+    # Make sure method_data includes a timestamp
+    method_data["created_at"] = datetime.datetime.utcnow().isoformat()
     
     # Register the method
     success, message, function_hash = register_method(method_data, args.method_dir)

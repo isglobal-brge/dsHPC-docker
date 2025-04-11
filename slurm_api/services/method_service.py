@@ -340,6 +340,60 @@ def get_system_runtime_info() -> Dict[str, Any]:
     
     return runtime_info
 
+def find_method_by_name(method_name: str, latest: bool = True) -> Optional[Dict[str, Any]]:
+    """
+    Find a method in the database by its name.
+    
+    Args:
+        method_name: The name of the method to find
+        latest: If True, returns the most recent version based on created_at timestamp
+        
+    Returns:
+        The method document if found, None otherwise
+    """
+    try:
+        query = {"name": method_name}
+        
+        if latest:
+            # Find the most recent version of the method
+            method = methods_collection.find_one(
+                query,
+                sort=[("created_at", -1)]  # Sort by created_at in descending order
+            )
+        else:
+            # Find any version of the method
+            method = methods_collection.find_one(query)
+        
+        return method
+    except Exception as e:
+        logger.error(f"Error finding method by name: {e}")
+        return None
+
+def list_method_versions(method_name: str) -> List[Dict[str, Any]]:
+    """
+    List all versions of a method sorted by creation time (newest first).
+    
+    Args:
+        method_name: The name of the method to list versions for
+        
+    Returns:
+        List of method documents (without the bundle field)
+    """
+    try:
+        methods = list(methods_collection.find(
+            {"name": method_name},
+            {"bundle": 0},
+            sort=[("created_at", -1)]
+        ))
+        
+        for method in methods:
+            method["_id"] = str(method["_id"])
+            
+        return methods
+    except Exception as e:
+        logger.error(f"Error listing method versions: {e}")
+        return []
+
 def register_method(method_data: Dict[str, Any], method_dir: str, force: bool = False) -> Tuple[bool, str, Optional[str]]:
     """
     Register a method in the database.
@@ -400,8 +454,26 @@ def register_method(method_data: Dict[str, Any], method_dir: str, force: bool = 
         if not success:
             return False, message, None
         
+        # Ensure we have a valid ISO format timestamp
+        now = None
+        if "created_at" in method_data and method_data["created_at"]:
+            try:
+                # If provided timestamp is a string, validate it
+                if isinstance(method_data["created_at"], str):
+                    # Parse and reformat to ensure ISO format
+                    now = datetime.fromisoformat(method_data["created_at"]).isoformat()
+                elif isinstance(method_data["created_at"], datetime):
+                    # Convert datetime object to ISO string
+                    now = method_data["created_at"].isoformat()
+            except (ValueError, TypeError) as e:
+                logger.warning(f"Invalid created_at timestamp provided: {e}. Using current time instead.")
+                now = None
+        
+        # If no valid timestamp was provided, use current time
+        if not now:
+            now = datetime.utcnow().isoformat()
+        
         # Prepare method document
-        now = datetime.utcnow().isoformat()
         method_doc = {
             "name": method_data.get("name", "Unnamed Method"),
             "description": method_data.get("description", ""),
@@ -411,7 +483,7 @@ def register_method(method_data: Dict[str, Any], method_dir: str, force: bool = 
             "function_hash": function_hash,
             "version": method_data.get("version", "1.0.0"),
             "created_at": now,
-            "updated_at": now,
+            "updated_at": datetime.utcnow().isoformat(),  # Always use current time for updated_at
             "bundle": base64.b64encode(bundle).decode('utf-8'),
             "runtime_info": runtime_info  # Store the runtime info in the method document
         }
