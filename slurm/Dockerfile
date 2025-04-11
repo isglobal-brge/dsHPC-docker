@@ -20,6 +20,7 @@ RUN apt-get update && apt-get install -y \
     libbz2-dev \
     libreadline-dev \
     libsqlite3-dev \
+    jq \
     cgroup-tools \
     && rm -rf /var/lib/apt/lists/*
 
@@ -29,22 +30,30 @@ ENV PYENV_ROOT="/root/.pyenv"
 ENV PATH="$PYENV_ROOT/bin:$PATH"
 RUN echo 'eval "$(pyenv init -)"' >> /root/.bashrc
 
-# Install an older Python version for system_python
-RUN pyenv install 3.8.10
-RUN pyenv global 3.8.10
+# Copy the Python configuration file
+COPY config/python.json /tmp/python.json
+
+# Install Python version from config 
+RUN PYTHON_VERSION=$(jq -r '.python_version' /tmp/python.json) && \
+    pyenv install $PYTHON_VERSION && \
+    pyenv global $PYTHON_VERSION
 
 # Create Python virtual environments
 RUN mkdir -p /opt/venvs
 
-# 1. Create API Python environment (newer version)
+# Create API Python environment (fixed version)
 RUN python3 -m venv /opt/venvs/api_python
 RUN /opt/venvs/api_python/bin/pip install --upgrade pip
-RUN /opt/venvs/api_python/bin/pip install fastapi uvicorn pymongo
+RUN /opt/venvs/api_python/bin/pip install fastapi==0.95.1 uvicorn==0.22.0 pymongo==4.3.3
 
-# 2. Create System Python environment (older version)
-RUN $PYENV_ROOT/versions/3.8.10/bin/python -m venv /opt/venvs/system_python
+# Create System Python environment from config
+RUN PYTHON_VERSION=$(jq -r '.python_version' /tmp/python.json) && \
+    $PYENV_ROOT/versions/$PYTHON_VERSION/bin/python -m venv /opt/venvs/system_python
 RUN /opt/venvs/system_python/bin/pip install --upgrade pip
-RUN /opt/venvs/system_python/bin/pip install pymongo
+
+# Install requirements from config
+RUN jq -r '.requirements | to_entries[] | "\(.key) \(.value)"' /tmp/python.json > /tmp/requirements.txt && \
+    /opt/venvs/system_python/bin/pip install -r /tmp/requirements.txt
 
 # Add system_python to PATH and make it the default
 ENV PATH="/opt/venvs/system_python/bin:${PATH}"
