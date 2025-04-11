@@ -1,6 +1,7 @@
 import os
 import base64
 import uuid
+from datetime import datetime
 from typing import Tuple, Optional, Dict, Any
 
 from slurm_api.config.db_config import files_collection
@@ -8,7 +9,7 @@ from slurm_api.config.logging_config import logger
 
 def find_file_by_hash(file_hash: str) -> Optional[Dict[str, Any]]:
     """
-    Find a file in the database by its hash.
+    Find a file in the database by its hash and update the last_checked timestamp.
     
     Args:
         file_hash: The hash of the file to find
@@ -16,7 +17,21 @@ def find_file_by_hash(file_hash: str) -> Optional[Dict[str, Any]]:
     Returns:
         The file document if found, None otherwise
     """
-    return files_collection.find_one({"file_hash": file_hash})
+    # Find the file in the database
+    file_doc = files_collection.find_one({"file_hash": file_hash})
+    
+    if file_doc:
+        # Update the last_checked timestamp
+        current_time = datetime.utcnow()
+        files_collection.update_one(
+            {"file_hash": file_hash},
+            {"$set": {"last_checked": current_time}}
+        )
+        
+        # Update the in-memory document with the new timestamp
+        file_doc["last_checked"] = current_time
+        
+    return file_doc
 
 def download_file(file_hash: str, target_directory: str) -> Tuple[bool, str, Optional[str]]:
     """

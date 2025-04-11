@@ -114,6 +114,14 @@ async def check_hashes(hashes: List[str]) -> Tuple[List[str], List[str]]:
     async for doc in cursor:
         existing_hashes.append(doc["file_hash"])
     
+    # Update last_checked timestamp for existing files
+    if existing_hashes:
+        now = datetime.utcnow()
+        await db.files.update_many(
+            {"file_hash": {"$in": existing_hashes}},
+            {"$set": {"last_checked": now}}
+        )
+    
     # Find missing hashes
     missing_hashes = [h for h in hashes if h not in existing_hashes]
     
