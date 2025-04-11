@@ -42,18 +42,10 @@ def extract_method_bundle(method_bundle: bytes, target_directory: str) -> bool:
             temp_file_path = temp_file.name
             temp_file.write(method_bundle)
         
-        # Extract the bundle directly to the target directory
+        # Extract the bundle preserving directory structure
         with tarfile.open(temp_file_path, 'r:gz') as tar:
-            # Extract each file to the root of the target directory
-            for member in tar.getmembers():
-                # Get just the filename, not the full path
-                if '/' in member.name:
-                    # Get the last part of the path (filename)
-                    member.name = member.name.split('/')[-1]
-                
-                # Extract only if it's a file (not a directory)
-                if member.isfile():
-                    tar.extract(member, path=target_directory)
+            # Extract everything with full path structure
+            tar.extractall(path=target_directory)
         
         # Clean up the temporary file
         os.unlink(temp_file_path)
@@ -145,11 +137,29 @@ def prepare_method_execution(workspace_dir: str, method_execution: MethodExecuti
         
         # Create execution data
         method = Method(**method_data)
+        
+        # Find the subdirectory created by extractall
+        # Assumes the tarball contains a single top-level directory named after the method
+        method_name = method_data.get('name', 'Unnamed Method').replace(' ', '_').lower()
+        extracted_method_root = os.path.join(method_dir, method_name)
+        # Fallback if the naming is different or extraction didn't create a folder
+        if not os.path.isdir(extracted_method_root):
+            # Check if there's exactly one directory inside method_dir
+            subdirs = [d for d in os.listdir(method_dir) if os.path.isdir(os.path.join(method_dir, d))]
+            if len(subdirs) == 1:
+                extracted_method_root = os.path.join(method_dir, subdirs[0])
+            else:
+                 # If no subdirectory or multiple, assume files are in the root
+                 extracted_method_root = method_dir
+
+        # Build the full script path relative to the extracted method root
+        script_path = os.path.join(extracted_method_root, method.script_path)
+        
         execution_data = {
             "command": method.command,
-            "script_path": os.path.join(method_dir, method.script_path),
+            "script_path": script_path,
             "params_file": params_file_path,
-            "method_dir": method_dir,
+            "method_dir": extracted_method_root, # Use the actual root where the script lives
             "method_name": method.name
         }
         
@@ -177,15 +187,10 @@ def compress_method_directory(method_dir: str) -> Tuple[bool, str, Optional[byte
         with tempfile.NamedTemporaryFile(suffix='.tar.gz', delete=False) as temp_file:
             temp_file_path = temp_file.name
         
-        # Create a tar.gz archive of just the files in the directory
+        # Create a tar.gz archive including the full directory structure
         with tarfile.open(temp_file_path, 'w:gz') as tar:
-            # Add each file in the directory directly (not preserving directory structure)
-            for item in os.listdir(method_dir):
-                item_path = os.path.join(method_dir, item)
-                # Only include files, not directories
-                if os.path.isfile(item_path):
-                    # Add the file with just its name, not full path
-                    tar.add(item_path, arcname=os.path.basename(item_path))
+            # Add the entire directory with its structure
+            tar.add(method_dir, arcname=os.path.basename(method_dir))
         
         # Read the compressed file
         with open(temp_file_path, 'rb') as f:

@@ -68,17 +68,24 @@ def prepare_job_script(job_id: str, job: JobSubmission) -> str:
         
         if method_execution_data:
             # Add method-specific environment variables
-            f.write(f"export METHOD_DIR=\"{method_execution_data['method_dir']}\"\n")
+            method_dir = method_execution_data['method_dir']
+            f.write(f"export METHOD_DIR=\"{method_dir}\"\n")
             f.write(f"export PARAMS_FILE=\"{method_execution_data['params_file']}\"\n")
             f.write(f"export METHOD_NAME=\"{method_execution_data['method_name']}\"\n")
             
-            # Change to the method directory
-            f.write(f"cd \"{method_execution_data['method_dir']}\"\n\n")
+            # Add METHOD_DIR to PYTHONPATH environment variable to support imports in Python scripts
+            f.write(f"export PYTHONPATH=\"{method_dir}:$PYTHONPATH\"\n")
             
-            # Execute the method command with the script path
+            # Change to the method directory
+            f.write(f"cd \"{method_dir}\"\n\n")
+            
+            # Execute the method command with the script name (basename)
             command = method_execution_data['command']
-            script_path_method = method_execution_data['script_path']
-            f.write(f"{command} \"{script_path_method}\" \"$INPUT_FILE\" \"$PARAMS_FILE\"\n")
+            script_filename = os.path.basename(method_execution_data['script_path'])
+            # Use relative path for input file and params file as we are in workspace_dir
+            relative_input_file = os.path.relpath(file_path, method_dir)
+            relative_params_file = os.path.relpath(method_execution_data['params_file'], method_dir)
+            f.write(f"{command} \"{script_filename}\" \"{relative_input_file}\" \"{relative_params_file}\"\n")
         else:
             # If no method is provided, we must have a script
             if not job.script:

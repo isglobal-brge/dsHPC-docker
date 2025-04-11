@@ -1,0 +1,30 @@
+{
+    "name": "Complex Python Method",
+    "description": "A Python method with multiple files and modules for text processing",
+    "command": "python3",
+    "script_path": "main.py",
+    "parameters": [
+        {
+            "name": "operation",
+            "description": "Operation to perform on the text (count, analyze, transform)",
+            "type": "string",
+            "required": true,
+            "default": "count"
+        },
+        {
+            "name": "case",
+            "description": "Case transformation to apply (upper, lower, title)",
+            "type": "string",
+            "required": false,
+            "default": "none"
+        },
+        {
+            "name": "include_stats",
+            "description": "Include statistical analysis of text",
+            "type": "boolean",
+            "required": false,
+            "default": false
+        }
+    ],
+    "version": "1.0.0"
+} 
