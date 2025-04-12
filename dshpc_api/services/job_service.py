@@ -6,6 +6,7 @@ from datetime import datetime
 
 from dshpc_api.config.settings import get_settings
 from dshpc_api.services.db_service import get_jobs_db, get_files_db
+from dshpc_api.services.method_service import check_method_functionality
 
 # Helper constants for job status categories
 COMPLETED_STATUSES = ["CD"]  # Completed successfully
@@ -178,6 +179,15 @@ async def simulate_job(file_hash: str, method_name: str, parameters: Optional[Di
         parameters = {}
     
     try:
+        # First check if the method is functional
+        is_functional, message = await check_method_functionality(method_name)
+        if not is_functional:
+            return {
+                "job_id": None,
+                "new_status": None,
+                "message": f"Method check failed: {message}"
+            }
+        
         # Get the latest hash for the method
         function_hash = await get_latest_method_hash(method_name)
         if not function_hash:
@@ -185,6 +195,16 @@ async def simulate_job(file_hash: str, method_name: str, parameters: Optional[Di
                 "job_id": None,
                 "new_status": None,
                 "message": f"Method '{method_name}' not found"
+            }
+        
+        # Check if the file exists
+        files_db = await get_files_db()
+        file_exists = await files_db.files.count_documents({"file_hash": file_hash}) > 0
+        if not file_exists:
+            return {
+                "job_id": None,
+                "new_status": None,
+                "message": f"File with hash '{file_hash}' not found"
             }
         
         # Check if there's an existing job with these parameters

@@ -6,11 +6,13 @@ from dshpc_api.config.settings import get_settings
 from dshpc_api.api.auth import get_api_key
 from dshpc_api.services.db_service import upload_file, check_hashes, get_files
 from dshpc_api.services.job_service import simulate_job, simulate_multiple_jobs
+from dshpc_api.services.method_service import get_available_methods
 from dshpc_api.models.file import FileUpload, FileResponse, HashCheckRequest, HashCheckResponse
 from dshpc_api.models.job import (
     JobRequest, JobResponse,
     MultiJobRequest, MultiJobResponse, MultiJobResult
 )
+from dshpc_api.models.method import Method, MethodsResponse
 
 router = APIRouter()
 
@@ -200,4 +202,24 @@ async def simulate_multiple_jobs_endpoint(job_data: MultiJobRequest, api_key: st
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error simulating multiple jobs: {str(e)}"
+        )
+
+@router.get("/methods", response_model=MethodsResponse)
+async def list_available_methods(api_key: str = Security(get_api_key)):
+    """
+    List all available methods that can be used for processing.
+    
+    Returns a list of methods with their details including name, description, parameters, etc.
+    Only active methods are returned.
+    """
+    try:
+        methods, count = await get_available_methods()
+        return {
+            "methods": methods,
+            "total_count": count
+        }
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error listing methods: {str(e)}"
         ) 
