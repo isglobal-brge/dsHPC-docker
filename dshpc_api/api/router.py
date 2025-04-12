@@ -5,7 +5,7 @@ from typing import Dict, Any, List
 from dshpc_api.config.settings import get_settings
 from dshpc_api.api.auth import get_api_key
 from dshpc_api.services.db_service import upload_file, check_hashes, get_files
-from dshpc_api.services.job_service import simulate_job, simulate_multiple_jobs
+from dshpc_api.services.job_service import simulate_job, simulate_multiple_jobs, get_job_status
 from dshpc_api.services.method_service import get_available_methods
 from dshpc_api.models.file import FileUpload, FileResponse, HashCheckRequest, HashCheckResponse
 from dshpc_api.models.job import (
@@ -202,6 +202,66 @@ async def simulate_multiple_jobs_endpoint(job_data: MultiJobRequest, api_key: st
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error simulating multiple jobs: {str(e)}"
+        )
+
+@router.get("/job/{job_id}")
+async def get_job_details(job_id: str, api_key: str = Security(get_api_key)):
+    """
+    Get details of a specific job by its ID.
+    
+    This endpoint returns the complete information about a job, including:
+    - Status (completed, in progress, failed, etc.)
+    - Input parameters
+    - Results (if completed)
+    - Error messages (if failed)
+    - Timestamps
+    """
+    try:
+        job_data = await get_job_status(job_id)
+        if not job_data:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Job with ID {job_id} not found"
+            )
+        
+        return job_data
+    except Exception as e:
+        if isinstance(e, HTTPException):
+            raise e
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error retrieving job details: {str(e)}"
+        )
+
+@router.post("/jobs/batch")
+async def get_multiple_jobs(job_ids: List[str], api_key: str = Security(get_api_key)):
+    """
+    Get details for multiple jobs by their IDs.
+    
+    Returns a dictionary where the keys are job IDs and the values are the job details.
+    If a job ID is not found, its value will be null.
+    """
+    try:
+        result = {}
+        
+        # Process jobs in parallel
+        import asyncio
+        tasks = [get_job_status(job_id) for job_id in job_ids]
+        job_data_list = await asyncio.gather(*tasks, return_exceptions=True)
+        
+        # Organize results by job_id
+        for i, job_id in enumerate(job_ids):
+            data = job_data_list[i]
+            if isinstance(data, Exception):
+                result[job_id] = None
+            else:
+                result[job_id] = data
+                
+        return result
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error retrieving multiple jobs: {str(e)}"
         )
 
 @router.get("/methods", response_model=MethodsResponse)
