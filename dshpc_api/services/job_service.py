@@ -37,7 +37,7 @@ async def get_latest_method_hash(method_name: str) -> Optional[str]:
                         if data.get("active", False):
                             return data["function_hash"]
                         else:
-                            print(f"Method {method_name} exists but is not active")
+                            print(f"Method {method_name} is not active")
                             return None
         
         # Fallback to direct database access if the API endpoint fails or doesn't exist

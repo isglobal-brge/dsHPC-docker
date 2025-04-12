@@ -105,7 +105,7 @@ async def check_method_functionality(method_name: str) -> Tuple[bool, str]:
                     if data and "function_hash" in data:
                         # Check if the method is active
                         if not data.get("active", False):
-                            return False, f"Method '{method_name}' exists but is not active"
+                            return False, f"Method '{method_name}' is not active"
                         # Method exists, has a hash and is active, consider it functional
                         return True, f"Method '{method_name}' is available and functional"
                 else:
@@ -134,7 +134,7 @@ async def check_method_functionality(method_name: str) -> Tuple[bool, str]:
                 sort=[("created_at", -1)]
             )
             if inactive_method:
-                return False, f"Method '{method_name}' exists but is not active"
+                return False, f"Method '{method_name}' is not active"
             return False, f"Method '{method_name}' not found"
     except Exception as e:
         return False, f"Error checking method in database: {str(e)}" 
