@@ -19,8 +19,8 @@ import argparse
 from pymongo import MongoClient
 import datetime
 
-# Add the parent directory to the Python path
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# Add the app directory to the Python path to find slurm_api
+sys.path.append('/app')
 
 from slurm_api.services.method_service import register_method
 

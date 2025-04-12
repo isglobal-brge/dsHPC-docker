@@ -47,7 +47,7 @@ for command_file in ${METHODS_DIR}/commands/*.json; do
     fi
     
     # Register the method - using api_python environment
-    /opt/venvs/api_python/bin/python /app/scripts/register_method.py "${METHODS_DIR}/scripts/${command_name}" "${command_file}"
+    /opt/venvs/api_python/bin/python /app/slurm/scripts/register_method.py "${METHODS_DIR}/scripts/${command_name}" "${command_file}"
 done
 
 echo "Methods loading complete" 
