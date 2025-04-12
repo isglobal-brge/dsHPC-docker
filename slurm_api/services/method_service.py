@@ -394,14 +394,13 @@ def list_method_versions(method_name: str) -> List[Dict[str, Any]]:
         logger.error(f"Error listing method versions: {e}")
         return []
 
-def register_method(method_data: Dict[str, Any], method_dir: str, force: bool = False) -> Tuple[bool, str, Optional[str]]:
+def register_method(method_data: Dict[str, Any], method_dir: str) -> Tuple[bool, str, Optional[str]]:
     """
     Register a method in the database.
     
     Args:
         method_data: Method metadata
         method_dir: Path to the method directory
-        force: Whether to override an existing method with the same hash
         
     Returns:
         Tuple containing:
@@ -446,8 +445,6 @@ def register_method(method_data: Dict[str, Any], method_dir: str, force: bool = 
         
         # Check if method with this hash already exists
         existing_method = methods_collection.find_one({"function_hash": function_hash})
-        if existing_method and not force:
-            return False, f"Method with hash {function_hash} already exists", function_hash
         
         # Compress the method directory
         success, message, bundle = compress_method_directory(method_dir)
@@ -489,7 +486,8 @@ def register_method(method_data: Dict[str, Any], method_dir: str, force: bool = 
         }
         
         # Insert or replace method document
-        if existing_method and force:
+        if existing_method:
+            logger.info(f"Method with hash {function_hash} already exists - updating it with new timestamp")
             methods_collection.replace_one({"function_hash": function_hash}, method_doc)
             return True, f"Method with hash {function_hash} updated", function_hash
         else:
