@@ -5,13 +5,10 @@ from typing import Dict, Any, List
 from dshpc_api.config.settings import get_settings
 from dshpc_api.api.auth import get_api_key
 from dshpc_api.services.db_service import upload_file, check_hashes, get_files
-from dshpc_api.services.job_service import simulate_job, simulate_multiple_jobs, get_job_status
+from dshpc_api.services.job_service import simulate_job
 from dshpc_api.services.method_service import get_available_methods
 from dshpc_api.models.file import FileUpload, FileResponse, HashCheckRequest, HashCheckResponse
-from dshpc_api.models.job import (
-    JobRequest, JobResponse,
-    MultiJobRequest, MultiJobResponse, MultiJobResult
-)
+from dshpc_api.models.job import JobRequest, JobResponse
 from dshpc_api.models.method import Method, MethodsResponse
 
 router = APIRouter()
@@ -137,7 +134,7 @@ async def simulate_job_endpoint(job_data: JobRequest, api_key: str = Security(ge
     This endpoint will:
     1. Check for the most recent hash of the specified method
     2. Check if a job with the same parameters already exists
-    3. Based on the job status, either return results or submit a new job
+    3. Based on the job status, either return results, submit a new job, or return error status
     """
     try:
         result = await simulate_job(
@@ -146,10 +143,21 @@ async def simulate_job_endpoint(job_data: JobRequest, api_key: str = Security(ge
             job_data.parameters
         )
         
+        # Handle cases where no job_id was returned and it's not an internal error
         if not result.get("job_id") and not result.get("message").startswith("Error"):
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=result.get("message", "Method or file not found")
+            )
+        
+        # Check for non-retriable job failures
+        message = result.get("message", "")
+        if "(non-retriable)" in message:
+            job_status = result.get("new_status", "")
+            # Return 422 Unprocessable Entity for non-retriable job failures
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"Job execution failed with non-retriable status: {job_status}. Message: {message}"
             )
             
         return result
@@ -159,109 +167,6 @@ async def simulate_job_endpoint(job_data: JobRequest, api_key: str = Security(ge
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error simulating job: {str(e)}"
-        )
-
-@router.post("/query-jobs", response_model=MultiJobResponse)
-async def simulate_multiple_jobs_endpoint(job_data: MultiJobRequest, api_key: str = Security(get_api_key)):
-    """
-    Simulate multiple job executions based on a list of job configurations.
-    
-    This endpoint:
-    1. Processes all job configurations in parallel
-    2. For each job:
-       a. Checks for the most recent hash of the specified method
-       b. Checks if a job with the same parameters already exists
-       c. Based on the job status, either returns results or submits a new job
-    3. Returns a consolidated response with results for all jobs
-    
-    Jobs with statuses that are not 'completed', 'in progress', etc. will be resubmitted 
-    following the same logic as in the single job endpoint.
-    """
-    try:
-        # Convert the job configurations to dictionaries
-        job_configs = [job.dict() for job in job_data.jobs]
-        
-        # Process all jobs
-        result = await simulate_multiple_jobs(job_configs)
-        
-        # Prepare the response
-        response = MultiJobResponse(
-            results=[MultiJobResult(**r) for r in result.get('results', [])],
-            total_jobs=result.get('total_jobs', 0),
-            successful_submissions=result.get('successful_submissions', 0),
-            failed_submissions=result.get('failed_submissions', 0),
-            completed_jobs=result.get('completed_jobs', 0),
-            in_progress_jobs=result.get('in_progress_jobs', 0),
-            resubmitted_jobs=result.get('resubmitted_jobs', 0)
-        )
-        
-        return response
-    except Exception as e:
-        if isinstance(e, HTTPException):
-            raise e
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Error simulating multiple jobs: {str(e)}"
-        )
-
-@router.get("/job/{job_id}")
-async def get_job_details(job_id: str, api_key: str = Security(get_api_key)):
-    """
-    Get details of a specific job by its ID.
-    
-    This endpoint returns the complete information about a job, including:
-    - Status (completed, in progress, failed, etc.)
-    - Input parameters
-    - Results (if completed)
-    - Error messages (if failed)
-    - Timestamps
-    """
-    try:
-        job_data = await get_job_status(job_id)
-        if not job_data:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Job with ID {job_id} not found"
-            )
-        
-        return job_data
-    except Exception as e:
-        if isinstance(e, HTTPException):
-            raise e
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Error retrieving job details: {str(e)}"
-        )
-
-@router.post("/jobs/batch")
-async def get_multiple_jobs(job_ids: List[str], api_key: str = Security(get_api_key)):
-    """
-    Get details for multiple jobs by their IDs.
-    
-    Returns a dictionary where the keys are job IDs and the values are the job details.
-    If a job ID is not found, its value will be null.
-    """
-    try:
-        result = {}
-        
-        # Process jobs in parallel
-        import asyncio
-        tasks = [get_job_status(job_id) for job_id in job_ids]
-        job_data_list = await asyncio.gather(*tasks, return_exceptions=True)
-        
-        # Organize results by job_id
-        for i, job_id in enumerate(job_ids):
-            data = job_data_list[i]
-            if isinstance(data, Exception):
-                result[job_id] = None
-            else:
-                result[job_id] = data
-                
-        return result
-    except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Error retrieving multiple jobs: {str(e)}"
         )
 
 @router.get("/methods", response_model=MethodsResponse)
