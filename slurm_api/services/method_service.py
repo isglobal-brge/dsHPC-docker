@@ -394,6 +394,27 @@ def list_method_versions(method_name: str) -> List[Dict[str, Any]]:
         logger.error(f"Error listing method versions: {e}")
         return []
 
+def mark_all_methods_inactive() -> Tuple[bool, str]:
+    """
+    Mark all methods in the database as inactive.
+    
+    Returns:
+        Tuple containing:
+        - success (bool): Whether the operation was successful
+        - message (str): Success or error message
+    """
+    try:
+        result = methods_collection.update_many(
+            {},  # Match all documents
+            {"$set": {"active": False}}
+        )
+        
+        logger.info(f"Marked {result.modified_count} methods as inactive")
+        return True, f"Marked {result.modified_count} methods as inactive"
+    except Exception as e:
+        logger.error(f"Error marking methods as inactive: {e}")
+        return False, f"Error marking methods as inactive: {str(e)}"
+
 def register_method(method_data: Dict[str, Any], method_dir: str) -> Tuple[bool, str, Optional[str]]:
     """
     Register a method in the database.
@@ -482,12 +503,13 @@ def register_method(method_data: Dict[str, Any], method_dir: str) -> Tuple[bool,
             "created_at": now,
             "updated_at": datetime.utcnow().isoformat(),  # Always use current time for updated_at
             "bundle": base64.b64encode(bundle).decode('utf-8'),
-            "runtime_info": runtime_info  # Store the runtime info in the method document
+            "runtime_info": runtime_info,  # Store the runtime info in the method document
+            "active": True  # Mark this method as active
         }
         
         # Insert or replace method document
         if existing_method:
-            logger.info(f"Method with hash {function_hash} already exists - updating it with new timestamp")
+            logger.info(f"Method with hash {function_hash} already exists")
             methods_collection.replace_one({"function_hash": function_hash}, method_doc)
             return True, f"Method with hash {function_hash} updated", function_hash
         else:
@@ -498,15 +520,19 @@ def register_method(method_data: Dict[str, Any], method_dir: str) -> Tuple[bool,
         logger.error(f"Error registering method: {e}")
         return False, f"Error registering method: {str(e)}", None
 
-def list_available_methods() -> List[Dict[str, Any]]:
+def list_available_methods(active_only: bool = False) -> List[Dict[str, Any]]:
     """
     List all available methods in the database.
     
+    Args:
+        active_only: If True, only return methods marked as active
+        
     Returns:
         List of method documents (without the bundle field)
     """
     try:
-        methods = list(methods_collection.find({}, {"bundle": 0}))
+        query = {"active": True} if active_only else {}
+        methods = list(methods_collection.find(query, {"bundle": 0}))
         for method in methods:
             method["_id"] = str(method["_id"])
         return methods

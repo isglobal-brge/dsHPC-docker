@@ -7,6 +7,16 @@ if [ -z "${METHODS_DIR}" ]; then
     METHODS_DIR="/methods"
 fi
 
+# First, mark all methods in the database as inactive
+echo "Marking all existing methods as inactive..."
+/opt/venvs/api_python/bin/python -c "
+import sys
+sys.path.append('/app')
+from slurm_api.services.method_service import mark_all_methods_inactive
+success, message = mark_all_methods_inactive()
+print(message)
+"
+
 # Check if the methods directory exists
 if [ ! -d "${METHODS_DIR}" ]; then
     echo "Methods directory ${METHODS_DIR} does not exist, creating it"
@@ -50,4 +60,13 @@ for command_file in ${METHODS_DIR}/commands/*.json; do
     /opt/venvs/api_python/bin/python /app/slurm/scripts/register_method.py "${METHODS_DIR}/scripts/${command_name}" "${command_file}"
 done
 
-echo "Methods loading complete" 
+echo "Methods loading complete"
+echo "Active methods summary:"
+/opt/venvs/api_python/bin/python -c "
+import sys
+sys.path.append('/app')
+from slurm_api.services.method_service import list_available_methods
+active_methods = list_available_methods(active_only=True)
+print(f'Total active methods: {len(active_methods)}')
+for method in active_methods:
+    print(f'- {method[\"name\"]} (hash: {method[\"function_hash\"][:8]}...)')" 

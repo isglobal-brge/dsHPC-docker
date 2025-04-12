@@ -110,10 +110,15 @@ async def submit_job(job: JobSubmission):
         )
 
 @router.get("/methods", response_model=List[Dict[str, Any]])
-async def get_methods():
-    """Get all available methods."""
+async def get_methods(active_only: bool = False):
+    """
+    Get all available methods.
+    
+    Args:
+        active_only: If True, only return methods that are active in the current session
+    """
     try:
-        methods = list_available_methods()
+        methods = list_available_methods(active_only=active_only)
         return methods
     except Exception as e:
         logger.error(f"Error retrieving methods: {e}")
