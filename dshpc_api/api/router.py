@@ -127,7 +127,7 @@ async def health_check():
     """Simple health check endpoint."""
     return {"status": "ok"}
 
-@router.post("/simulate-job", response_model=JobSimulationResponse)
+@router.post("/query-job", response_model=JobSimulationResponse)
 async def simulate_job_endpoint(job_data: JobSimulationRequest, api_key: str = Security(get_api_key)):
     """
     Simulate a job execution based on file_hash, method_name, and parameters.
@@ -159,7 +159,7 @@ async def simulate_job_endpoint(job_data: JobSimulationRequest, api_key: str = S
             detail=f"Error simulating job: {str(e)}"
         )
 
-@router.post("/simulate-jobs", response_model=MultiJobSimulationResponse)
+@router.post("/query-jobs", response_model=MultiJobSimulationResponse)
 async def simulate_multiple_jobs_endpoint(job_data: MultiJobSimulationRequest, api_key: str = Security(get_api_key)):
     """
     Simulate multiple job executions based on a list of job configurations.
