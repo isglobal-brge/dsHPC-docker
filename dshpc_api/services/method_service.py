@@ -45,18 +45,28 @@ async def get_available_methods() -> Tuple[List[Dict[str, Any]], int]:
                         # If data is a dict with a "methods" key, extract the methods
                         methods = data["methods"]
                     
-                    # Convert ObjectId to string if present
+                    # Ensure only active methods are included and convert ObjectId to string if present
+                    active_methods = []
+                    total_methods = len(methods)
                     for method in methods:
-                        if "_id" in method:
-                            method["_id"] = str(method["_id"])
+                        if method.get("is_active", True):  # Default to True if not specified
+                            if "_id" in method:
+                                method["_id"] = str(method["_id"])
+                            active_methods.append(method)
                     
-                    return methods, len(methods)
+                    print(f"API methods: Found {total_methods} total methods, {len(active_methods)} active methods")
+                    return active_methods, len(active_methods)
     except Exception as e:
         print(f"Error getting methods from Slurm API: {e}")
     
     # Fallback to direct database access if the API endpoint fails or doesn't exist
     try:
         db = await get_methods_db()
+        
+        # First count all methods to compare
+        total_count = await db.methods.count_documents({})
+        
+        # Then get only active methods
         cursor = db.methods.find({"is_active": True})
         
         methods = []
@@ -65,6 +75,7 @@ async def get_available_methods() -> Tuple[List[Dict[str, Any]], int]:
             method["_id"] = str(method["_id"])
             methods.append(method)
         
+        print(f"DB methods: Found {total_count} total methods, {len(methods)} active methods")
         return methods, len(methods)
     except Exception as e:
         print(f"Error getting methods from database: {e}")

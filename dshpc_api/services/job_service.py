@@ -163,6 +163,27 @@ async def get_job_status(job_id: str) -> Optional[Dict[str, Any]]:
         print(f"Error getting job status: {e}")
         return None
 
+async def trigger_job_check() -> Tuple[bool, str]:
+    """
+    Trigger a job status check on the slurm_api.
+    
+    Returns:
+        Tuple containing:
+        - success (bool): Whether the call was successful
+        - message (str): Success or error message
+    """
+    settings = get_settings()
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(f"{settings.SLURM_API_URL}/check-jobs") as response:
+                if response.status == 200:
+                    data = await response.json()
+                    return True, data.get("message", "Job check triggered successfully")
+                else:
+                    return False, f"Error triggering job check: HTTP {response.status}"
+    except Exception as e:
+        return False, f"Error triggering job check: {str(e)}"
+
 async def simulate_job(file_hash: str, method_name: str, parameters: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """
     Simulate a job by checking for existing jobs and conditionally submitting a new one.
@@ -179,6 +200,10 @@ async def simulate_job(file_hash: str, method_name: str, parameters: Optional[Di
         parameters = {}
     
     try:
+        # First trigger a job status check on slurm_api to ensure up-to-date status
+        success, message = await trigger_job_check()
+        print(f"Job check trigger: {success}, Message: {message}")
+        
         # First check if the method is functional
         is_functional, message = await check_method_functionality(method_name)
         if not is_functional:
