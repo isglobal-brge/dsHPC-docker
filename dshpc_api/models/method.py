@@ -20,7 +20,7 @@ class Method(BaseModel):
     parameters: Optional[List[MethodParameter]] = None
     version: Optional[str] = None
     created_at: Optional[datetime] = None
-    is_active: bool = True
+    active: bool = True
 
 class MethodsResponse(BaseModel):
     """Model for a list of methods response"""

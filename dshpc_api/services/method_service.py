@@ -35,7 +35,7 @@ async def get_available_methods() -> Tuple[List[Dict[str, Any]], int]:
     try:
         # Try to get methods through the Slurm API first
         async with aiohttp.ClientSession() as session:
-            async with session.get(f"{settings.SLURM_API_URL}/methods?active=true") as response:
+            async with session.get(f"{settings.SLURM_API_URL}/methods?active_only=true") as response:
                 if response.status == 200:
                     data = await response.json()
                     if isinstance(data, list):
@@ -49,7 +49,7 @@ async def get_available_methods() -> Tuple[List[Dict[str, Any]], int]:
                     active_methods = []
                     total_methods = len(methods)
                     for method in methods:
-                        if method.get("is_active", True):  # Default to True if not specified
+                        if method.get("active", False):  # Check for active field
                             if "_id" in method:
                                 method["_id"] = str(method["_id"])
                             active_methods.append(method)
@@ -67,7 +67,7 @@ async def get_available_methods() -> Tuple[List[Dict[str, Any]], int]:
         total_count = await db.methods.count_documents({})
         
         # Then get only active methods
-        cursor = db.methods.find({"is_active": True})
+        cursor = db.methods.find({"active": True})
         
         methods = []
         async for method in cursor:
@@ -118,7 +118,7 @@ async def check_method_functionality(method_name: str) -> Tuple[bool, str]:
         
         # Query for methods with the given name, sorted by created_at (descending)
         method = await db.methods.find_one(
-            {"name": method_name, "is_active": True},
+            {"name": method_name, "active": True},
             sort=[("created_at", -1)]
         )
         
