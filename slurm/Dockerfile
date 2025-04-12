@@ -64,7 +64,7 @@ RUN /opt/venvs/system_python/bin/pip install --upgrade pip
 
 # Install Python libraries from config if not empty
 RUN if [ $(jq '.libraries | length' /tmp/python.json) -gt 0 ]; then \
-        jq -r '.libraries | to_entries[] | "\(.key) \(.value)"' /tmp/python.json > /tmp/requirements.txt && \
+        jq -r '.libraries | to_entries[] | "\(.key)==\(.value)"' /tmp/python.json > /tmp/requirements.txt && \
         /opt/venvs/system_python/bin/pip install -r /tmp/requirements.txt; \
     else \
         echo "No Python libraries specified, skipping..."; \
