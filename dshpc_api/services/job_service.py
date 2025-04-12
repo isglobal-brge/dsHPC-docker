@@ -172,7 +172,7 @@ async def simulate_job(file_hash: str, method_name: str, parameters: Optional[Di
         parameters: The job parameters
         
     Returns:
-        A dictionary containing the job simulation results
+        A dictionary containing the job results
     """
     if parameters is None:
         parameters = {}
@@ -283,14 +283,14 @@ async def simulate_multiple_jobs(job_configs: List[Dict[str, Any]]) -> Dict[str,
     Returns:
         A dictionary containing the results for all jobs, with statistics
     """
-    # Process all job simulations in parallel
+    # Process all jobs in parallel
     result_tasks = []
     for job_config in job_configs:
         file_hash = job_config.get('file_hash')
         method_name = job_config.get('method_name')
         parameters = job_config.get('parameters', {})
         
-        # Schedule the job simulation task
+        # Schedule the job task
         task = asyncio.create_task(
             process_single_job(file_hash, method_name, parameters)
         )
@@ -343,7 +343,7 @@ async def process_single_job(file_hash: str, method_name: str, parameters: Optio
         parameters: The job parameters
         
     Returns:
-        A dictionary containing the job simulation results with added input parameters
+        A dictionary containing the job results with added input parameters
     """
     if parameters is None:
         parameters = {}
@@ -351,7 +351,7 @@ async def process_single_job(file_hash: str, method_name: str, parameters: Optio
     # Get the function hash before simulating to include in the result
     function_hash = await get_latest_method_hash(method_name)
     
-    # Run the job simulation
+    # Run the job
     result = await simulate_job(file_hash, method_name, parameters)
     
     # Add the input parameters to the result for identification

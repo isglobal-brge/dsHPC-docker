@@ -1,14 +1,14 @@
 from pydantic import BaseModel, Field
 from typing import Dict, Any, Optional, List
 
-class JobSimulationRequest(BaseModel):
-    """Model for job simulation request."""
+class JobRequest(BaseModel):
+    """Model for job request."""
     file_hash: str
     method_name: str
     parameters: Optional[Dict[str, Any]] = None
 
-class JobSimulationResponse(BaseModel):
-    """Model for job simulation response."""
+class JobResponse(BaseModel):
+    """Model for job response."""
     job_id: str
     new_status: str
     old_status: Optional[str] = None
@@ -21,8 +21,8 @@ class JobConfig(BaseModel):
     method_name: str
     parameters: Optional[Dict[str, Any]] = None
 
-class MultiJobSimulationRequest(BaseModel):
-    """Model for multiple job simulation request."""
+class MultiJobRequest(BaseModel):
+    """Model for multiple job request."""
     jobs: List[JobConfig]
 
 class MultiJobResult(BaseModel):
@@ -38,8 +38,8 @@ class MultiJobResult(BaseModel):
     function_hash: Optional[str] = None
     parameters: Dict[str, Any] = Field(default_factory=dict)
 
-class MultiJobSimulationResponse(BaseModel):
-    """Model for multiple job simulation response."""
+class MultiJobResponse(BaseModel):
+    """Model for multiple job response."""
     results: List[MultiJobResult]
     total_jobs: int
     successful_submissions: int

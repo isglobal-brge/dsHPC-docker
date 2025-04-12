@@ -1,23 +1,23 @@
-# Multi-Job Simulation Implementation
+# Multi-job Implementation
 
 ## Summary
 
-We've enhanced the dsHPC API with a powerful new feature for batch processing of jobs. The multi-job simulation API allows users to submit multiple job configurations in a single request, process them in parallel, and receive consolidated results with statistics.
+We've enhanced the dsHPC API with a powerful new feature for batch processing of jobs. The multi-job API allows users to submit multiple job configurations in a single request, process them in parallel, and receive consolidated results with statistics.
 
 ## Key Components Implemented
 
 1. **New Models**:
    - `JobConfig`: For individual job configurations
-   - `MultiJobSimulationRequest`: For batch job requests
+   - `MultiJobRequest`: For batch job requests
    - `MultiJobResult`: For detailed job results
-   - `MultiJobSimulationResponse`: For consolidated batch response
+   - `MultiJobResponse`: For consolidated batch response
 
 2. **New Services**:
    - `simulate_multiple_jobs`: To process job configurations in parallel
-   - `process_single_job`: A wrapper for single job simulation that adds input parameters to results
+   - `process_single_job`: A wrapper for single job that adds input parameters to results
 
 3. **New API Endpoint**:
-   - `POST /simulate-jobs`: For batch processing of job simulations
+   - `POST /simulate-jobs`: For batch processing of jobs
 
 4. **Testing**:
    - Created test scripts for uploading files and testing the multi-job API

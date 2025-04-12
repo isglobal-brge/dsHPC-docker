@@ -1,10 +1,10 @@
-# Multi-Job Simulation API
+# Multi-job API
 
-This document describes the multi-job simulation API in the dsHPC system, which allows batch processing of multiple job configurations with a single request.
+This document describes the multi-job API in the dsHPC system, which allows batch processing of multiple job configurations with a single request.
 
 ## Overview
 
-The multi-job simulation API builds on the single job simulation endpoint by allowing you to:
+The multi-job API builds on the single job endpoint by allowing you to:
 
 1. Specify multiple job configurations in a single request
 2. Process all jobs in parallel
@@ -190,5 +190,5 @@ curl -X POST "http://localhost:8001/simulate-jobs" \
 
 - The parameters field is optional and can be omitted if the method doesn't require parameters.
 - Job configurations are processed in parallel for better performance.
-- Each job follows the same logic as the single job simulation endpoint, but all jobs are processed in a single request.
+- Each job follows the same logic as the single job endpoint, but all jobs are processed in a single request.
 - If a method name doesn't exist, the system will still process other valid job configurations. 

@@ -8,8 +8,8 @@ from dshpc_api.services.db_service import upload_file, check_hashes, get_files
 from dshpc_api.services.job_service import simulate_job, simulate_multiple_jobs
 from dshpc_api.models.file import FileUpload, FileResponse, HashCheckRequest, HashCheckResponse
 from dshpc_api.models.job import (
-    JobSimulationRequest, JobSimulationResponse,
-    MultiJobSimulationRequest, MultiJobSimulationResponse, MultiJobResult
+    JobRequest, JobResponse,
+    MultiJobRequest, MultiJobResponse, MultiJobResult
 )
 
 router = APIRouter()
@@ -127,8 +127,8 @@ async def health_check():
     """Simple health check endpoint."""
     return {"status": "ok"}
 
-@router.post("/query-job", response_model=JobSimulationResponse)
-async def simulate_job_endpoint(job_data: JobSimulationRequest, api_key: str = Security(get_api_key)):
+@router.post("/query-job", response_model=JobResponse)
+async def simulate_job_endpoint(job_data: JobRequest, api_key: str = Security(get_api_key)):
     """
     Simulate a job execution based on file_hash, method_name, and parameters.
     
@@ -159,8 +159,8 @@ async def simulate_job_endpoint(job_data: JobSimulationRequest, api_key: str = S
             detail=f"Error simulating job: {str(e)}"
         )
 
-@router.post("/query-jobs", response_model=MultiJobSimulationResponse)
-async def simulate_multiple_jobs_endpoint(job_data: MultiJobSimulationRequest, api_key: str = Security(get_api_key)):
+@router.post("/query-jobs", response_model=MultiJobResponse)
+async def simulate_multiple_jobs_endpoint(job_data: MultiJobRequest, api_key: str = Security(get_api_key)):
     """
     Simulate multiple job executions based on a list of job configurations.
     
@@ -183,7 +183,7 @@ async def simulate_multiple_jobs_endpoint(job_data: MultiJobSimulationRequest, a
         result = await simulate_multiple_jobs(job_configs)
         
         # Prepare the response
-        response = MultiJobSimulationResponse(
+        response = MultiJobResponse(
             results=[MultiJobResult(**r) for r in result.get('results', [])],
             total_jobs=result.get('total_jobs', 0),
             successful_submissions=result.get('successful_submissions', 0),
