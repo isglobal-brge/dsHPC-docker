@@ -21,7 +21,7 @@ async def get_latest_method_hash(method_name: str) -> Optional[str]:
         method_name: The name of the method
         
     Returns:
-        The hash of the most recent version of the method, or None if not found
+        The hash of the most recent version of the method, or None if not found or not active
     """
     settings = get_settings()
     try:
@@ -33,19 +33,26 @@ async def get_latest_method_hash(method_name: str) -> Optional[str]:
                 if response.status == 200:
                     data = await response.json()
                     if data and "function_hash" in data:
-                        return data["function_hash"]
+                        # Only return the hash if the method is active
+                        if data.get("active", False):
+                            return data["function_hash"]
+                        else:
+                            print(f"Method {method_name} exists but is not active")
+                            return None
         
         # Fallback to direct database access if the API endpoint fails or doesn't exist
         client = await get_methods_db()
         
         # Query for methods with the given name, sorted by created_at (descending)
+        # Explicitly adding active:true to ensure we only get active methods
         method = await client.methods.find_one(
-            {"name": method_name},
+            {"name": method_name, "active": True},
             sort=[("created_at", -1)]
         )
         
         if method:
             return method.get("function_hash")
+        print(f"No active method found with name: {method_name}")
         return None
     except Exception as e:
         print(f"Error getting latest method hash: {e}")
@@ -219,7 +226,7 @@ async def simulate_job(file_hash: str, method_name: str, parameters: Optional[Di
             return {
                 "job_id": None,
                 "new_status": None,
-                "message": f"Method '{method_name}' not found"
+                "message": f"Method '{method_name}' not found or is not active"
             }
         
         # Check if the file exists

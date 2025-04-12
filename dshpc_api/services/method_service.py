@@ -103,7 +103,10 @@ async def check_method_functionality(method_name: str) -> Tuple[bool, str]:
                 if response.status == 200:
                     data = await response.json()
                     if data and "function_hash" in data:
-                        # Method exists and has a hash, consider it functional
+                        # Check if the method is active
+                        if not data.get("active", False):
+                            return False, f"Method '{method_name}' exists but is not active"
+                        # Method exists, has a hash and is active, consider it functional
                         return True, f"Method '{method_name}' is available and functional"
                 else:
                     # Method doesn't exist or is not accessible via API
@@ -125,6 +128,13 @@ async def check_method_functionality(method_name: str) -> Tuple[bool, str]:
         if method:
             return True, f"Method '{method_name}' is available in the database"
         else:
+            # Check if the method exists but is inactive
+            inactive_method = await db.methods.find_one(
+                {"name": method_name, "active": False},
+                sort=[("created_at", -1)]
+            )
+            if inactive_method:
+                return False, f"Method '{method_name}' exists but is not active"
             return False, f"Method '{method_name}' not found"
     except Exception as e:
         return False, f"Error checking method in database: {str(e)}" 
