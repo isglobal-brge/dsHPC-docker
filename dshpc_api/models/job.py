@@ -1,5 +1,5 @@
 from pydantic import BaseModel
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List, Union, Literal
 
 class JobRequest(BaseModel):
     """Model for job request."""
@@ -13,4 +13,7 @@ class JobResponse(BaseModel):
     new_status: str
     old_status: Optional[str] = None
     output: Optional[str] = None
-    message: Optional[str] = None 
+    message: Optional[str] = None
+    status_detail: Optional[str] = None
+    is_resubmitted: Optional[bool] = False
+    error_details: Optional[str] = None 

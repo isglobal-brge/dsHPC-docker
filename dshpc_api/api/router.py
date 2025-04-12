@@ -135,6 +135,12 @@ async def simulate_job_endpoint(job_data: JobRequest, api_key: str = Security(ge
     1. Check for the most recent hash of the specified method
     2. Check if a job with the same parameters already exists
     3. Based on the job status, either return results, submit a new job, or return error status
+    
+    The response includes detailed information about the job status, including:
+    - Human-readable status descriptions
+    - Whether the job was resubmitted
+    - Detailed error messages for failed jobs
+    - Original status for resubmitted jobs
     """
     try:
         result = await simulate_job(
@@ -144,20 +150,32 @@ async def simulate_job_endpoint(job_data: JobRequest, api_key: str = Security(ge
         )
         
         # Handle cases where no job_id was returned and it's not an internal error
-        if not result.get("job_id") and not result.get("message").startswith("Error"):
+        if not result.get("job_id") and not result.get("message", "").startswith("Error"):
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
-                detail=result.get("message", "Method or file not found")
+                detail={
+                    "message": result.get("message", "Method or file not found"),
+                    "status_detail": result.get("status_detail"),
+                    "error_details": result.get("error_details")
+                }
             )
         
         # Check for non-retriable job failures
         message = result.get("message", "")
         if "(non-retriable)" in message:
             job_status = result.get("new_status", "")
+            error_details = result.get("error_details", "No additional error details")
+            status_detail = result.get("status_detail", "Job failed with non-retriable status")
+            
             # Return 422 Unprocessable Entity for non-retriable job failures
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail=f"Job execution failed with non-retriable status: {job_status}. Message: {message}"
+                detail={
+                    "message": f"Job execution failed with non-retriable status: {job_status}",
+                    "status_detail": status_detail,
+                    "error_details": error_details,
+                    "job_id": result.get("job_id")
+                }
             )
             
         return result

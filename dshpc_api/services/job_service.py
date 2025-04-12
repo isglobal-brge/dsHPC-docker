@@ -18,6 +18,26 @@ NON_RETRIABLE_FAILED_STATUSES = ["F", "DL"]  # States that should not be retried
 # Combined status list for all failed states
 FAILED_STATUSES = RETRIABLE_FAILED_STATUSES + NON_RETRIABLE_FAILED_STATUSES
 
+# Dictionary mapping status codes to human-readable descriptions
+STATUS_DESCRIPTIONS = {
+    "SD": "Job has been submitted for the first time",
+    "PD": "Job is pending in queue awaiting resources",
+    "R": "Job is currently running",
+    "CD": "Job has completed successfully",
+    "F": "Job has failed with non-retriable error",
+    "CA": "Job was cancelled by user or system",
+    "TO": "Job exceeded its time limit",
+    "NF": "Job failed due to node failure",
+    "OOM": "Job failed due to out of memory error",
+    "S": "Job has been suspended",
+    "ST": "Job has been stopped",
+    "BF": "Job failed during node boot",
+    "DL": "Job terminated due to deadline",
+    "CG": "Job is in the process of completing",
+    "CF": "Job is in the process of configuring",
+    "PR": "Job was preempted by another job"
+}
+
 async def get_latest_method_hash(method_name: str) -> Optional[str]:
     """
     Get the most recent hash for a method with the given name.
@@ -206,7 +226,7 @@ async def simulate_job(file_hash: str, method_name: str, parameters: Optional[Di
         parameters: The job parameters
         
     Returns:
-        A dictionary containing the job results
+        A dictionary containing the job results with enhanced status information
     """
     if parameters is None:
         parameters = {}
@@ -222,7 +242,9 @@ async def simulate_job(file_hash: str, method_name: str, parameters: Optional[Di
             return {
                 "job_id": None,
                 "new_status": None,
-                "message": f"Method check failed: {message}"
+                "message": f"Method check failed: {message}",
+                "status_detail": "Method validation failed",
+                "error_details": message
             }
         
         # Get the latest hash for the method
@@ -231,7 +253,9 @@ async def simulate_job(file_hash: str, method_name: str, parameters: Optional[Di
             return {
                 "job_id": None,
                 "new_status": None,
-                "message": f"Method '{method_name}' not found or is not active"
+                "message": f"Method '{method_name}' not found or is not active",
+                "status_detail": "Method not available",
+                "error_details": f"Could not find an active method with name '{method_name}'"
             }
         
         # Check if the file exists
@@ -241,7 +265,9 @@ async def simulate_job(file_hash: str, method_name: str, parameters: Optional[Di
             return {
                 "job_id": None,
                 "new_status": None,
-                "message": f"File with hash '{file_hash}' not found"
+                "message": f"File with hash '{file_hash}' not found",
+                "status_detail": "Input file not found",
+                "error_details": f"No file exists in the database with hash '{file_hash}'"
             }
         
         # Check if there's an existing job with these parameters
@@ -255,13 +281,19 @@ async def simulate_job(file_hash: str, method_name: str, parameters: Optional[Di
                 return {
                     "job_id": None,
                     "new_status": None,
-                    "message": message
+                    "message": message,
+                    "status_detail": "Job submission failed",
+                    "error_details": message
                 }
             
+            # Use "SD" as status code for newly submitted jobs
+            status_code = job_data.get("status", "SD")
             return {
                 "job_id": job_data.get("job_id"),
-                "new_status": job_data.get("status"),
-                "message": "New job submitted"
+                "new_status": status_code,
+                "message": "New job submitted",
+                "status_detail": STATUS_DESCRIPTIONS.get(status_code, "Job has been submitted for the first time"),
+                "is_resubmitted": False
             }
         
         # Check the status of the existing job
@@ -274,7 +306,9 @@ async def simulate_job(file_hash: str, method_name: str, parameters: Optional[Di
                 "job_id": job_id,
                 "new_status": job_status,
                 "output": existing_job.get("output"),
-                "message": "Completed job found"
+                "message": "Completed job found",
+                "status_detail": STATUS_DESCRIPTIONS.get(job_status, "Job completed successfully"),
+                "is_resubmitted": False
             }
         
         elif job_status in IN_PROGRESS_STATUSES:
@@ -282,7 +316,9 @@ async def simulate_job(file_hash: str, method_name: str, parameters: Optional[Di
             return {
                 "job_id": job_id,
                 "new_status": job_status,
-                "message": "Job in progress"
+                "message": "Job in progress",
+                "status_detail": STATUS_DESCRIPTIONS.get(job_status, "Job is currently being processed"),
+                "is_resubmitted": False
             }
         
         elif job_status in RETRIABLE_FAILED_STATUSES:
@@ -294,22 +330,33 @@ async def simulate_job(file_hash: str, method_name: str, parameters: Optional[Di
                     "job_id": job_id,
                     "new_status": None,
                     "old_status": job_status,
-                    "message": message
+                    "message": message,
+                    "status_detail": "Job resubmission failed",
+                    "error_details": message,
+                    "is_resubmitted": False
                 }
             
+            new_status = job_data.get("status")
             return {
                 "job_id": job_data.get("job_id"),
-                "new_status": job_data.get("status"),
+                "new_status": new_status,
                 "old_status": job_status,
-                "message": f"New job submitted after previous retriable failure (status: {job_status})"
+                "message": f"New job submitted after previous retriable failure (status: {job_status})",
+                "status_detail": STATUS_DESCRIPTIONS.get(new_status, "Job has been resubmitted after a retriable failure"),
+                "error_details": f"Previous job failed with status: {job_status} - {STATUS_DESCRIPTIONS.get(job_status, '')}",
+                "is_resubmitted": True
             }
         
         elif job_status in NON_RETRIABLE_FAILED_STATUSES:
             # Job failed in a way that shouldn't be retried
+            error_message = existing_job.get("error", "No error details available")
             return {
                 "job_id": job_id,
                 "new_status": job_status,
-                "message": f"Job previously failed with status: {job_status} (non-retriable)"
+                "message": f"Job previously failed with status: {job_status} (non-retriable)",
+                "status_detail": STATUS_DESCRIPTIONS.get(job_status, "Job failed permanently"),
+                "error_details": error_message,
+                "is_resubmitted": False
             }
         
         else:
@@ -318,12 +365,16 @@ async def simulate_job(file_hash: str, method_name: str, parameters: Optional[Di
             return {
                 "job_id": job_id,
                 "new_status": job_status,
-                "message": f"Unknown job status: {job_status}"
+                "message": f"Unknown job status: {job_status}",
+                "status_detail": "Job has an unrecognized status",
+                "is_resubmitted": False
             }
             
     except Exception as e:
         return {
             "job_id": None,
             "new_status": None,
-            "message": f"Error simulating job: {str(e)}"
+            "message": f"Error simulating job: {str(e)}",
+            "status_detail": "Internal server error",
+            "error_details": str(e)
         } 
