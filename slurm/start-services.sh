@@ -19,7 +19,7 @@ echo -e "${BLUE}│${NC} ${BLUE} \__,_//____//_/ /_//_/     \____/    ${NC} ${BL
 echo -e "${BLUE}│${NC} ${BLUE}                                      ${NC} ${BLUE}│${NC}"
 echo -e "${BLUE}└────────────────────────────────────────┘${NC}"
 echo -e ""
-echo -e "${BOLD}Welcome to High-Performance Computing for ${YELLOW}DataSHIELD${NC}${BOLD}!${NC}"
+echo -e "${BOLD}Welcome to ${YELLOW}High-Performance Computing for DataSHIELD${NC}${BOLD}!${NC}"
 echo -e ""
 echo -e "${BOLD}${CYAN}>> Starting services...${NC}"
 
@@ -42,9 +42,21 @@ echo -e "${GREEN}>> Slurm services started!${NC}"
 # Wait for Slurm services to fully initialize
 sleep 5
 
-# Ensure the node is set to IDLE state and ready for jobs
-scontrol update NodeName=localhost State=IDLE >/dev/null 2>&1
-echo -e "${GREEN}>> Node set to IDLE state!${NC}"
+# Check if the node exists and conditionally set to IDLE state only if needed
+if scontrol show node=localhost &>/dev/null; then
+    # Get current node state
+    NODE_STATE=$(scontrol show node=localhost | grep "State=" | awk -F "=" '{print $2}' | awk '{print $1}')
+    
+    # Check if node needs to be set to IDLE (not already IDLE and not running jobs)
+    if [[ "$NODE_STATE" =~ ^(DOWN|DRAIN|DRAINING|FAIL|FAILING|MAINT|UNKNOWN).*$ ]]; then
+        echo -e "${GREEN}>> Node localhost found in $NODE_STATE state! Setting to IDLE...${NC}"
+        scontrol update NodeName=localhost State=IDLE >/dev/null 2>&1
+    else
+        echo -e "${GREEN}>> Node localhost already in $NODE_STATE state!${NC}"
+    fi
+else
+    echo -e "${ORANGE}>> Node localhost not found in Slurm configuration! Skipping state check...${NC}"
+fi
 
 # Load methods from the methods directory
 echo -e ""
