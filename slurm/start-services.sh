@@ -14,6 +14,14 @@ service munge start
 service slurmctld start
 service slurmd start
 
+# Print ASCII art banner
+echo "       __       __  __ ____   ______"
+echo "  ____/ /_____ / / / // __ \ / ____/"
+echo " / __  // ___// /_/ // /_/ // /     "
+echo "/ /_/ /(__  )/ __  // ____// /___   "
+echo "\__,_//____//_/ /_//_/     \____/   "
+echo "                                    "
+
 # Wait for Slurm services to fully initialize
 sleep 5
 
