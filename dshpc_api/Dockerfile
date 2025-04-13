@@ -29,7 +29,7 @@ RUN echo '#!/bin/bash' > /app/start.sh && \
     echo 'echo -e "${GREEN}>> API service ready!${NC}"' >> /app/start.sh && \
     echo 'echo -e "${GREEN}>> API available on port: ${GREEN}${BOLD}${NC}${BOLD}${YELLOW}${PORT}${NC}"' >> /app/start.sh && \
     echo 'echo -e ""' >> /app/start.sh && \
-    echo 'echo -e "${BOLD}All systems are ${GREEN}ready${NC}${BOLD}! Enjoy using dsHPC!${NC}"' >> /app/start.sh && \
+    echo 'echo -e "${BOLD}All systems are ${GREEN}ready${NC}${BOLD}! Enjoy using ${YELLOW}dsHPC${NC}${BOLD}!"' >> /app/start.sh && \
     echo 'wait $PID' >> /app/start.sh && \
     chmod +x /app/start.sh
 
