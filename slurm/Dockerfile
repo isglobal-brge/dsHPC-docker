@@ -120,7 +120,6 @@ RUN mkdir -p /var/run/munge \
     && chmod 777 /methods
 
 # Copy configuration files and API
-COPY slurm/slurm.conf /etc/slurm/slurm.conf
 COPY slurm_api /app/slurm_api
 COPY slurm/start-services.sh /start-services.sh
 COPY slurm/load-methods.sh /load-methods.sh

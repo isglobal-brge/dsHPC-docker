@@ -49,6 +49,7 @@ services:
     volumes:
       - job_workspace:/workspace
       - ./methods:/methods
+      - ./config/slurm.conf:/etc/slurm/slurm.conf
     networks:
       - dshpc-internal-network
     healthcheck:
