@@ -410,10 +410,10 @@ def mark_all_methods_inactive() -> Tuple[bool, str]:
         )
         
         logger.info(f"Marked {result.modified_count} methods as inactive")
-        return True, f"Marked {result.modified_count} methods as inactive"
+        return True, f"    > Marked {result.modified_count} methods as inactive!"
     except Exception as e:
         logger.error(f"Error marking methods as inactive: {e}")
-        return False, f"Error marking methods as inactive: {str(e)}"
+        return False, f"    > Error marking methods as inactive: {str(e)}!"
 
 def register_method(method_data: Dict[str, Any], method_dir: str) -> Tuple[bool, str, Optional[str]]:
     """
@@ -459,8 +459,15 @@ def register_method(method_data: Dict[str, Any], method_dir: str) -> Tuple[bool,
         runtime_json = json.dumps(runtime_info, sort_keys=True)
         hasher.update(runtime_json.encode())
         
-        # Log the runtime information used in hash calculation
-        logger.info(f"Adding runtime info to method hash: {runtime_json}")
+        # Log only summary of runtime information (not the full JSON)
+        python_version = runtime_info.get('python_version', 'unknown').split()[0]  # Just first part
+        r_version = runtime_info.get('r_version', 'unknown').split()[2] if 'r_version' in runtime_info else 'unknown'
+        packages_count = {
+            'python': len(runtime_info.get('python_packages', {})),
+            'r': len(runtime_info.get('r_packages', {})),
+            'apt': len(runtime_info.get('apt_packages', {}))
+        }
+        logger.info(f"\033[0;35mAdding runtime info to method hash\033[0m (Python {python_version}, R {r_version}, {packages_count['python']} Python packages, {packages_count['r']} R packages)")
         
         function_hash = hasher.hexdigest()
         
@@ -509,7 +516,7 @@ def register_method(method_data: Dict[str, Any], method_dir: str) -> Tuple[bool,
         
         # Insert or replace method document
         if existing_method:
-            logger.info(f"Method with hash {function_hash} already exists")
+            logger.info(f"\033[0;33mMethod with hash {function_hash} already exists\033[0m")
             methods_collection.replace_one({"function_hash": function_hash}, method_doc)
             return True, f"Method with hash {function_hash} updated", function_hash
         else:
