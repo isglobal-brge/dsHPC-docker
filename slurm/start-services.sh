@@ -17,6 +17,12 @@ service slurmd start
 # Load methods from the methods directory
 echo "Loading methods..."
 bash /load-methods.sh
+LOAD_METHODS_EXIT_CODE=$?
+
+if [ $LOAD_METHODS_EXIT_CODE -ne 0 ]; then
+    echo "ERROR: Method loading failed with exit code $LOAD_METHODS_EXIT_CODE. Aborting system startup."
+    exit 1
+fi
 
 # Start FastAPI application using API_PYTHON environment
 cd /app

@@ -9,10 +9,8 @@ services:
     ports:
       - "${DSHPC_API_EXTERNAL_PORT:-8001}:8001"
     depends_on:
-      - dshpc-slurm
-      - dshpc-jobs
-      - dshpc-files
-      - dshpc-methods
+      dshpc-slurm:
+        condition: service_healthy
     environment:
       - SLURM_API_URL=http://dshpc-slurm:8000
       - MONGO_JOBS_URI=mongodb://dshpc-jobs:27017/
@@ -53,6 +51,13 @@ services:
       - ./methods:/methods
     networks:
       - dshpc-internal-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    restart: "no"
 
   dshpc-jobs:
     container_name: dshpc-jobs
