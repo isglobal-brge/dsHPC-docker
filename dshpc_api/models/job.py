@@ -10,7 +10,7 @@ class JobRequest(BaseModel):
 class JobResponse(BaseModel):
     """Model for job response."""
     job_id: str
-    new_status: str
+    status: str
     old_status: Optional[str] = None
     output: Optional[str] = None
     message: Optional[str] = None

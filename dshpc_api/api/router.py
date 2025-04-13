@@ -163,7 +163,7 @@ async def simulate_job_endpoint(job_data: JobRequest, api_key: str = Security(ge
         # Check for non-retriable job failures
         message = result.get("message", "")
         if "(non-retriable)" in message:
-            job_status = result.get("new_status", "")
+            job_status = result.get("status", "")
             error_details = result.get("error_details", "No additional error details")
             status_detail = result.get("status_detail", "Job failed with non-retriable status")
             
