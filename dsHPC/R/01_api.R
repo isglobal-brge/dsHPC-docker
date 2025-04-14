@@ -8,7 +8,6 @@
 #' @param timeout Timeout in seconds for API requests (default 30)
 #'
 #' @return A list with API configuration
-#' @export
 #'
 #' @examples
 #' api_config <- create_api_config("https://api.example.com", 8080, "your-api-key")
@@ -47,7 +46,6 @@ create_api_config <- function(base_url, port, api_key, auth_header = "Authorizat
 #' @param body Request body (for POST)
 #'
 #' @return API response parsed from JSON
-#' @export
 #'
 #' @examples
 #' config <- create_api_config("https://api.example.com", 8080, "your-api-key")
@@ -148,7 +146,6 @@ api_request <- function(config, endpoint, method = "GET", params = list(), body 
 #' @param params Query parameters
 #'
 #' @return API response
-#' @export
 api_get <- function(config, endpoint, params = list()) {
   api_request(config, endpoint, "GET", params)
 }
@@ -161,7 +158,6 @@ api_get <- function(config, endpoint, params = list()) {
 #' @param params Query parameters
 #'
 #' @return API response
-#' @export
 api_post <- function(config, endpoint, body, params = list()) {
   api_request(config, endpoint, "POST", params, body)
 } 
