@@ -2,7 +2,7 @@ var dsHPC = {
   settings: {
     title: "High-Performance Computing API Resources",
     description:
-      "Provides access to High-Performance Computing (HPC) API endpoints.",
+      "Provides access to DataSHIELD's High-Performance Computing API endpoints.",
     web: "https://github.com/isglobal-brge/dsHPC",
     categories: [
       {

@@ -3,7 +3,6 @@
 #' @param config API configuration created by create_api_config
 #'
 #' @return A named list of methods and their parameters
-#' @export
 #'
 #' @examples
 #' config <- create_api_config("http://localhost", 9000, "please_change_me")
@@ -37,7 +36,6 @@ get_methods <- function(config) {
 #' @param method_spec The method specification as returned by get_methods()
 #'
 #' @return TRUE if validation passes, otherwise throws an error with details
-#' @export
 #'
 #' @examples
 #' config <- create_api_config("http://localhost", 9000, "please_change_me")

@@ -7,7 +7,6 @@
 #' @param validate_parameters Whether to validate parameters against method specification (default: TRUE)
 #'
 #' @return A list with job information including status, output, and error details
-#' @export
 #'
 #' @examples
 #' \dontrun{
@@ -57,7 +56,6 @@ query_job <- function(config, file_path, method_name, parameters = list(), valid
 #' @param parameters Parameters used for the method
 #'
 #' @return The status of the job as a string
-#' @export
 #'
 #' @examples
 #' \dontrun{
@@ -80,7 +78,6 @@ get_job_status <- function(config, file_path, method_name, parameters = list()) 
 #' @param parameters Parameters used for the method
 #'
 #' @return TRUE if the job completed successfully, FALSE otherwise
-#' @export
 #'
 #' @examples
 #' \dontrun{
@@ -106,7 +103,6 @@ job_succeeded <- function(config, file_path, method_name, parameters = list()) {
 #' @param parse_json Whether to parse the output as JSON (default: TRUE)
 #'
 #' @return The job output, parsed as JSON if requested
-#' @export
 #'
 #' @examples
 #' \dontrun{
@@ -151,7 +147,6 @@ get_job_output <- function(config, file_path, method_name, parameters = list(), 
 #' @param validate_parameters Whether to validate parameters against method specification (default: TRUE)
 #'
 #' @return The job output if completed within timeout, otherwise throws an error
-#' @export
 #'
 #' @examples
 #' \dontrun{

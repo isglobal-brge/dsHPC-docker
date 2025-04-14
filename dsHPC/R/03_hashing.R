@@ -3,7 +3,6 @@
 #' @param file_path Path to the file to hash
 #'
 #' @return A character string with the file hash using SHA-256 algorithm
-#' @export
 #'
 #' @examples
 #' \dontrun{
@@ -33,7 +32,6 @@ hash_file <- function(file_path) {
 #' @param hashes Character vector of file hashes to check
 #'
 #' @return A list with two components: existing_hashes and missing_hashes
-#' @export
 #'
 #' @examples
 #' \dontrun{
@@ -67,7 +65,6 @@ check_existing_hashes <- function(config, hashes) {
 #' @param hash A single hash string to check
 #'
 #' @return Boolean indicating if the hash exists
-#' @export
 #'
 #' @examples
 #' \dontrun{

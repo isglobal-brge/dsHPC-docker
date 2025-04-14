@@ -13,4 +13,7 @@ Imports:
     httr,
     jsonlite,
     digest,
-    base64enc
+    base64enc,
+    R6,
+    methods,
+    resourcer

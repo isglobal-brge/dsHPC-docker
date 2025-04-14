@@ -6,7 +6,6 @@
 #' @param metadata Optional metadata for the file (named list)
 #'
 #' @return TRUE if the file was successfully uploaded or already exists
-#' @export
 #'
 #' @examples
 #' \dontrun{
