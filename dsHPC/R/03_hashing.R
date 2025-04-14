@@ -47,38 +47,42 @@ check_existing_hashes <- function(config, hashes) {
     stop("Hashes must be a character vector")
   }
   
+  # Ensure hashes is a list for JSON serialization
+  hashes_list <- as.list(hashes)
+  
   # Create request body
   body <- list(
-    hashes = hashes
+    hashes = hashes_list
   )
   
   # Make API call
   response <- api_post(config, "/files/check-hashes", body = body)
   
   return(response)
-} 
+}
 
-#' Check if a hash already exists in the database
+#' Check if a specific hash exists in the database
 #'
 #' @param config API configuration created by create_api_config
-#' @param hash File hash to check
+#' @param hash A single hash string to check
 #'
-#' @return Boolean indicating if the hash already exists in the database
+#' @return Boolean indicating if the hash exists
 #' @export
 #'
 #' @examples
 #' \dontrun{
 #' config <- create_api_config("http://localhost", 9000, "please_change_me")
 #' hash <- hash_file("data.csv")
-#' exists <- hash_exists(config, hash)
-#' if (exists) {
-#'   print("Hash already exists")
-#' } else {
-#'   print("Hash not found in database")
+#' if (hash_exists(config, hash)) {
+#'   print("Hash exists in database")
 #' }
 #' }
 hash_exists <- function(config, hash) {
-  # Check if hash exists
+  if (!is.character(hash) || length(hash) != 1) {
+    stop("Hash must be a single character string")
+  }
+  
+  # Call check_existing_hashes with a list containing one hash
   result <- check_existing_hashes(config, c(hash))
   
   # Return TRUE if hash is in existing_hashes
