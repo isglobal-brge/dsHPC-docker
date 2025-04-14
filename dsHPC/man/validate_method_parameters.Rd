@@ -22,6 +22,6 @@ Validate method parameters against method specification
 \examples{
 config <- create_api_config("http://localhost", 9000, "please_change_me")
 methods <- get_methods(config)
-params <- list(param1 = "value1", param2 = "value2")
-validate_method_parameters("example_method", params, methods)
+params <- list(threshold = 50)
+validate_method_parameters("count_black_pixels", params, methods)
 }
