@@ -1,77 +1,59 @@
-#' Upload a file only if it doesn't already exist
+#' Upload content to the HPC resource
 #'
 #' @param config API configuration created by create_api_config
-#' @param file_path Path to the file to upload
-#' @param content_type MIME type of the file (e.g. "image/jpeg", "text/csv")
-#' @param metadata Optional metadata for the file (named list)
+#' @param content Content to upload (raw vector, character, or other object)
+#' @param filename Name to use for the uploaded content
 #'
-#' @return TRUE if the file was successfully uploaded or already exists
+#' @return TRUE if the content was successfully uploaded or already exists
 #'
 #' @examples
 #' \dontrun{
 #' config <- create_api_config("http://localhost", 9000, "please_change_me")
-#' upload_file(config, "data.csv", content_type = "text/csv")
+#' content <- "Hello, World!"
+#' upload_file(config, content, "hello.txt")
 #' }
-upload_file <- function(config, file_path, content_type = NULL, metadata = list()) {
+upload_file <- function(config, content, filename) {
   if (!requireNamespace("base64enc", quietly = TRUE)) {
     stop("Package 'base64enc' is required. Please install it.")
   }
   
-  if (!file.exists(file_path)) {
-    stop(paste0("File not found: ", file_path))
+  # Convert content to raw bytes if it's not already
+  if (!is.raw(content)) {
+    if (is.character(content)) {
+      content <- charToRaw(paste(content, collapse = "\n"))
+    } else {
+      content <- serialize(content, NULL)
+    }
   }
   
-  # Compute file hash
-  file_hash <- hash_file(file_path)
+  # Compute content hash using the dedicated function
+  file_hash <- hash_content(content)
   
-  # Check if file already exists
+  # Check if content already exists
   if (hash_exists(config, file_hash)) {
-    message("File already exists in the database.")
+    message("Content already exists in the database.")
     return(TRUE)
   }
   
-  # Determine filename from file_path
-  filename <- basename(file_path)
-  
-  # Guess content type if not provided
-  if (is.null(content_type)) {
-    file_ext <- tolower(tools::file_ext(filename))
-    content_type <- switch(file_ext,
-      "jpg" = , "jpeg" = "image/jpeg",
-      "png" = "image/png",
-      "gif" = "image/gif",
-      "pdf" = "application/pdf",
-      "csv" = "text/csv",
-      "json" = "application/json",
-      "zip" = "application/zip",
-      "txt" = "text/plain",
-      "application/octet-stream"  # Default content type
-    )
-  }
-  
-  # Read file content as binary
-  file_content <- readBin(file_path, "raw", file.info(file_path)$size)
-  
   # Base64 encode the content
-  content_base64 <- base64enc::base64encode(file_content)
+  content_base64 <- base64enc::base64encode(content)
   
   # Create request body
   body <- list(
     file_hash = file_hash,
     content = content_base64,
     filename = filename,
-    content_type = content_type,
-    metadata = metadata
+    content_type = "application/octet-stream"
   )
   
-  # Upload the file
+  # Upload the content
   tryCatch({
     response <- api_post(config, "/files/upload", body = body)
     
     # If we get here, upload was successful
-    message("File uploaded successfully.")
+    message("Content uploaded successfully.")
     return(TRUE)
   }, error = function(e) {
-    stop(paste0("Error uploading file: ", e$message))
+    stop(paste0("Error uploading content: ", e$message))
   })
 } 

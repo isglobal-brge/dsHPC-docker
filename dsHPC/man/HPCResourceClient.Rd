@@ -107,19 +107,17 @@ A list of available methods
 \if{html}{\out{<a id="method-HPCResourceClient-uploadFile"></a>}}
 \if{latex}{\out{\hypertarget{method-HPCResourceClient-uploadFile}{}}}
 \subsection{Method \code{uploadFile()}}{
-Upload a file to the API
+Upload content to the API
 \subsection{Usage}{
-\if{html}{\out{<div class="r">}}\preformatted{HPCResourceClient$uploadFile(file_path, content_type = NULL, metadata = list())}\if{html}{\out{</div>}}
+\if{html}{\out{<div class="r">}}\preformatted{HPCResourceClient$uploadFile(content, filename = NULL)}\if{html}{\out{</div>}}
 }
 
 \subsection{Arguments}{
 \if{html}{\out{<div class="arguments">}}
 \describe{
-\item{\code{file_path}}{Path to the file to upload}
+\item{\code{content}}{The content to upload (raw vector, character, or other object)}
 
-\item{\code{content_type}}{Content type of the file (optional)}
-
-\item{\code{metadata}}{Additional metadata (optional)}
+\item{\code{filename}}{Name to give the content when uploaded (optional)}
 }
 \if{html}{\out{</div>}}
 }
@@ -134,7 +132,7 @@ TRUE if upload was successful
 Execute a job on the API
 \subsection{Usage}{
 \if{html}{\out{<div class="r">}}\preformatted{HPCResourceClient$executeJob(
-  file_path,
+  content,
   method_name,
   parameters = list(),
   wait = FALSE,
@@ -145,7 +143,7 @@ Execute a job on the API
 \subsection{Arguments}{
 \if{html}{\out{<div class="arguments">}}
 \describe{
-\item{\code{file_path}}{Path to the file to process}
+\item{\code{content}}{Content to process (raw vector, character, or other object)}
 
 \item{\code{method_name}}{Name of the method to execute}
 
@@ -167,13 +165,13 @@ Job information or results
 \subsection{Method \code{getJobStatus()}}{
 Get the status of a job
 \subsection{Usage}{
-\if{html}{\out{<div class="r">}}\preformatted{HPCResourceClient$getJobStatus(file_path, method_name, parameters = list())}\if{html}{\out{</div>}}
+\if{html}{\out{<div class="r">}}\preformatted{HPCResourceClient$getJobStatus(content, method_name, parameters = list())}\if{html}{\out{</div>}}
 }
 
 \subsection{Arguments}{
 \if{html}{\out{<div class="arguments">}}
 \describe{
-\item{\code{file_path}}{Path to the file being processed}
+\item{\code{content}}{Content being processed}
 
 \item{\code{method_name}}{Name of the method executed}
 
@@ -191,13 +189,13 @@ The status of the job as a string
 \subsection{Method \code{jobSucceeded()}}{
 Check if a job succeeded
 \subsection{Usage}{
-\if{html}{\out{<div class="r">}}\preformatted{HPCResourceClient$jobSucceeded(file_path, method_name, parameters = list())}\if{html}{\out{</div>}}
+\if{html}{\out{<div class="r">}}\preformatted{HPCResourceClient$jobSucceeded(content, method_name, parameters = list())}\if{html}{\out{</div>}}
 }
 
 \subsection{Arguments}{
 \if{html}{\out{<div class="arguments">}}
 \describe{
-\item{\code{file_path}}{Path to the file being processed}
+\item{\code{content}}{Content being processed}
 
 \item{\code{method_name}}{Name of the method executed}
 
@@ -216,7 +214,7 @@ TRUE if the job completed successfully, FALSE otherwise
 Get the output of a completed job
 \subsection{Usage}{
 \if{html}{\out{<div class="r">}}\preformatted{HPCResourceClient$getJobOutput(
-  file_path,
+  content,
   method_name,
   parameters = list(),
   parse_json = TRUE
@@ -226,7 +224,7 @@ Get the output of a completed job
 \subsection{Arguments}{
 \if{html}{\out{<div class="arguments">}}
 \describe{
-\item{\code{file_path}}{Path to the file processed}
+\item{\code{content}}{Content being processed}
 
 \item{\code{method_name}}{Name of the method executed}
 
@@ -247,7 +245,7 @@ The job output, parsed as JSON if requested
 Wait for a job to complete and return results
 \subsection{Usage}{
 \if{html}{\out{<div class="r">}}\preformatted{HPCResourceClient$waitForJob(
-  file_path,
+  content,
   method_name,
   parameters = list(),
   timeout = 300,
@@ -259,7 +257,7 @@ Wait for a job to complete and return results
 \subsection{Arguments}{
 \if{html}{\out{<div class="arguments">}}
 \describe{
-\item{\code{file_path}}{Path to the file processed}
+\item{\code{content}}{Content being processed}
 
 \item{\code{method_name}}{Name of the method executed}
 

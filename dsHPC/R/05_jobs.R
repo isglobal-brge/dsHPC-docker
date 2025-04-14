@@ -1,7 +1,7 @@
 #' Query a job execution
 #'
 #' @param config API configuration created by create_api_config
-#' @param file_path Path to the file to process
+#' @param content Content to process (raw vector, character, or other object)
 #' @param method_name Name of the method to execute
 #' @param parameters Named list of parameters for the method
 #' @param validate_parameters Whether to validate parameters against method specification (default: TRUE)
@@ -11,11 +11,12 @@
 #' @examples
 #' \dontrun{
 #' config <- create_api_config("http://localhost", 9000, "please_change_me")
-#' job <- query_job(config, "data.csv", "analyze_data", list(parameter1 = "value1"))
+#' content <- "Hello, World!"
+#' job <- query_job(config, content, "analyze_data", list(parameter1 = "value1"))
 #' }
-query_job <- function(config, file_path, method_name, parameters = list(), validate_parameters = TRUE) {
-  # Calculate file hash
-  file_hash <- hash_file(file_path)
+query_job <- function(config, content, method_name, parameters = list(), validate_parameters = TRUE) {
+  # Calculate content hash
+  file_hash <- hash_content(content)
   
   # Validate the inputs
   if (!is.character(method_name) || length(method_name) != 1) {
@@ -138,7 +139,7 @@ get_job_output <- function(config, file_path, method_name, parameters = list(), 
 #' Wait for a job to complete and return results
 #'
 #' @param config API configuration created by create_api_config
-#' @param file_path Path to the file processed
+#' @param content Content to process (raw vector, character, or other object)
 #' @param method_name Name of the method executed
 #' @param parameters Parameters used for the method
 #' @param timeout Maximum time to wait in seconds (default: 300)
@@ -151,13 +152,14 @@ get_job_output <- function(config, file_path, method_name, parameters = list(), 
 #' @examples
 #' \dontrun{
 #' config <- create_api_config("http://localhost", 9000, "please_change_me")
-#' results <- wait_for_job_results(config, "image.jpg", "count_black_pixels", list(threshold = 30))
+#' content <- "Hello, World!"
+#' results <- wait_for_job_results(config, content, "analyze_text", list(parameter1 = "value1"))
 #' }
-wait_for_job_results <- function(config, file_path, method_name, parameters = list(), 
+wait_for_job_results <- function(config, content, method_name, parameters = list(), 
                                  timeout = 300, interval = 5, parse_json = TRUE,
                                  validate_parameters = TRUE) {
-  # Calculate file hash once for efficiency
-  file_hash <- hash_file(file_path)
+  # Calculate content hash once for efficiency
+  file_hash <- hash_content(content)
   
   # Ensure interval is not too small
   interval <- max(interval, 1)

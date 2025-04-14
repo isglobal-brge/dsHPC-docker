@@ -2,28 +2,27 @@
 % Please edit documentation in R/04_files.R
 \name{upload_file}
 \alias{upload_file}
-\title{Upload a file only if it doesn't already exist}
+\title{Upload content to the HPC resource}
 \usage{
-upload_file(config, file_path, content_type = NULL, metadata = list())
+upload_file(config, content, filename)
 }
 \arguments{
 \item{config}{API configuration created by create_api_config}
 
-\item{file_path}{Path to the file to upload}
+\item{content}{Content to upload (raw vector, character, or other object)}
 
-\item{content_type}{MIME type of the file (e.g. "image/jpeg", "text/csv")}
-
-\item{metadata}{Optional metadata for the file (named list)}
+\item{filename}{Name to use for the uploaded content}
 }
 \value{
-TRUE if the file was successfully uploaded or already exists
+TRUE if the content was successfully uploaded or already exists
 }
 \description{
-Upload a file only if it doesn't already exist
+Upload content to the HPC resource
 }
 \examples{
 \dontrun{
 config <- create_api_config("http://localhost", 9000, "please_change_me")
-upload_file(config, "data.csv", content_type = "text/csv")
+content <- "Hello, World!"
+upload_file(config, content, "hello.txt")
 }
 }

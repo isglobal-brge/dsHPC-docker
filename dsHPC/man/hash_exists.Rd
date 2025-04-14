@@ -20,7 +20,8 @@ Check if a specific hash exists in the database
 \examples{
 \dontrun{
 config <- create_api_config("http://localhost", 9000, "please_change_me")
-hash <- hash_file("data.csv")
+content <- "Hello World"
+hash <- hash_content(content)
 if (hash_exists(config, hash)) {
   print("Hash exists in database")
 }

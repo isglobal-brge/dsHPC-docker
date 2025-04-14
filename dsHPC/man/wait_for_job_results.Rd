@@ -6,7 +6,7 @@
 \usage{
 wait_for_job_results(
   config,
-  file_path,
+  content,
   method_name,
   parameters = list(),
   timeout = 300,
@@ -18,7 +18,7 @@ wait_for_job_results(
 \arguments{
 \item{config}{API configuration created by create_api_config}
 
-\item{file_path}{Path to the file processed}
+\item{content}{Content to process (raw vector, character, or other object)}
 
 \item{method_name}{Name of the method executed}
 
@@ -41,6 +41,7 @@ Wait for a job to complete and return results
 \examples{
 \dontrun{
 config <- create_api_config("http://localhost", 9000, "please_change_me")
-results <- wait_for_job_results(config, "image.jpg", "count_black_pixels", list(threshold = 30))
+content <- "Hello, World!"
+results <- wait_for_job_results(config, content, "analyze_text", list(parameter1 = "value1"))
 }
 }

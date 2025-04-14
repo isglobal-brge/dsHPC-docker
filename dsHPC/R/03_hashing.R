@@ -1,27 +1,30 @@
-#' Generate a hash based on file content
+#' Generate a hash based on content
 #'
-#' @param file_path Path to the file to hash
+#' @param content The content to hash (raw vector, character, or other object)
 #'
-#' @return A character string with the file hash using SHA-256 algorithm
+#' @return A character string with the content hash using SHA-256 algorithm
 #'
 #' @examples
 #' \dontrun{
-#' file_hash <- hash_file("path/to/file.txt")
+#' content <- "Hello World"
+#' content_hash <- hash_content(content)
 #' }
-hash_file <- function(file_path) {
+hash_content <- function(content) {
   if (!requireNamespace("digest", quietly = TRUE)) {
     stop("Package 'digest' is required. Please install it.")
   }
   
-  if (!file.exists(file_path)) {
-    stop(paste0("File not found: ", file_path))
+  # Convert content to raw bytes if it's not already
+  if (!is.raw(content)) {
+    if (is.character(content)) {
+      content <- charToRaw(paste(content, collapse = "\n"))
+    } else {
+      content <- serialize(content, NULL)
+    }
   }
   
-  # Read the file as a raw binary vector
-  file_content <- readBin(file_path, "raw", file.info(file_path)$size)
-  
   # Generate hash using SHA-256 algorithm
-  hash <- digest::digest(file_content, algo = "sha256", serialize = FALSE)
+  hash <- digest::digest(content, algo = "sha256", serialize = FALSE)
   
   return(hash)
 }
@@ -29,15 +32,17 @@ hash_file <- function(file_path) {
 #' Check which hashes already exist in the database
 #'
 #' @param config API configuration created by create_api_config
-#' @param hashes Character vector of file hashes to check
+#' @param hashes Character vector of content hashes to check
 #'
 #' @return A list with two components: existing_hashes and missing_hashes
 #'
 #' @examples
 #' \dontrun{
 #' config <- create_api_config("http://localhost", 9000, "please_change_me")
-#' hash1 <- hash_file("file1.txt")
-#' hash2 <- hash_file("file2.txt")
+#' content1 <- "Hello World"
+#' content2 <- "Goodbye World"
+#' hash1 <- hash_content(content1)
+#' hash2 <- hash_content(content2)
 #' result <- check_existing_hashes(config, c(hash1, hash2))
 #' }
 check_existing_hashes <- function(config, hashes) {
@@ -69,7 +74,8 @@ check_existing_hashes <- function(config, hashes) {
 #' @examples
 #' \dontrun{
 #' config <- create_api_config("http://localhost", 9000, "please_change_me")
-#' hash <- hash_file("data.csv")
+#' content <- "Hello World"
+#' hash <- hash_content(content)
 #' if (hash_exists(config, hash)) {
 #'   print("Hash exists in database")
 #' }

@@ -6,7 +6,7 @@
 \usage{
 query_job(
   config,
-  file_path,
+  content,
   method_name,
   parameters = list(),
   validate_parameters = TRUE
@@ -15,7 +15,7 @@ query_job(
 \arguments{
 \item{config}{API configuration created by create_api_config}
 
-\item{file_path}{Path to the file to process}
+\item{content}{Content to process (raw vector, character, or other object)}
 
 \item{method_name}{Name of the method to execute}
 
@@ -32,6 +32,7 @@ Query a job execution
 \examples{
 \dontrun{
 config <- create_api_config("http://localhost", 9000, "please_change_me")
-job <- query_job(config, "data.csv", "analyze_data", list(parameter1 = "value1"))
+content <- "Hello, World!"
+job <- query_job(config, content, "analyze_data", list(parameter1 = "value1"))
 }
 }

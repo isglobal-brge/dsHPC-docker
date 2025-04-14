@@ -75,83 +75,89 @@ HPCResourceClient <- R6::R6Class(
     },
     
     #' @description
-    #' Upload a file to the API
+    #' Upload content to the API
     #'
-    #' @param file_path Path to the file to upload
-    #' @param content_type Content type of the file (optional)
-    #' @param metadata Additional metadata (optional)
+    #' @param content The content to upload (raw vector, character, or other object)
+    #' @param filename Name to give the content when uploaded (optional)
     #'
     #' @return TRUE if upload was successful
-    uploadFile = function(file_path, content_type = NULL, metadata = list()) {
+    uploadFile = function(content, filename = NULL) {
       config <- private$.getAPIConfig()
-      upload_file(config, file_path, content_type, metadata)
+      
+      # If no filename provided, generate one
+      if (is.null(filename)) {
+        filename <- paste0("upload_", format(Sys.time(), "%Y%m%d_%H%M%S"))
+      }
+      
+      # Upload using the updated upload_file function
+      upload_file(config, content, filename)
     },
     
     #' @description
     #' Execute a job on the API
     #'
-    #' @param file_path Path to the file to process
+    #' @param content Content to process (raw vector, character, or other object)
     #' @param method_name Name of the method to execute
     #' @param parameters Parameters for the method
     #' @param wait Whether to wait for job completion
     #' @param timeout Maximum time to wait (in seconds)
     #'
     #' @return Job information or results
-    executeJob = function(file_path, method_name, parameters = list(), 
-                          wait = FALSE, timeout = 300) {
+    executeJob = function(content, method_name, parameters = list(), 
+                         wait = FALSE, timeout = 300) {
       config <- private$.getAPIConfig()
       
       if (wait) {
-        wait_for_job_results(config, file_path, method_name, parameters, timeout = timeout)
+        wait_for_job_results(config, content, method_name, parameters, timeout = timeout)
       } else {
-        query_job(config, file_path, method_name, parameters)
+        query_job(config, content, method_name, parameters)
       }
     },
     
     #' @description
     #' Get the status of a job
     #'
-    #' @param file_path Path to the file being processed
+    #' @param content Content being processed
     #' @param method_name Name of the method executed
     #' @param parameters Parameters used for the method
     #'
     #' @return The status of the job as a string
-    getJobStatus = function(file_path, method_name, parameters = list()) {
+    getJobStatus = function(content, method_name, parameters = list()) {
       config <- private$.getAPIConfig()
-      get_job_status(config, file_path, method_name, parameters)
+      get_job_status(config, content, method_name, parameters)
     },
     
     #' @description
     #' Check if a job succeeded
     #'
-    #' @param file_path Path to the file being processed
+    #' @param content Content being processed
     #' @param method_name Name of the method executed
     #' @param parameters Parameters used for the method
     #'
     #' @return TRUE if the job completed successfully, FALSE otherwise
-    jobSucceeded = function(file_path, method_name, parameters = list()) {
+    jobSucceeded = function(content, method_name, parameters = list()) {
       config <- private$.getAPIConfig()
-      job_succeeded(config, file_path, method_name, parameters)
+      job_succeeded(config, content, method_name, parameters)
     },
     
     #' @description
     #' Get the output of a completed job
     #'
-    #' @param file_path Path to the file processed
+    #' @param content Content being processed
     #' @param method_name Name of the method executed
     #' @param parameters Parameters used for the method
     #' @param parse_json Whether to parse the output as JSON (default: TRUE)
     #'
     #' @return The job output, parsed as JSON if requested
-    getJobOutput = function(file_path, method_name, parameters = list(), parse_json = TRUE) {
+    getJobOutput = function(content, method_name, parameters = list(), parse_json = TRUE) {
       config <- private$.getAPIConfig()
-      get_job_output(config, file_path, method_name, parameters, parse_json)
+      get_job_output(config, content, method_name, parameters, parse_json)
     },
     
     #' @description
     #' Wait for a job to complete and return results
     #'
-    #' @param file_path Path to the file processed
+    #' @param content Content being processed
     #' @param method_name Name of the method executed
     #' @param parameters Parameters used for the method
     #' @param timeout Maximum time to wait in seconds (default: 300)
@@ -159,10 +165,10 @@ HPCResourceClient <- R6::R6Class(
     #' @param parse_json Whether to parse the output as JSON (default: TRUE)
     #'
     #' @return The job output if completed within timeout, otherwise throws an error
-    waitForJob = function(file_path, method_name, parameters = list(), 
-                          timeout = 300, interval = 5, parse_json = TRUE) {
+    waitForJob = function(content, method_name, parameters = list(), 
+                         timeout = 300, interval = 5, parse_json = TRUE) {
       config <- private$.getAPIConfig()
-      wait_for_job_results(config, file_path, method_name, parameters, 
+      wait_for_job_results(config, content, method_name, parameters, 
                           timeout, interval, parse_json)
     }
   ),
