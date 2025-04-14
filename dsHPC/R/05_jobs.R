@@ -50,3 +50,160 @@ query_job <- function(config, file_hash, method_name, parameters = list(), valid
   
   return(response)
 }
+
+#' Get the status of a job
+#'
+#' @param config API configuration created by create_api_config
+#' @param file_hash Hash of the file processed
+#' @param method_name Name of the method executed
+#' @param parameters Parameters used for the method
+#'
+#' @return The status of the job as a string
+#' @export
+#'
+#' @examples
+#' \dontrun{
+#' config <- create_api_config("http://localhost", 9000, "please_change_me")
+#' status <- get_job_status(config, file_hash, "count_black_pixels", list(threshold = 30))
+#' }
+get_job_status <- function(config, file_hash, method_name, parameters = list()) {
+  # Query the job
+  job_info <- query_job(config, file_hash, method_name, parameters, validate_parameters = TRUE)
+  
+  # Return just the status
+  return(job_info$status)
+}
+
+#' Check if a job succeeded
+#'
+#' @param config API configuration created by create_api_config
+#' @param file_hash Hash of the file processed
+#' @param method_name Name of the method executed
+#' @param parameters Parameters used for the method
+#'
+#' @return TRUE if the job completed successfully, FALSE otherwise
+#' @export
+#'
+#' @examples
+#' \dontrun{
+#' config <- create_api_config("http://localhost", 9000, "please_change_me")
+#' if (job_succeeded(config, file_hash, "count_black_pixels", list(threshold = 30))) {
+#'   print("Job completed successfully")
+#' }
+#' }
+job_succeeded <- function(config, file_hash, method_name, parameters = list()) {
+  # Query the job
+  job_info <- query_job(config, file_hash, method_name, parameters, validate_parameters = TRUE)
+  
+  # Check if status is "CD" (completed)
+  return(!is.null(job_info$status) && job_info$status == "CD")
+}
+
+#' Get the output of a completed job
+#'
+#' @param config API configuration created by create_api_config
+#' @param file_hash Hash of the file processed
+#' @param method_name Name of the method executed
+#' @param parameters Parameters used for the method
+#' @param parse_json Whether to parse the output as JSON (default: TRUE)
+#'
+#' @return The job output, parsed as JSON if requested
+#' @export
+#'
+#' @examples
+#' \dontrun{
+#' config <- create_api_config("http://localhost", 9000, "please_change_me")
+#' output <- get_job_output(config, file_hash, "count_black_pixels", list(threshold = 30))
+#' }
+get_job_output <- function(config, file_hash, method_name, parameters = list(), parse_json = TRUE) {
+  # Query the job
+  job_info <- query_job(config, file_hash, method_name, parameters, validate_parameters = TRUE)
+  
+  # Check if job is completed
+  if (is.null(job_info$status) || job_info$status != "CD") {
+    stop(paste0("Cannot get output: job is not completed. Current status: ", 
+                ifelse(is.null(job_info$status), "unknown", job_info$status)))
+  }
+  
+  # Get the output
+  output <- job_info$output
+  
+  # Parse JSON if requested
+  if (parse_json && !is.null(output) && output != "") {
+    tryCatch({
+      output <- jsonlite::fromJSON(output)
+    }, error = function(e) {
+      warning("Failed to parse output as JSON: ", e$message)
+      # Return the raw output instead
+    })
+  }
+  
+  return(output)
+}
+
+#' Wait for a job to complete and return results
+#'
+#' @param config API configuration created by create_api_config
+#' @param file_hash Hash of the file processed
+#' @param method_name Name of the method executed
+#' @param parameters Parameters used for the method
+#' @param timeout Maximum time to wait in seconds (default: 300)
+#' @param interval Polling interval in seconds (default: 5)
+#' @param parse_json Whether to parse the output as JSON (default: TRUE)
+#'
+#' @return The job output if completed within timeout, otherwise throws an error
+#' @export
+#'
+#' @examples
+#' \dontrun{
+#' config <- create_api_config("http://localhost", 9000, "please_change_me")
+#' results <- wait_for_job_results(config, file_hash, "count_black_pixels", list(threshold = 30))
+#' }
+wait_for_job_results <- function(config, file_hash, method_name, parameters = list(), 
+                                 timeout = 300, interval = 5, parse_json = TRUE) {
+  # Ensure interval is not too small
+  interval <- max(interval, 1)
+  
+  # Start timer
+  start_time <- Sys.time()
+  
+  # Query the job initially - validate parameters on first call
+  job_info <- query_job(config, file_hash, method_name, parameters, validate_parameters = TRUE)
+  
+  # Loop until timeout or job completion
+  while(is.null(job_info$status) || job_info$status != "CD") {
+    # Check for timeout
+    elapsed <- as.numeric(difftime(Sys.time(), start_time, units = "secs"))
+    if (elapsed > timeout) {
+      stop(paste0("Timeout waiting for job to complete. Current status: ", 
+                  ifelse(is.null(job_info$status), "unknown", job_info$status)))
+    }
+    
+    # Check for error state
+    if (!is.null(job_info$status) && job_info$status == "ER") {
+      stop(paste0("Job failed with error: ", 
+                  ifelse(is.null(job_info$error_details), "unknown error", job_info$error_details)))
+    }
+    
+    # Wait before polling again
+    Sys.sleep(interval)
+    
+    # Poll job status - no need to validate parameters on subsequent calls
+    job_info <- query_job(config, file_hash, method_name, parameters, validate_parameters = FALSE)
+  }
+  
+  # Get the output
+  output <- job_info$output
+  
+  # Parse JSON if requested
+  if (parse_json && !is.null(output) && output != "") {
+    tryCatch({
+      output <- jsonlite::fromJSON(output)
+    }, error = function(e) {
+      warning("Failed to parse output as JSON: ", e$message)
+      # Return the raw output instead
+    })
+  }
+  
+  return(output)
+}
