@@ -240,3 +240,24 @@ HPCResourceResolver <- R6::R6Class(
     }
   )
 )
+
+#' Get an API client from a resource
+#'
+#' @param resource A list containing resource configuration (url, format, secret)
+#'
+#' @return An HPCResourceClient instance
+#' @export
+#'
+#' @examples
+#' \dontrun{
+#' resource <- list(
+#'   url = "http://localhost:9000",
+#'   format = "dshpc.api",
+#'   secret = "please_change_me"
+#' )
+#'
+#' api <- get_api(resource)
+#' }
+get_api <- function(resource) {
+  HPCResourceClient$new(resource)
+}
