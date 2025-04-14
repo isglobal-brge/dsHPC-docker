@@ -1,7 +1,7 @@
 #' Query a job execution
 #'
 #' @param config API configuration created by create_api_config
-#' @param file_hash Hash of the file to process
+#' @param file_path Path to the file to process
 #' @param method_name Name of the method to execute
 #' @param parameters Named list of parameters for the method
 #' @param validate_parameters Whether to validate parameters against method specification (default: TRUE)
@@ -12,15 +12,13 @@
 #' @examples
 #' \dontrun{
 #' config <- create_api_config("http://localhost", 9000, "please_change_me")
-#' file_hash <- hash_file("data.csv")
-#' job <- query_job(config, file_hash, "analyze_data", list(parameter1 = "value1"))
+#' job <- query_job(config, "data.csv", "analyze_data", list(parameter1 = "value1"))
 #' }
-query_job <- function(config, file_hash, method_name, parameters = list(), validate_parameters = TRUE) {
-  # Validate the inputs
-  if (!is.character(file_hash) || length(file_hash) != 1) {
-    stop("file_hash must be a single character string")
-  }
+query_job <- function(config, file_path, method_name, parameters = list(), validate_parameters = TRUE) {
+  # Calculate file hash
+  file_hash <- hash_file(file_path)
   
+  # Validate the inputs
   if (!is.character(method_name) || length(method_name) != 1) {
     stop("method_name must be a single character string")
   }
@@ -54,7 +52,7 @@ query_job <- function(config, file_hash, method_name, parameters = list(), valid
 #' Get the status of a job
 #'
 #' @param config API configuration created by create_api_config
-#' @param file_hash Hash of the file processed
+#' @param file_path Path to the file processed
 #' @param method_name Name of the method executed
 #' @param parameters Parameters used for the method
 #'
@@ -64,11 +62,11 @@ query_job <- function(config, file_hash, method_name, parameters = list(), valid
 #' @examples
 #' \dontrun{
 #' config <- create_api_config("http://localhost", 9000, "please_change_me")
-#' status <- get_job_status(config, file_hash, "count_black_pixels", list(threshold = 30))
+#' status <- get_job_status(config, "image.jpg", "count_black_pixels", list(threshold = 30))
 #' }
-get_job_status <- function(config, file_hash, method_name, parameters = list()) {
+get_job_status <- function(config, file_path, method_name, parameters = list()) {
   # Query the job
-  job_info <- query_job(config, file_hash, method_name, parameters, validate_parameters = TRUE)
+  job_info <- query_job(config, file_path, method_name, parameters, validate_parameters = FALSE)
   
   # Return just the status
   return(job_info$status)
@@ -77,7 +75,7 @@ get_job_status <- function(config, file_hash, method_name, parameters = list()) 
 #' Check if a job succeeded
 #'
 #' @param config API configuration created by create_api_config
-#' @param file_hash Hash of the file processed
+#' @param file_path Path to the file processed
 #' @param method_name Name of the method executed
 #' @param parameters Parameters used for the method
 #'
@@ -87,13 +85,13 @@ get_job_status <- function(config, file_hash, method_name, parameters = list()) 
 #' @examples
 #' \dontrun{
 #' config <- create_api_config("http://localhost", 9000, "please_change_me")
-#' if (job_succeeded(config, file_hash, "count_black_pixels", list(threshold = 30))) {
+#' if (job_succeeded(config, "image.jpg", "count_black_pixels", list(threshold = 30))) {
 #'   print("Job completed successfully")
 #' }
 #' }
-job_succeeded <- function(config, file_hash, method_name, parameters = list()) {
+job_succeeded <- function(config, file_path, method_name, parameters = list()) {
   # Query the job
-  job_info <- query_job(config, file_hash, method_name, parameters, validate_parameters = TRUE)
+  job_info <- query_job(config, file_path, method_name, parameters, validate_parameters = FALSE)
   
   # Check if status is "CD" (completed)
   return(!is.null(job_info$status) && job_info$status == "CD")
@@ -102,7 +100,7 @@ job_succeeded <- function(config, file_hash, method_name, parameters = list()) {
 #' Get the output of a completed job
 #'
 #' @param config API configuration created by create_api_config
-#' @param file_hash Hash of the file processed
+#' @param file_path Path to the file processed
 #' @param method_name Name of the method executed
 #' @param parameters Parameters used for the method
 #' @param parse_json Whether to parse the output as JSON (default: TRUE)
@@ -113,11 +111,11 @@ job_succeeded <- function(config, file_hash, method_name, parameters = list()) {
 #' @examples
 #' \dontrun{
 #' config <- create_api_config("http://localhost", 9000, "please_change_me")
-#' output <- get_job_output(config, file_hash, "count_black_pixels", list(threshold = 30))
+#' output <- get_job_output(config, "image.jpg", "count_black_pixels", list(threshold = 30))
 #' }
-get_job_output <- function(config, file_hash, method_name, parameters = list(), parse_json = TRUE) {
+get_job_output <- function(config, file_path, method_name, parameters = list(), parse_json = TRUE) {
   # Query the job
-  job_info <- query_job(config, file_hash, method_name, parameters, validate_parameters = TRUE)
+  job_info <- query_job(config, file_path, method_name, parameters, validate_parameters = FALSE)
   
   # Check if job is completed
   if (is.null(job_info$status) || job_info$status != "CD") {
@@ -144,12 +142,13 @@ get_job_output <- function(config, file_hash, method_name, parameters = list(), 
 #' Wait for a job to complete and return results
 #'
 #' @param config API configuration created by create_api_config
-#' @param file_hash Hash of the file processed
+#' @param file_path Path to the file processed
 #' @param method_name Name of the method executed
 #' @param parameters Parameters used for the method
 #' @param timeout Maximum time to wait in seconds (default: 300)
 #' @param interval Polling interval in seconds (default: 5)
 #' @param parse_json Whether to parse the output as JSON (default: TRUE)
+#' @param validate_parameters Whether to validate parameters against method specification (default: TRUE)
 #'
 #' @return The job output if completed within timeout, otherwise throws an error
 #' @export
@@ -157,18 +156,38 @@ get_job_output <- function(config, file_hash, method_name, parameters = list(), 
 #' @examples
 #' \dontrun{
 #' config <- create_api_config("http://localhost", 9000, "please_change_me")
-#' results <- wait_for_job_results(config, file_hash, "count_black_pixels", list(threshold = 30))
+#' results <- wait_for_job_results(config, "image.jpg", "count_black_pixels", list(threshold = 30))
 #' }
-wait_for_job_results <- function(config, file_hash, method_name, parameters = list(), 
-                                 timeout = 300, interval = 5, parse_json = TRUE) {
+wait_for_job_results <- function(config, file_path, method_name, parameters = list(), 
+                                 timeout = 300, interval = 5, parse_json = TRUE,
+                                 validate_parameters = TRUE) {
+  # Calculate file hash once for efficiency
+  file_hash <- hash_file(file_path)
+  
   # Ensure interval is not too small
   interval <- max(interval, 1)
   
   # Start timer
   start_time <- Sys.time()
   
-  # Query the job initially - validate parameters on first call
-  job_info <- query_job(config, file_hash, method_name, parameters, validate_parameters = TRUE)
+  # Validate parameters on first call
+  if (validate_parameters) {
+    # Get all available methods
+    methods <- get_methods(config)
+    
+    # Validate parameters against method specification
+    validate_method_parameters(method_name, parameters, methods)
+  }
+  
+  # Create request body
+  body <- list(
+    file_hash = file_hash,
+    method_name = method_name,
+    parameters = parameters
+  )
+  
+  # Query the job initially
+  job_info <- api_post(config, "/query-job", body = body)
   
   # Loop until timeout or job completion
   while(is.null(job_info$status) || job_info$status != "CD") {
@@ -188,8 +207,8 @@ wait_for_job_results <- function(config, file_hash, method_name, parameters = li
     # Wait before polling again
     Sys.sleep(interval)
     
-    # Poll job status - no need to validate parameters on subsequent calls
-    job_info <- query_job(config, file_hash, method_name, parameters, validate_parameters = FALSE)
+    # Poll job status without validation
+    job_info <- api_post(config, "/query-job", body = body)
   }
   
   # Get the output

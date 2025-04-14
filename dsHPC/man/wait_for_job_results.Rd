@@ -6,18 +6,19 @@
 \usage{
 wait_for_job_results(
   config,
-  file_hash,
+  file_path,
   method_name,
   parameters = list(),
   timeout = 300,
   interval = 5,
-  parse_json = TRUE
+  parse_json = TRUE,
+  validate_parameters = TRUE
 )
 }
 \arguments{
 \item{config}{API configuration created by create_api_config}
 
-\item{file_hash}{Hash of the file processed}
+\item{file_path}{Path to the file processed}
 
 \item{method_name}{Name of the method executed}
 
@@ -28,6 +29,8 @@ wait_for_job_results(
 \item{interval}{Polling interval in seconds (default: 5)}
 
 \item{parse_json}{Whether to parse the output as JSON (default: TRUE)}
+
+\item{validate_parameters}{Whether to validate parameters against method specification (default: TRUE)}
 }
 \value{
 The job output if completed within timeout, otherwise throws an error
@@ -38,6 +41,6 @@ Wait for a job to complete and return results
 \examples{
 \dontrun{
 config <- create_api_config("http://localhost", 9000, "please_change_me")
-results <- wait_for_job_results(config, file_hash, "count_black_pixels", list(threshold = 30))
+results <- wait_for_job_results(config, "image.jpg", "count_black_pixels", list(threshold = 30))
 }
 }

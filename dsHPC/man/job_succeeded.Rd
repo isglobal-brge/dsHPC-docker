@@ -4,12 +4,12 @@
 \alias{job_succeeded}
 \title{Check if a job succeeded}
 \usage{
-job_succeeded(config, file_hash, method_name, parameters = list())
+job_succeeded(config, file_path, method_name, parameters = list())
 }
 \arguments{
 \item{config}{API configuration created by create_api_config}
 
-\item{file_hash}{Hash of the file processed}
+\item{file_path}{Path to the file processed}
 
 \item{method_name}{Name of the method executed}
 
@@ -24,7 +24,7 @@ Check if a job succeeded
 \examples{
 \dontrun{
 config <- create_api_config("http://localhost", 9000, "please_change_me")
-if (job_succeeded(config, file_hash, "count_black_pixels", list(threshold = 30))) {
+if (job_succeeded(config, "image.jpg", "count_black_pixels", list(threshold = 30))) {
   print("Job completed successfully")
 }
 }

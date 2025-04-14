@@ -6,7 +6,7 @@
 \usage{
 get_job_output(
   config,
-  file_hash,
+  file_path,
   method_name,
   parameters = list(),
   parse_json = TRUE
@@ -15,7 +15,7 @@ get_job_output(
 \arguments{
 \item{config}{API configuration created by create_api_config}
 
-\item{file_hash}{Hash of the file processed}
+\item{file_path}{Path to the file processed}
 
 \item{method_name}{Name of the method executed}
 
@@ -32,6 +32,6 @@ Get the output of a completed job
 \examples{
 \dontrun{
 config <- create_api_config("http://localhost", 9000, "please_change_me")
-output <- get_job_output(config, file_hash, "count_black_pixels", list(threshold = 30))
+output <- get_job_output(config, "image.jpg", "count_black_pixels", list(threshold = 30))
 }
 }
