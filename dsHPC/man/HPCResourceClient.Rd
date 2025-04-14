@@ -16,6 +16,9 @@ It extends the generic ResourceClient class to provide dsHPC-specific functional
 
 The class uses a URL-based configuration system with the format:
 \verb{http://host:port}
+
+To create a subclass with a different expected format, override the private
+\code{.expected_formats} field.
 }
 \examples{
 \dontrun{
@@ -272,6 +275,8 @@ Wait for a job to complete and return results
 }
 \subsection{Returns}{
 The job output if completed within timeout, otherwise throws an error
+List of acceptable resource formats for this client
+Override this in subclasses to change expected formats
 Get API configuration for use with dsHPC functions
 
 This method creates an API configuration object using the resource information

@@ -12,6 +12,9 @@
 #' The class uses a URL-based configuration system with the format:
 #' `http://host:port`
 #'
+#' To create a subclass with a different expected format, override the private 
+#' `.expected_formats` field.
+#'
 #' @examples
 #' \dontrun{
 #' # Create a resource object
@@ -44,6 +47,20 @@ HPCResourceClient <- R6::R6Class(
     #'
     #' @return A new HPCResourceClient object
     initialize = function(resource) {
+      # Check if resource is a valid for this client
+      if (!is.list(resource) || is.null(resource$format)) {
+        stop("Invalid resource: must have a 'format' field")
+      }
+      
+      # Get the list of expected formats - can be overridden by subclasses
+      expected_formats <- private$.expected_formats
+      
+      # Check if format is acceptable
+      if (!tolower(resource$format) %in% expected_formats) {
+        stop(paste0("Invalid resource format: '", resource$format, 
+                   "'. Expected one of: ", paste(expected_formats, collapse=", ")))
+      }
+      
       # Initialize parent class
       super$initialize(resource)
     },
@@ -151,6 +168,10 @@ HPCResourceClient <- R6::R6Class(
   ),
   
   private = list(
+    #' List of acceptable resource formats for this client
+    #' Override this in subclasses to change expected formats
+    .expected_formats = c("dshpc.api"),
+    
     #' Get API configuration for use with dsHPC functions
     #'
     #' This method creates an API configuration object using the resource information
