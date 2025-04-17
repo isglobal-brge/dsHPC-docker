@@ -1,6 +1,8 @@
 from fastapi import APIRouter, HTTPException, Depends, status, Security
 import requests
 from typing import Dict, Any, List
+import base64
+import hashlib
 
 from dshpc_api.config.settings import get_settings
 from dshpc_api.api.auth import get_api_key
@@ -13,6 +15,29 @@ from dshpc_api.models.method import Method, MethodsResponse
 
 router = APIRouter()
 
+def verify_content_hash(content_base64: str, provided_hash: str) -> bool:
+    """
+    Verify that the SHA-256 hash of the decoded content matches the provided hash.
+    
+    Args:
+        content_base64: Base64 encoded content
+        provided_hash: Hash provided by the client
+        
+    Returns:
+        bool: True if hashes match, False otherwise
+    """
+    try:
+        # Decode base64 content
+        content_bytes = base64.b64decode(content_base64)
+        
+        # Calculate SHA-256 hash
+        calculated_hash = hashlib.sha256(content_bytes).hexdigest()
+        
+        # Compare with provided hash
+        return calculated_hash == provided_hash
+    except Exception:
+        return False
+
 @router.post("/files/upload", response_model=FileResponse, status_code=status.HTTP_201_CREATED)
 async def upload_new_file(file_data: FileUpload, api_key: str = Security(get_api_key)):
     """
@@ -24,6 +49,13 @@ async def upload_new_file(file_data: FileUpload, api_key: str = Security(get_api
     to indicate the file format.
     """
     try:
+        # Verify the hash matches the content
+        if not verify_content_hash(file_data.content, file_data.file_hash):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Content hash verification failed. The provided hash does not match the content."
+            )
+            
         # Prepare data for database
         db_file_data = {
             "file_hash": file_data.file_hash,

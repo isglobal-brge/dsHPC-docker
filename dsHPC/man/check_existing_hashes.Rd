@@ -9,7 +9,7 @@ check_existing_hashes(config, hashes)
 \arguments{
 \item{config}{API configuration created by create_api_config}
 
-\item{hashes}{Character vector of file hashes to check}
+\item{hashes}{Character vector of content hashes to check}
 }
 \value{
 A list with two components: existing_hashes and missing_hashes
@@ -20,8 +20,10 @@ Check which hashes already exist in the database
 \examples{
 \dontrun{
 config <- create_api_config("http://localhost", 9000, "please_change_me")
-hash1 <- hash_file("file1.txt")
-hash2 <- hash_file("file2.txt")
+content1 <- "Hello World"
+content2 <- "Goodbye World"
+hash1 <- hash_content(content1)
+hash2 <- hash_content(content2)
 result <- check_existing_hashes(config, c(hash1, hash2))
 }
 }
