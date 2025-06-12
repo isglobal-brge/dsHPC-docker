@@ -3,5 +3,6 @@
 export(HPCResourceClient)
 export(HPCResourceResolver)
 export(get_api)
+export(sort_parameters)
 importFrom(R6,R6Class)
 importFrom(methods,is)

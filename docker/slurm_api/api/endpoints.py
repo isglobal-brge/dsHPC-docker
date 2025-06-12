@@ -4,18 +4,27 @@ import asyncio
 
 from slurm_api.config.logging_config import logger
 from slurm_api.models.job import JobSubmission, JobStatus
-from slurm_api.services.job_service import create_job, prepare_job_script, get_job_by_id
-from slurm_api.services.slurm_service import submit_slurm_job, get_queue_status
+from slurm_api.models.method import Method, MethodExecution
+from slurm_api.services.job_service import (
+    prepare_job_script, submit_slurm_job, get_job_info, 
+    create_job, update_job_status, check_jobs_status
+)
+from slurm_api.services.slurm_service import get_queue_status
 from slurm_api.utils.db_utils import update_job_status
 from slurm_api.config.db_config import jobs_collection
 from slurm_api.background.tasks import check_jobs_once
 from slurm_api.services.file_service import find_file_by_hash
-from slurm_api.services.method_service import find_method_by_hash, list_available_methods, register_method, prepare_method_execution, find_method_by_name, list_method_versions
+from slurm_api.services.method_service import (
+    find_method_by_hash, list_available_methods, register_method, prepare_method_execution, find_method_by_name,
+    list_method_versions
+)
+from slurm_api.utils.parameter_utils import sort_parameters
 
 router = APIRouter()
 
 @router.post("/submit")
 async def submit_job(job: JobSubmission):
+    """Submit a new job to SLURM."""
     try:
         # Validate file_hash exists in database
         file_doc = find_file_by_hash(job.file_hash)
@@ -39,12 +48,15 @@ async def submit_job(job: JobSubmission):
                 detail="Either script or function_hash must be provided"
             )
         
+        # Sort parameters to ensure consistent ordering
+        sorted_params = sort_parameters(job.parameters)
+        
         # Check for duplicate jobs
         # Find any existing job with the same core identifiers
         existing_job = jobs_collection.find_one({
             "function_hash": job.function_hash,
             "file_hash": job.file_hash,
-            "parameters": job.parameters
+            "parameters": sorted_params
         })
         
         if existing_job:
@@ -184,7 +196,7 @@ async def get_queue():
 @router.get("/job/{job_id}")
 async def get_job(job_id: str):
     """Get job information from MongoDB."""
-    job = get_job_by_id(job_id)
+    job = get_job_info(job_id)
     if not job:
         raise HTTPException(
             status_code=404,

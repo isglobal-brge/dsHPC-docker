@@ -11,6 +11,7 @@ from slurm_api.services.slurm_service import submit_slurm_job
 from slurm_api.services.file_service import find_file_by_hash, download_file, create_job_workspace
 from slurm_api.services.method_service import find_method_by_hash, prepare_method_execution
 from slurm_api.models.method import MethodExecution
+from slurm_api.utils.parameter_utils import sort_parameters
 
 def prepare_job_script(job_id: str, job: JobSubmission) -> str:
     """Prepare a job script file and return its path."""
@@ -38,11 +39,14 @@ def prepare_job_script(job_id: str, job: JobSubmission) -> str:
         if not method_doc:
             raise ValueError(f"Method with hash {job.function_hash} not found in database")
         
+        # Sort parameters to ensure consistent ordering
+        sorted_params = sort_parameters(job.parameters)
+        
         # Prepare method execution
         method_execution = MethodExecution(
             function_hash=job.function_hash,
             file_hash=job.file_hash,
-            parameters=job.parameters or {},
+            parameters=sorted_params,
             name=job.name
         )
         
@@ -106,13 +110,16 @@ def create_job(job: JobSubmission) -> Tuple[str, Dict[str, Any]]:
     # Generate a unique job ID
     job_id = str(uuid.uuid4())
     
+    # Sort parameters to ensure consistent ordering
+    sorted_params = sort_parameters(job.parameters)
+    
     # Create job document
     job_doc = {
         "job_id": job_id,
         "slurm_id": None,
         "function_hash": job.function_hash,
         "file_hash": job.file_hash,
-        "parameters": job.parameters,
+        "parameters": sorted_params,
         "status": JobStatus.PENDING,
         "created_at": datetime.utcnow(),
         "name": job.name,

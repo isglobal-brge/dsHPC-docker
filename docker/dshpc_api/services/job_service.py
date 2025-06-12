@@ -6,6 +6,7 @@ from datetime import datetime
 from dshpc_api.config.settings import get_settings
 from dshpc_api.services.db_service import get_jobs_db, get_files_db
 from dshpc_api.services.method_service import check_method_functionality
+from dshpc_api.utils.parameter_utils import sort_parameters
 
 # Helper constants for job status categories
 COMPLETED_STATUSES = ["CD"]  # Completed successfully
@@ -108,11 +109,14 @@ async def find_existing_job(file_hash: str, function_hash: str, parameters: Dict
         # Connect to jobs database
         jobs_db = await get_jobs_db()
         
+        # Sort parameters to ensure consistent ordering
+        sorted_params = sort_parameters(parameters)
+        
         # Query for jobs with the given parameters
         job = await jobs_db.jobs.find_one({
             "file_hash": file_hash,
             "function_hash": function_hash,
-            "parameters": parameters
+            "parameters": sorted_params
         }, sort=[("created_at", -1)])
         
         return job
@@ -138,11 +142,14 @@ async def submit_job(file_hash: str, function_hash: str, parameters: Dict[str, A
     settings = get_settings()
     
     try:
+        # Sort parameters to ensure consistent ordering
+        sorted_params = sort_parameters(parameters)
+        
         # Prepare job submission payload
         payload = {
             "file_hash": file_hash,
             "function_hash": function_hash,
-            "parameters": parameters
+            "parameters": sorted_params
         }
         
         # Submit job to slurm_api
@@ -231,6 +238,9 @@ async def simulate_job(file_hash: str, method_name: str, parameters: Optional[Di
     if parameters is None:
         parameters = {}
     
+    # Sort parameters to ensure consistent ordering
+    sorted_params = sort_parameters(parameters)
+    
     try:
         # First trigger a job status check on slurm_api to ensure up-to-date status
         success, message = await trigger_job_check()
@@ -270,12 +280,12 @@ async def simulate_job(file_hash: str, method_name: str, parameters: Optional[Di
                 "error_details": f"No file exists in the database with hash '{file_hash}'"
             }
         
-        # Check if there's an existing job with these parameters
-        existing_job = await find_existing_job(file_hash, function_hash, parameters)
+        # Check if there's an existing job with these parameters (using sorted parameters)
+        existing_job = await find_existing_job(file_hash, function_hash, sorted_params)
         
         if not existing_job:
-            # No existing job, submit a new one
-            success, message, job_data = await submit_job(file_hash, function_hash, parameters)
+            # No existing job, submit a new one (using sorted parameters)
+            success, message, job_data = await submit_job(file_hash, function_hash, sorted_params)
             
             if not success:
                 return {
@@ -323,7 +333,7 @@ async def simulate_job(file_hash: str, method_name: str, parameters: Optional[Di
         
         elif job_status in RETRIABLE_FAILED_STATUSES:
             # Job failed but in a retriable way, submit a new one
-            success, message, job_data = await submit_job(file_hash, function_hash, parameters)
+            success, message, job_data = await submit_job(file_hash, function_hash, sorted_params)
             
             if not success:
                 return {

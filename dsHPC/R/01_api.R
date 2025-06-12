@@ -86,6 +86,8 @@ api_request <- function(config, endpoint, method = "GET", params = list(), body 
   
   # Prepare body if provided
   if (!is.null(body)) {
+    # Use jsonlite::toJSON with sorted_keys equivalent behavior
+    # The auto_unbox ensures scalars are not wrapped in arrays
     body <- jsonlite::toJSON(body, auto_unbox = TRUE)
   }
   

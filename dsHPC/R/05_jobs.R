@@ -27,20 +27,23 @@ query_job <- function(config, content, method_name, parameters = list(), validat
     stop("parameters must be a named list")
   }
   
+  # Sort parameters alphabetically to ensure consistent ordering
+  sorted_params <- sort_parameters(parameters)
+  
   # Validate parameters against method specification if requested
   if (validate_parameters) {
     # Get all available methods
     methods <- get_methods(config)
     
-    # Validate parameters against method specification
+    # Validate parameters against method specification (use original parameters for validation)
     validate_method_parameters(method_name, parameters, methods)
   }
   
-  # Create request body
+  # Create request body with sorted parameters
   body <- list(
     file_hash = file_hash,
     method_name = method_name,
-    parameters = parameters
+    parameters = sorted_params
   )
   
   # Make API call
@@ -167,20 +170,23 @@ wait_for_job_results <- function(config, content, method_name, parameters = list
   # Start timer
   start_time <- Sys.time()
   
+  # Sort parameters alphabetically to ensure consistent ordering
+  sorted_params <- sort_parameters(parameters)
+  
   # Validate parameters on first call
   if (validate_parameters) {
     # Get all available methods
     methods <- get_methods(config)
     
-    # Validate parameters against method specification
+    # Validate parameters against method specification (use original parameters for validation)
     validate_method_parameters(method_name, parameters, methods)
   }
   
-  # Create request body
+  # Create request body with sorted parameters
   body <- list(
     file_hash = file_hash,
     method_name = method_name,
-    parameters = parameters
+    parameters = sorted_params
   )
   
   # Query the job initially
