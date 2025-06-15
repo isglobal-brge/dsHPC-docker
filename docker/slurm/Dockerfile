@@ -86,16 +86,20 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && R --version | grep -q "R version" \
     && rm -rf /var/lib/apt/lists/*
 
+# Install BiocManager and other essential R packages
+RUN R -s -e "install.packages(c('BiocManager', 'jsonlite'), repos='https://cloud.r-project.org/')"
+
+# Copy the R package installation script
+COPY slurm/install-bioc-packages.sh /usr/local/bin/install-bioc-packages.sh
+RUN chmod +x /usr/local/bin/install-bioc-packages.sh
+
 # Install R packages from config if not empty
 RUN if [ $(jq '.packages | length' /tmp/r.json) -gt 0 ]; then \
-        mkdir -p /tmp/r_packages && \
         jq -r '.packages | keys[]' /tmp/r.json > /tmp/r_packages.txt && \
-        Rscript -e 'pkgs <- readLines("/tmp/r_packages.txt"); if(length(pkgs) > 0) install.packages(pkgs, repos="https://cloud.r-project.org/")'; \
+        install-bioc-packages.sh; \
     else \
         echo "No R packages specified, skipping..."; \
-    fi && \
-    # Install jsonlite package for parameter parsing
-    Rscript -e "install.packages('jsonlite', repos='https://cloud.r-project.org/')"
+    fi
 
 # Create necessary directories and set permissions
 RUN mkdir -p /var/run/munge \

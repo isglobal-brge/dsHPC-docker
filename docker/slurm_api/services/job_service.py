@@ -132,7 +132,7 @@ def create_job(job: JobSubmission) -> Tuple[str, Dict[str, Any]]:
     
     return job_id, job_doc
 
-def get_job_by_id(job_id: str) -> Dict[str, Any]:
+def get_job_info(job_id: str) -> Dict[str, Any]:
     """Get job information from MongoDB."""
     job = jobs_collection.find_one({"job_id": job_id})
     if job:

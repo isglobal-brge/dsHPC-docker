@@ -7,7 +7,7 @@ from slurm_api.models.job import JobSubmission, JobStatus
 from slurm_api.models.method import Method, MethodExecution
 from slurm_api.services.job_service import (
     prepare_job_script, submit_slurm_job, get_job_info, 
-    create_job, update_job_status, check_jobs_status
+    create_job, update_job_status
 )
 from slurm_api.services.slurm_service import get_queue_status
 from slurm_api.utils.db_utils import update_job_status
