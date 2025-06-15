@@ -1,7 +1,7 @@
 {
   "python_version": "3.10.12",
   "libraries": {
-    "pillow": "9.5.0",
-    "numpy": "1.24.3"
+    "numpy": "",
+    "Pillow": ""
   }
 }

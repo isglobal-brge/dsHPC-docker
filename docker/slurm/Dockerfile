@@ -62,9 +62,9 @@ RUN PYTHON_VERSION=$(jq -r '.python_version' /tmp/python.json) && \
     $PYENV_ROOT/versions/$PYTHON_VERSION/bin/python -m venv /opt/venvs/system_python
 RUN /opt/venvs/system_python/bin/pip install --upgrade pip
 
-# Install Python libraries from config if not empty
+# Install python libraries from config if not empty
 RUN if [ $(jq '.libraries | length' /tmp/python.json) -gt 0 ]; then \
-        jq -r '.libraries | to_entries[] | "\(.key)==\(.value)"' /tmp/python.json > /tmp/requirements.txt && \
+        jq -r '.libraries | to_entries[] | if .value == null or .value == "" then .key else "\(.key)==\(.value)" end' /tmp/python.json > /tmp/requirements.txt && \
         /opt/venvs/system_python/bin/pip install -r /tmp/requirements.txt; \
     else \
         echo "No Python libraries specified, skipping..."; \
@@ -90,13 +90,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN R -s -e "install.packages(c('BiocManager', 'jsonlite'), repos='https://cloud.r-project.org/')"
 
 # Copy the R package installation script
-COPY slurm/install-bioc-packages.sh /usr/local/bin/install-bioc-packages.sh
-RUN chmod +x /usr/local/bin/install-bioc-packages.sh
+COPY slurm/install-r-packages.sh /usr/local/bin/install-r-packages.sh
+RUN chmod +x /usr/local/bin/install-r-packages.sh
 
 # Install R packages from config if not empty
 RUN if [ $(jq '.packages | length' /tmp/r.json) -gt 0 ]; then \
         jq -r '.packages | keys[]' /tmp/r.json > /tmp/r_packages.txt && \
-        install-bioc-packages.sh; \
+        install-r-packages.sh; \
     else \
         echo "No R packages specified, skipping..."; \
     fi
