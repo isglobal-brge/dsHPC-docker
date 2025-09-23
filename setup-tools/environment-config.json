@@ -1,0 +1,8 @@
+{
+  "environment_name": "dsHPC",
+  "display_name": "High-Performance Computing for DataSHIELD",
+  "docker_stack_prefix": "dshpc",
+  "base_repository": "https://github.com/isglobal-brge/dsHPC-docker.git",
+  "default_api_port": 8001,
+  "description": "DataSHIELD High-Performance Computing Environment"
+}
