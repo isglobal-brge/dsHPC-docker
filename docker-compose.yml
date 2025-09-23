@@ -54,6 +54,7 @@ services:
       - MONGO_FILES_DB=__DOCKER_PREFIX__-files
       - MONGO_METHODS_URI=mongodb://__DOCKER_PREFIX__-methods:27017/
       - MONGO_METHODS_DB=__DOCKER_PREFIX__-methods
+      - CLUSTER_NAME=__DOCKER_PREFIX__-slurm
       - METHODS_DIR=/environment/methods
       - LOG_LEVEL=WARNING
     volumes:

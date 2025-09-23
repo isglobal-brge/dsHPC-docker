@@ -2,16 +2,30 @@ import os
 from pymongo import MongoClient
 
 # Jobs MongoDB setup
-MONGO_JOBS_URI = os.getenv("MONGO_JOBS_URI", "mongodb://dshpc-jobs:27017/")
-MONGO_JOBS_DB = os.getenv("MONGO_JOBS_DB", "dshpc-jobs")
+MONGO_JOBS_URI = os.getenv("MONGO_JOBS_URI")
+MONGO_JOBS_DB = os.getenv("MONGO_JOBS_DB")
 
 # Files MongoDB setup
-MONGO_FILES_URI = os.getenv("MONGO_FILES_URI", "mongodb://dshpc-files:27017/")
-MONGO_FILES_DB = os.getenv("MONGO_FILES_DB", "dshpc-files")
+MONGO_FILES_URI = os.getenv("MONGO_FILES_URI")
+MONGO_FILES_DB = os.getenv("MONGO_FILES_DB")
 
 # Methods MongoDB setup
-MONGO_METHODS_URI = os.getenv("MONGO_METHODS_URI", "mongodb://dshpc-methods:27017/")
-MONGO_METHODS_DB = os.getenv("MONGO_METHODS_DB", "dshpc-methods")
+MONGO_METHODS_URI = os.getenv("MONGO_METHODS_URI")
+MONGO_METHODS_DB = os.getenv("MONGO_METHODS_DB")
+
+# Validate required environment variables
+required_vars = [
+    ("MONGO_JOBS_URI", MONGO_JOBS_URI),
+    ("MONGO_JOBS_DB", MONGO_JOBS_DB),
+    ("MONGO_FILES_URI", MONGO_FILES_URI),
+    ("MONGO_FILES_DB", MONGO_FILES_DB),
+    ("MONGO_METHODS_URI", MONGO_METHODS_URI),
+    ("MONGO_METHODS_DB", MONGO_METHODS_DB),
+]
+
+for var_name, var_value in required_vars:
+    if not var_value:
+        raise ValueError(f"Required environment variable {var_name} is not set")
 
 def get_jobs_db_client():
     """Get client for the jobs database."""

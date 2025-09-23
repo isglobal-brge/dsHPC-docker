@@ -29,8 +29,8 @@ if [ -f /config/slurm.conf ]; then
     cp /config/slurm.conf /etc/slurm/slurm.conf
 else
     echo -e "${YELLOW}>> No custom slurm.conf found, creating default configuration${NC}"
-    cat > /etc/slurm/slurm.conf << 'EOF'
-ClusterName=dshpc-slurm
+    cat > /etc/slurm/slurm.conf << EOF
+ClusterName=${CLUSTER_NAME:-dshpc-slurm}
 SlurmctldHost=localhost
 
 # LOGGING
