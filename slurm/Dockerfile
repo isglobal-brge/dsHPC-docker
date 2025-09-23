@@ -8,8 +8,16 @@ COPY config/python.json /tmp/python.json
 COPY config/r.json /tmp/r.json
 COPY config/system_deps.json /tmp/system_deps.json
 
-# Install base packages
-RUN apt-get update && apt-get install -y \
+# Configure apt to be more resilient to hash mismatches
+RUN echo 'Acquire::http::Pipeline-Depth "0";' >> /etc/apt/apt.conf.d/99fixbadproxy && \
+    echo 'Acquire::http::No-Cache=True;' >> /etc/apt/apt.conf.d/99fixbadproxy && \
+    echo 'Acquire::BrokenProxy=true;' >> /etc/apt/apt.conf.d/99fixbadproxy
+
+# Install base packages with retry logic and fix-missing
+RUN apt-get clean && \
+    rm -rf /var/lib/apt/lists/* && \
+    apt-get update --fix-missing && \
+    apt-get install -y --no-install-recommends --fix-missing -o Acquire::ForceIPv4=true \
     slurmd \
     slurmctld \
     slurm-client \
@@ -27,12 +35,32 @@ RUN apt-get update && apt-get install -y \
     libsqlite3-dev \
     jq \
     cgroup-tools \
+    || (sleep 5 && apt-get clean && rm -rf /var/lib/apt/lists/* && apt-get update --fix-missing && \
+        apt-get install -y --no-install-recommends --fix-missing -o Acquire::ForceIPv4=true \
+        slurmd \
+        slurmctld \
+        slurm-client \
+        munge \
+        python3 \
+        python3-pip \
+        python3-venv \
+        git \
+        curl \
+        build-essential \
+        libssl-dev \
+        zlib1g-dev \
+        libbz2-dev \
+        libreadline-dev \
+        libsqlite3-dev \
+        jq \
+        cgroup-tools) \
     && rm -rf /var/lib/apt/lists/*
 
 # Install system dependencies from config file if not empty
-RUN apt-get update && \
+RUN apt-get clean && \
+    apt-get update && \
     if [ $(jq '.apt_packages | length' /tmp/system_deps.json) -gt 0 ]; then \
-        jq -r '.apt_packages[]' /tmp/system_deps.json | xargs apt-get install -y; \
+        jq -r '.apt_packages[]' /tmp/system_deps.json | xargs apt-get install -y --fix-missing; \
     else \
         echo "No additional system packages specified, skipping..."; \
     fi && \
@@ -75,14 +103,19 @@ ENV PATH="/opt/venvs/system_python/bin:${PATH}"
 RUN echo 'source /opt/venvs/system_python/bin/activate' >> /root/.bashrc
 
 # Install R from CRAN
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN apt-get clean && \
+    rm -rf /var/lib/apt/lists/* && \
+    apt-get update --fix-missing && \
+    apt-get install -y --no-install-recommends --fix-missing -o Acquire::ForceIPv4=true \
     software-properties-common \
     dirmngr \
-    && apt-key adv --keyserver keyserver.ubuntu.com --recv-keys E298A3A825C0D65DFD57CBB651716619E084DAB9 \
+    gnupg \
+    gnupg-agent \
+    && apt-key adv --keyserver keyserver.ubuntu.com --recv-keys E298A3A825C0D65DFD57CBB651716619E084DAB9 || true \
     && add-apt-repository "deb https://cloud.r-project.org/bin/linux/ubuntu $(lsb_release -cs)-cran40/" \
-    && apt-get update \
+    && apt-get update --fix-missing \
     && R_VERSION=$(jq -r '.r_version' /tmp/r.json) \
-    && apt-get install -y --no-install-recommends r-base r-base-dev \
+    && apt-get install -y --no-install-recommends --fix-missing -o Acquire::ForceIPv4=true r-base r-base-dev \
     && R --version | grep -q "R version" \
     && rm -rf /var/lib/apt/lists/*
 
