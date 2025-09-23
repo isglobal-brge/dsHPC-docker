@@ -113,48 +113,108 @@ validate_environment() {
 setup_repository() {
     echo -e "${CYAN}📥 Setting up $ENV_NAME repository...${NC}"
     
-    local repo_dir="${ENV_NAME}-docker"
+    # Save user's environment directory if it exists
+    local user_env_exists=false
+    local temp_user_env=""
+    if [[ -d "environment" ]]; then
+        user_env_exists=true
+        temp_user_env=$(mktemp -d)
+        echo -e "${YELLOW}Preserving your environment configuration...${NC}"
+        cp -r environment/* "$temp_user_env/" 2>/dev/null || true
+    fi
     
-    if [[ -d "$repo_dir" ]]; then
-        echo -e "${YELLOW}Repository already exists, updating...${NC}"
-        cd "$repo_dir"
-        git pull origin main || git pull origin master
-        cd ..
+    # Check if we're already in a git repository
+    if [[ -d ".git" ]]; then
+        echo -e "${YELLOW}Git repository already exists, updating...${NC}"
+        git pull origin main || git pull origin master || echo -e "${YELLOW}Could not update repository${NC}"
         echo -e "${GREEN}✓ Repository updated${NC}"
     else
         echo -e "Cloning from: $BASE_REPO"
-        git clone "$BASE_REPO" "$repo_dir"
+        echo -e "${YELLOW}Cloning repository contents to current directory...${NC}"
+        
+        # Clone to temporary directory first
+        local temp_dir=$(mktemp -d)
+        git clone "$BASE_REPO" "$temp_dir/${ENV_NAME}-docker"
+        
         if [[ $? -eq 0 ]]; then
-            echo -e "${GREEN}✓ Repository cloned successfully${NC}"
+            # Save the original directory
+            local original_dir=$(pwd)
+            
+            # Move ALL contents from temp directory to current directory
+            cd "$temp_dir/${ENV_NAME}-docker"
+            
+            # Move regular files and directories
+            for item in *; do
+                if [[ -e "$item" ]]; then
+                    if [[ -e "$original_dir/$item" ]]; then
+                        echo -e "${YELLOW}⚠️  Backing up existing $item to $item.backup.$(date +%Y%m%d_%H%M%S)${NC}"
+                        mv "$original_dir/$item" "$original_dir/$item.backup.$(date +%Y%m%d_%H%M%S)"
+                    fi
+                    mv "$item" "$original_dir/"
+                fi
+            done
+            
+            # Also move hidden files like .gitignore
+            for item in .[^.]*; do
+                if [[ "$item" != ".git" && -e "$item" ]]; then
+                    if [[ -e "$original_dir/$item" ]]; then
+                        echo -e "${YELLOW}⚠️  Backing up existing $item to $item.backup.$(date +%Y%m%d_%H%M%S)${NC}"
+                        mv "$original_dir/$item" "$original_dir/$item.backup.$(date +%Y%m%d_%H%M%S)"
+                    fi
+                    mv "$item" "$original_dir/"
+                fi
+            done
+            
+            # Return to original directory
+            cd "$original_dir"
+            rm -rf "$temp_dir"
+            echo -e "${GREEN}✓ Repository contents copied to current directory${NC}"
         else
             echo -e "${RED}❌ Failed to clone repository${NC}"
+            rm -rf "$temp_dir"
             exit 1
         fi
+    fi
+    
+    # Restore user's environment if it existed
+    if [[ "$user_env_exists" == true ]]; then
+        echo -e "${YELLOW}Merging your environment configuration...${NC}"
+        # Copy user's environment files over the repo's defaults
+        cp -r "$temp_user_env"/* environment/ 2>/dev/null || true
+        rm -rf "$temp_user_env"
+        echo -e "${GREEN}✓ User environment configuration merged${NC}"
     fi
     
     echo
 }
 
-# Copy environment configuration
-copy_environment() {
-    echo -e "${CYAN}📋 Copying environment configuration...${NC}"
+# Setup environment configuration
+setup_environment() {
+    echo -e "${CYAN}📋 Setting up environment configuration...${NC}"
     
-    local repo_dir="${ENV_NAME}-docker"
-    
-    # Backup existing environment if it exists
-    if [[ -d "$repo_dir/environment" ]]; then
-        echo -e "${YELLOW}Backing up existing environment...${NC}"
-        mv "$repo_dir/environment" "$repo_dir/environment.backup.$(date +%Y%m%d_%H%M%S)"
+    # Check if environment directory exists
+    if [[ ! -d "environment" ]]; then
+        echo -e "${YELLOW}Creating environment directory structure...${NC}"
+        mkdir -p environment/methods/{commands,scripts}
+        
+        # Create default configuration files if they don't exist
+        if [[ ! -f "environment/python.json" ]]; then
+            echo '{"python_version": "3.10.0", "libraries": {}}' > environment/python.json
+        fi
+        if [[ ! -f "environment/r.json" ]]; then
+            echo '{"r_version": "4.3.0", "packages": {}}' > environment/r.json
+        fi
+        if [[ ! -f "environment/system_deps.json" ]]; then
+            echo '{"apt_packages": []}' > environment/system_deps.json
+        fi
+        echo -e "${GREEN}✓ Environment directory created with defaults${NC}"
+    else
+        echo -e "${GREEN}✓ Environment configuration ready${NC}"
     fi
     
-    # Copy user's environment
-    cp -r environment "$repo_dir/"
-    echo -e "${GREEN}✓ Environment configuration copied${NC}"
-    
-    # Copy config directory if it exists
+    # Config directory is optional
     if [[ -d "config" ]]; then
-        cp -r config "$repo_dir/"
-        echo -e "${GREEN}✓ Config directory copied${NC}"
+        echo -e "${GREEN}✓ Config directory found${NC}"
     fi
     
     echo
@@ -164,17 +224,18 @@ copy_environment() {
 generate_env_file() {
     echo -e "${CYAN}⚙️  Generating environment configuration...${NC}"
     
-    local repo_dir="${ENV_NAME}-docker"
     local api_key=$(generate_api_key)
+    # Convert to uppercase in a bash 3.2 compatible way
+    local docker_prefix_upper=$(echo "$DOCKER_PREFIX" | tr '[:lower:]' '[:upper:]')
     
-    # Create .env file
-    cat > "$repo_dir/.env" << EOF
+    # Create .env file in current directory
+    cat > ".env" << EOF
 # $DISPLAY_NAME Environment Configuration
 # Generated on $(date)
 
 # API Configuration
-${DOCKER_PREFIX^^}_API_EXTERNAL_PORT=$DEFAULT_PORT
-${DOCKER_PREFIX^^}_API_KEY=$api_key
+${docker_prefix_upper}_API_EXTERNAL_PORT=$DEFAULT_PORT
+${docker_prefix_upper}_API_KEY=$api_key
 
 # Docker Stack Configuration
 COMPOSE_PROJECT_NAME=${DOCKER_PREFIX}
@@ -183,9 +244,9 @@ COMPOSE_PROJECT_NAME=${DOCKER_PREFIX}
 LOG_LEVEL=WARNING
 EOF
     
-    echo -e "${GREEN}✓ Environment file created: $repo_dir/.env${NC}"
+    echo -e "${GREEN}✓ Environment file created: .env${NC}"
     echo -e "${YELLOW}📝 Generated API Key: $api_key${NC}"
-    echo -e "${CYAN}💡 You can modify these settings in $repo_dir/.env${NC}"
+    echo -e "${CYAN}💡 You can modify these settings in .env${NC}"
     
     echo
 }
@@ -194,51 +255,43 @@ EOF
 build_images() {
     echo -e "${CYAN}🔨 Building Docker images...${NC}"
     
-    local repo_dir="${ENV_NAME}-docker"
-    
-    cd "$repo_dir"
-    
     echo -e "Building images for $DISPLAY_NAME..."
-    if docker-compose build --parallel; then
+    echo -e "${YELLOW}Using --no-cache to ensure fresh build...${NC}"
+    if docker-compose build --no-cache --parallel; then
         echo -e "${GREEN}✓ Docker images built successfully${NC}"
     else
         echo -e "${RED}❌ Failed to build Docker images${NC}"
         echo -e "${YELLOW}💡 You can try building manually later with:${NC}"
-        echo -e "${YELLOW}   cd $repo_dir && docker-compose build${NC}"
+        echo -e "${YELLOW}   docker-compose build --no-cache${NC}"
     fi
     
-    cd ..
     echo
 }
 
 # Generate startup instructions
 generate_instructions() {
-    local repo_dir="${ENV_NAME}-docker"
-    
     echo -e "${GREEN}🎉 Setup completed successfully!${NC}"
     echo
-    echo -e "${BOLD}${CYAN}Next Steps:${NC}"
-    echo -e "${YELLOW}1.${NC} Navigate to the project directory:"
-    echo -e "   ${CYAN}cd $repo_dir${NC}"
-    echo
-    echo -e "${YELLOW}2.${NC} Start the services:"
+    echo -e "${BOLD}${CYAN}Ready to Start:${NC}"
+    echo -e "${YELLOW}1.${NC} Start the services:"
     echo -e "   ${CYAN}docker-compose up${NC}"
     echo -e "   ${CYAN}# Or run in background: docker-compose up -d${NC}"
     echo
-    echo -e "${YELLOW}3.${NC} Access the API:"
+    echo -e "${YELLOW}2.${NC} Access the API:"
     echo -e "   ${CYAN}http://localhost:$DEFAULT_PORT${NC}"
     echo
     echo -e "${BOLD}${CYAN}Configuration Files:${NC}"
-    echo -e "• ${YELLOW}Environment variables:${NC} $repo_dir/.env"
+    echo -e "• ${YELLOW}Environment variables:${NC} .env"
     echo -e "• ${YELLOW}API Authentication:${NC} Use X-API-Key header with generated key"
-    echo -e "• ${YELLOW}Methods:${NC} $repo_dir/environment/methods/"
-    echo -e "• ${YELLOW}Dependencies:${NC} $repo_dir/environment/*.json"
+    echo -e "• ${YELLOW}Methods:${NC} environment/methods/"
+    echo -e "• ${YELLOW}Dependencies:${NC} environment/*.json"
     echo
     echo -e "${BOLD}${CYAN}Useful Commands:${NC}"
     echo -e "• ${YELLOW}View logs:${NC} docker-compose logs -f"
     echo -e "• ${YELLOW}Stop services:${NC} docker-compose down"
-    echo -e "• ${YELLOW}Rebuild after changes:${NC} docker-compose build"
+    echo -e "• ${YELLOW}Rebuild after changes:${NC} docker-compose build --no-cache"
     echo -e "• ${YELLOW}Check status:${NC} docker-compose ps"
+    echo -e "• ${YELLOW}Clean rebuild:${NC} docker-compose down && docker-compose build --no-cache && docker-compose up"
     echo
 }
 
@@ -253,12 +306,12 @@ main() {
     
     validate_environment
     setup_repository
-    copy_environment
+    setup_environment
     generate_env_file
     
     # Ask user if they want to build images now
     echo -e "${YELLOW}Do you want to build Docker images now? This may take several minutes.${NC}"
-    echo -e "${CYAN}You can also build them later with: cd ${ENV_NAME}-docker && docker-compose build${NC}"
+    echo -e "${CYAN}You can also build them later with: docker-compose build --no-cache${NC}"
     read -p "Build images now? (y/N): " -n 1 -r
     echo
     
