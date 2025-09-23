@@ -1,42 +1,42 @@
 version: '3.8'
 
 services:
-  dshpc-api:
-    container_name: dshpc-api
+  __DOCKER_PREFIX__-api:
+    container_name: __DOCKER_PREFIX__-api
     build:
       context: .
       dockerfile: ./src/dshpc_api/Dockerfile
     ports:
-      - "${DSHPC_API_EXTERNAL_PORT:-8001}:8001"
+      - "${API_EXTERNAL_PORT:-8001}:8001"
     depends_on:
-      dshpc-slurm:
+      __DOCKER_PREFIX__-slurm:
         condition: service_healthy
     environment:
-      - SLURM_API_URL=http://dshpc-slurm:8000
-      - MONGO_JOBS_URI=mongodb://dshpc-jobs:27017/
-      - MONGO_JOBS_DB=dshpc-jobs
-      - MONGO_FILES_URI=mongodb://dshpc-files:27017/
-      - MONGO_FILES_DB=dshpc-files
-      - MONGO_METHODS_URI=mongodb://dshpc-methods:27017/
-      - MONGO_METHODS_DB=dshpc-methods
-      - DSHPC_API_EXTERNAL_PORT=${DSHPC_API_EXTERNAL_PORT:-8001}
-      - API_KEY=${DSHPC_API_KEY}
+      - SLURM_API_URL=http://__DOCKER_PREFIX__-slurm:8000
+      - MONGO_JOBS_URI=mongodb://__DOCKER_PREFIX__-jobs:27017/
+      - MONGO_JOBS_DB=__DOCKER_PREFIX__-jobs
+      - MONGO_FILES_URI=mongodb://__DOCKER_PREFIX__-files:27017/
+      - MONGO_FILES_DB=__DOCKER_PREFIX__-files
+      - MONGO_METHODS_URI=mongodb://__DOCKER_PREFIX__-methods:27017/
+      - MONGO_METHODS_DB=__DOCKER_PREFIX__-methods
+      - API_EXTERNAL_PORT=${API_EXTERNAL_PORT:-8001}
+      - API_KEY=${API_KEY}
       - LOG_LEVEL=WARNING
       - PYTHONUNBUFFERED=1
       - PYTHONIOENCODING=UTF-8
     volumes:
       - ./src/dshpc_api:/app/dshpc_api
     networks:
-      - dshpc-public-network
-      - dshpc-internal-network
+      - __DOCKER_PREFIX__-public-network
+      - __DOCKER_PREFIX__-internal-network
     logging:
       driver: "json-file"
       options:
         max-size: "10m"
         max-file: "3"
 
-  dshpc-slurm:
-    container_name: dshpc-slurm
+  __DOCKER_PREFIX__-slurm:
+    container_name: __DOCKER_PREFIX__-slurm
     build: 
       context: .
       dockerfile: ./src/slurm/Dockerfile
@@ -44,16 +44,16 @@ services:
     expose:
       - "8000"
     depends_on:
-      - dshpc-jobs
-      - dshpc-files
-      - dshpc-methods
+      - __DOCKER_PREFIX__-jobs
+      - __DOCKER_PREFIX__-files
+      - __DOCKER_PREFIX__-methods
     environment:
-      - MONGO_JOBS_URI=mongodb://dshpc-jobs:27017/
-      - MONGO_JOBS_DB=dshpc-jobs
-      - MONGO_FILES_URI=mongodb://dshpc-files:27017/
-      - MONGO_FILES_DB=dshpc-files
-      - MONGO_METHODS_URI=mongodb://dshpc-methods:27017/
-      - MONGO_METHODS_DB=dshpc-methods
+      - MONGO_JOBS_URI=mongodb://__DOCKER_PREFIX__-jobs:27017/
+      - MONGO_JOBS_DB=__DOCKER_PREFIX__-jobs
+      - MONGO_FILES_URI=mongodb://__DOCKER_PREFIX__-files:27017/
+      - MONGO_FILES_DB=__DOCKER_PREFIX__-files
+      - MONGO_METHODS_URI=mongodb://__DOCKER_PREFIX__-methods:27017/
+      - MONGO_METHODS_DB=__DOCKER_PREFIX__-methods
       - METHODS_DIR=/environment/methods
       - LOG_LEVEL=WARNING
     volumes:
@@ -61,7 +61,7 @@ services:
       - ./environment:/environment
       - ./config:/config
     networks:
-      - dshpc-internal-network
+      - __DOCKER_PREFIX__-internal-network
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
       interval: 10s
@@ -75,58 +75,58 @@ services:
         max-size: "10m"
         max-file: "3"
 
-  dshpc-jobs:
-    container_name: dshpc-jobs
+  __DOCKER_PREFIX__-jobs:
+    container_name: __DOCKER_PREFIX__-jobs
     image: mongo:latest
     expose:
       - "27017"
     volumes:
       - mongodb_jobs_data:/data/db
     networks:
-      - dshpc-internal-network
+      - __DOCKER_PREFIX__-internal-network
     command: mongod --port 27017 --quiet --logpath /dev/null
     logging:
       driver: "none"
 
-  dshpc-files:
-    container_name: dshpc-files
+  __DOCKER_PREFIX__-files:
+    container_name: __DOCKER_PREFIX__-files
     image: mongo:latest
     expose:
       - "27017"
     volumes:
       - mongodb_files_data:/data/db
     networks:
-      - dshpc-internal-network
+      - __DOCKER_PREFIX__-internal-network
     command: mongod --port 27017 --quiet --logpath /dev/null
     logging:
       driver: "none"
 
-  dshpc-methods:
-    container_name: dshpc-methods
+  __DOCKER_PREFIX__-methods:
+    container_name: __DOCKER_PREFIX__-methods
     image: mongo:latest
     expose:
       - "27017"
     volumes:
       - mongodb_methods_data:/data/db
     networks:
-      - dshpc-internal-network
+      - __DOCKER_PREFIX__-internal-network
     command: mongod --port 27017 --quiet --logpath /dev/null
     logging:
       driver: "none"
 
 volumes:
   mongodb_jobs_data:
-    name: dshpc-mongodb-jobs-data
+    name: __DOCKER_PREFIX__-mongodb-jobs-data
   mongodb_files_data:
-    name: dshpc-mongodb-files-data
+    name: __DOCKER_PREFIX__-mongodb-files-data
   mongodb_methods_data:
-    name: dshpc-mongodb-methods-data
+    name: __DOCKER_PREFIX__-mongodb-methods-data
   job_workspace:
-    name: dshpc-job-workspace
+    name: __DOCKER_PREFIX__-job-workspace
 
 networks:
-  dshpc-internal-network:
-    name: dshpc-internal-network
+  __DOCKER_PREFIX__-internal-network:
+    name: __DOCKER_PREFIX__-internal-network
     internal: true
-  dshpc-public-network:
-    name: dshpc-public-network 
+  __DOCKER_PREFIX__-public-network:
+    name: __DOCKER_PREFIX__-public-network 
