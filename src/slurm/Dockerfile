@@ -3,11 +3,10 @@ FROM ubuntu:22.04
 # Prevent interactive prompts during package installation
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Configuration files will be mounted at runtime from /environment
-# Create placeholder files with defaults for build process
-RUN echo '{"python_version": "3.10.0", "libraries": {}}' > /tmp/python.json && \
-    echo '{"r_version": "4.3.0", "packages": {}}' > /tmp/r.json && \
-    echo '{"apt_packages": []}' > /tmp/system_deps.json
+# Copy configuration files from the environment directory for build process
+COPY environment/python.json /tmp/python.json
+COPY environment/r.json /tmp/r.json
+COPY environment/system_deps.json /tmp/system_deps.json
 
 # Configure apt to be more resilient to hash mismatches
 RUN echo 'Acquire::http::Pipeline-Depth "0";' >> /etc/apt/apt.conf.d/99fixbadproxy && \
