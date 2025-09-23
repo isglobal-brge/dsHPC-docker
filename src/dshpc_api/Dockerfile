@@ -3,11 +3,11 @@ FROM python:3.10-slim
 WORKDIR /app
 
 # Install dependencies
-COPY dshpc_api/requirements.txt .
+COPY src/dshpc_api/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy application code
-COPY dshpc_api /app/dshpc_api
+COPY src/dshpc_api /app/dshpc_api
 
 # Expose port
 EXPOSE 8001

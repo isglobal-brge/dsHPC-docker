@@ -3,10 +3,11 @@ FROM ubuntu:22.04
 # Prevent interactive prompts during package installation
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Copy configuration files
-COPY config/python.json /tmp/python.json
-COPY config/r.json /tmp/r.json
-COPY config/system_deps.json /tmp/system_deps.json
+# Configuration files will be mounted at runtime from /environment
+# Create placeholder files with defaults for build process
+RUN echo '{"python_version": "3.10.0", "libraries": {}}' > /tmp/python.json && \
+    echo '{"r_version": "4.3.0", "packages": {}}' > /tmp/r.json && \
+    echo '{"apt_packages": []}' > /tmp/system_deps.json
 
 # Configure apt to be more resilient to hash mismatches
 RUN echo 'Acquire::http::Pipeline-Depth "0";' >> /etc/apt/apt.conf.d/99fixbadproxy && \
@@ -123,7 +124,7 @@ RUN apt-get clean && \
 RUN R -s -e "install.packages(c('BiocManager', 'jsonlite'), repos='https://cloud.r-project.org/')"
 
 # Copy the R package installation script
-COPY slurm/install-r-packages.sh /usr/local/bin/install-r-packages.sh
+COPY src/slurm/install-r-packages.sh /usr/local/bin/install-r-packages.sh
 RUN chmod +x /usr/local/bin/install-r-packages.sh
 
 # Install R packages from config if not empty
@@ -157,10 +158,10 @@ RUN mkdir -p /var/run/munge \
     && chmod 777 /methods
 
 # Copy configuration files and API
-COPY slurm_api /app/slurm_api
-COPY slurm/start-services.sh /start-services.sh
-COPY slurm/load-methods.sh /load-methods.sh
-COPY slurm/scripts /app/slurm/scripts
+COPY src/slurm_api /app/slurm_api
+COPY src/slurm/start-services.sh /start-services.sh
+COPY src/slurm/load-methods.sh /load-methods.sh
+COPY src/slurm/scripts /app/slurm/scripts
 
 # Make the startup scripts executable
 RUN chmod +x /start-services.sh \

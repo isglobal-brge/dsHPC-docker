@@ -1,75 +1,29 @@
-# Configuration Files
+# Configuration Directory
 
-This directory contains configuration files used to customize the Docker environment for the Slurm API service.
+This directory contains runtime configuration files for the dsHPC system.
 
-## Overview
+## slurm.conf
 
-Three configuration files control different aspects of the environment:
+The Slurm configuration file (`slurm.conf`) defines the cluster configuration. 
 
-1. `python.json` - Configures Python environment and packages
-2. `r.json` - Configures R environment and packages
-3. `system_deps.json` - Configures additional system dependencies installed via `apt-get`
+- If you provide a custom `slurm.conf` file in this directory, it will be used by the system
+- If no `slurm.conf` is present, a default configuration will be created automatically
 
-Each file can be customized to meet your specific requirements without modifying the Dockerfile.
+### Default Configuration
 
-## File Formats
+If no custom configuration is provided, the system creates a default `slurm.conf` with:
+- ClusterName: dshpc-slurm
+- Single node: localhost with 8 CPUs
+- Debug partition with unlimited time
+- Debug logging enabled
 
-### python.json
+### Custom Configuration
 
-Controls the Python version and packages installed in the system Python environment:
+To use a custom Slurm configuration:
+1. Place your `slurm.conf` file in this directory
+2. The file will be copied to `/etc/slurm/slurm.conf` when the container starts
+3. Restart the container for changes to take effect
 
-```json
-{
-  "python_version": "3.8.10",
-  "libraries": {
-    "numpy": ">=1.22.0",
-    "pandas": ">=1.3.5"
-  }
-}
-```
+## Environment Configuration
 
-- `python_version`: The specific Python version to install via pyenv
-- `libraries`: Key-value pairs of Python packages and their version requirements
-
-### r.json
-
-Controls the R version and packages installed:
-
-```json
-{
-  "r_version": "4.4.0",
-  "packages": {
-    "ggplot2": ">=3.4.0",
-    "dplyr": ">=1.0.10"
-  }
-}
-```
-
-- `r_version`: The R version to install
-- `packages`: Key-value pairs of R packages and their version requirements
-
-### system_deps.json
-
-Controls additional system packages installed via apt-get:
-
-```json
-{
-  "apt_packages": [
-    "libssl-dev",
-    "git",
-    "wget"
-  ]
-}
-```
-
-- `apt_packages`: List of packages to install with apt-get
-
-## Usage
-
-The Docker container build process reads these configuration files and installs the specified software. You can:
-
-1. Modify any configuration file to add, remove, or update packages
-2. Leave sections empty (e.g., empty `apt_packages` array) to skip installing those components
-3. Rebuild the container with `docker-compose build` after changes
-
-The configuration allows for a flexible and reproducible environment without modifying the Dockerfile directly. 
+Environment configuration files (python.json, r.json, system_deps.json) have been moved to the `environment/` directory. See the environment directory README for details.

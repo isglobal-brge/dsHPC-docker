@@ -5,7 +5,7 @@ services:
     container_name: dshpc-api
     build:
       context: .
-      dockerfile: ./dshpc_api/Dockerfile
+      dockerfile: ./src/dshpc_api/Dockerfile
     ports:
       - "${DSHPC_API_EXTERNAL_PORT:-8001}:8001"
     depends_on:
@@ -25,7 +25,7 @@ services:
       - PYTHONUNBUFFERED=1
       - PYTHONIOENCODING=UTF-8
     volumes:
-      - ./dshpc_api:/app/dshpc_api
+      - ./src/dshpc_api:/app/dshpc_api
     networks:
       - dshpc-public-network
       - dshpc-internal-network
@@ -39,7 +39,7 @@ services:
     container_name: dshpc-slurm
     build: 
       context: .
-      dockerfile: ./slurm/Dockerfile
+      dockerfile: ./src/slurm/Dockerfile
     privileged: true
     expose:
       - "8000"
@@ -54,12 +54,12 @@ services:
       - MONGO_FILES_DB=dshpc-files
       - MONGO_METHODS_URI=mongodb://dshpc-methods:27017/
       - MONGO_METHODS_DB=dshpc-methods
-      - METHODS_DIR=/methods
+      - METHODS_DIR=/environment/methods
       - LOG_LEVEL=WARNING
     volumes:
       - job_workspace:/workspace
-      - ./methods:/methods
-      - ./config/slurm.conf:/etc/slurm/slurm.conf
+      - ./environment:/environment
+      - ./config:/config
     networks:
       - dshpc-internal-network
     healthcheck:

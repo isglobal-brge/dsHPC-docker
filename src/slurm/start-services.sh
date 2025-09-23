@@ -23,6 +23,47 @@ echo -e "${BOLD}Welcome to ${YELLOW}High-Performance Computing for DataSHIELD${N
 echo -e ""
 echo -e "${BOLD}${CYAN}>> Starting services...${NC}"
 
+# Handle slurm.conf - check if custom config exists, otherwise create default
+if [ -f /config/slurm.conf ]; then
+    echo -e "${GREEN}>> Using custom slurm.conf from /config${NC}"
+    cp /config/slurm.conf /etc/slurm/slurm.conf
+else
+    echo -e "${YELLOW}>> No custom slurm.conf found, creating default configuration${NC}"
+    cat > /etc/slurm/slurm.conf << 'EOF'
+ClusterName=dshpc-slurm
+SlurmctldHost=localhost
+
+# LOGGING
+SlurmctldLogFile=/var/log/slurm/slurmctld.log
+SlurmdLogFile=/var/log/slurm/slurmd.log
+SlurmdDebug=debug5
+SlurmctldDebug=debug5
+
+# COMPUTE NODES
+NodeName=localhost CPUs=8 Boards=1 SocketsPerBoard=1 CoresPerSocket=8 ThreadsPerCore=1 State=UNKNOWN
+PartitionName=debug Nodes=localhost Default=YES MaxTime=INFINITE State=UP
+
+# PROCESS TRACKING
+ProctrackType=proctrack/linuxproc
+EOF
+fi
+
+# Copy environment configuration files if they exist
+if [ -f /environment/python.json ]; then
+    echo -e "${GREEN}>> Using python.json from /environment${NC}"
+    cp /environment/python.json /tmp/python.json
+fi
+
+if [ -f /environment/r.json ]; then
+    echo -e "${GREEN}>> Using r.json from /environment${NC}"
+    cp /environment/r.json /tmp/r.json
+fi
+
+if [ -f /environment/system_deps.json ]; then
+    echo -e "${GREEN}>> Using system_deps.json from /environment${NC}"
+    cp /environment/system_deps.json /tmp/system_deps.json
+fi
+
 # Create Munge key if it doesn't exist
 if [ ! -f /etc/munge/munge.key ]; then
     dd if=/dev/urandom bs=1 count=1024 > /etc/munge/munge.key 2>/dev/null
