@@ -1,22 +1,6 @@
 {
   "r_version": "4.4.2",
   "packages": {
-    "resourcer": ">=1.1.1",
-    "tidyverse": "",
-    "magrittr": "",
-    "Biobase": "",
-    "SNPRelate": ">=1.26.0",
-    "GENESIS": "",
-    "GWASTools": "",
-    "GenomicRanges": "",
-    "SummarizedExperiment": "",
-    "MEAL": ">=1.22.0",
-    "knitr": "",
-    "DESeq2": "",
-    "edgeR": "",
-    "dplyr": "",
-    "readr": "",
-    "wkb": "",
-    "Rcpp": ">=1.0.7"
+    
   }
 } 
