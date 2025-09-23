@@ -113,14 +113,62 @@ validate_environment() {
 setup_repository() {
     echo -e "${CYAN}📥 Setting up $ENV_NAME repository...${NC}"
     
-    # Save user's environment directory if it exists
+    # Save user's files that should be preserved
     local user_env_exists=false
+    local user_env_file_exists=false
+    local user_readme_exists=false
+    local user_license_exists=false
+    local user_env_config_exists=false
+    local user_setup_script_exists=false
     local temp_user_env=""
+    local temp_env_file=""
+    local temp_readme_file=""
+    local temp_license_file=""
+    local temp_env_config_file=""
+    local temp_setup_script_file=""
+    
+    echo -e "${YELLOW}Preserving your custom files...${NC}"
+    
     if [[ -d "environment" ]]; then
         user_env_exists=true
         temp_user_env=$(mktemp -d)
-        echo -e "${YELLOW}Preserving your environment configuration...${NC}"
+        echo -e "${CYAN}  • Preserving environment/ directory${NC}"
         cp -r environment/* "$temp_user_env/" 2>/dev/null || true
+    fi
+    
+    if [[ -f ".env" ]]; then
+        user_env_file_exists=true
+        temp_env_file=$(mktemp)
+        echo -e "${CYAN}  • Preserving .env file${NC}"
+        cp ".env" "$temp_env_file"
+    fi
+    
+    if [[ -f "README.md" ]]; then
+        user_readme_exists=true
+        temp_readme_file=$(mktemp)
+        echo -e "${CYAN}  • Preserving README.md${NC}"
+        cp "README.md" "$temp_readme_file"
+    fi
+    
+    if [[ -f "LICENSE" ]]; then
+        user_license_exists=true
+        temp_license_file=$(mktemp)
+        echo -e "${CYAN}  • Preserving LICENSE${NC}"
+        cp "LICENSE" "$temp_license_file"
+    fi
+    
+    if [[ -f "environment-config.json" ]]; then
+        user_env_config_exists=true
+        temp_env_config_file=$(mktemp)
+        echo -e "${CYAN}  • Preserving environment-config.json${NC}"
+        cp "environment-config.json" "$temp_env_config_file"
+    fi
+    
+    if [[ -f "setup-dshpc-environment.sh" ]]; then
+        user_setup_script_exists=true
+        temp_setup_script_file=$(mktemp)
+        echo -e "${CYAN}  • Preserving setup-dshpc-environment.sh${NC}"
+        cp "setup-dshpc-environment.sh" "$temp_setup_script_file"
     fi
     
     # Check if we're already in a git repository
@@ -146,10 +194,7 @@ setup_repository() {
             # Move regular files and directories
             for item in *; do
                 if [[ -e "$item" ]]; then
-                    if [[ -e "$original_dir/$item" ]]; then
-                        echo -e "${YELLOW}⚠️  Backing up existing $item to $item.backup.$(date +%Y%m%d_%H%M%S)${NC}"
-                        mv "$original_dir/$item" "$original_dir/$item.backup.$(date +%Y%m%d_%H%M%S)"
-                    fi
+                    # Simply overwrite existing files (user files are already preserved)
                     mv "$item" "$original_dir/"
                 fi
             done
@@ -157,10 +202,7 @@ setup_repository() {
             # Also move hidden files like .gitignore
             for item in .[^.]*; do
                 if [[ "$item" != ".git" && -e "$item" ]]; then
-                    if [[ -e "$original_dir/$item" ]]; then
-                        echo -e "${YELLOW}⚠️  Backing up existing $item to $item.backup.$(date +%Y%m%d_%H%M%S)${NC}"
-                        mv "$original_dir/$item" "$original_dir/$item.backup.$(date +%Y%m%d_%H%M%S)"
-                    fi
+                    # Simply overwrite existing files (user files are already preserved)
                     mv "$item" "$original_dir/"
                 fi
             done
@@ -176,14 +218,47 @@ setup_repository() {
         fi
     fi
     
-    # Restore user's environment if it existed
+    # Restore all preserved user files
+    echo -e "${YELLOW}Restoring your preserved files...${NC}"
+    
     if [[ "$user_env_exists" == true ]]; then
-        echo -e "${YELLOW}Merging your environment configuration...${NC}"
+        echo -e "${CYAN}  • Restoring environment/ directory${NC}"
         # Copy user's environment files over the repo's defaults
         cp -r "$temp_user_env"/* environment/ 2>/dev/null || true
         rm -rf "$temp_user_env"
-        echo -e "${GREEN}✓ User environment configuration merged${NC}"
     fi
+    
+    if [[ "$user_env_file_exists" == true ]]; then
+        echo -e "${CYAN}  • Restoring .env file${NC}"
+        cp "$temp_env_file" ".env"
+        rm -f "$temp_env_file"
+    fi
+    
+    if [[ "$user_readme_exists" == true ]]; then
+        echo -e "${CYAN}  • Restoring README.md${NC}"
+        cp "$temp_readme_file" "README.md"
+        rm -f "$temp_readme_file"
+    fi
+    
+    if [[ "$user_license_exists" == true ]]; then
+        echo -e "${CYAN}  • Restoring LICENSE${NC}"
+        cp "$temp_license_file" "LICENSE"
+        rm -f "$temp_license_file"
+    fi
+    
+    if [[ "$user_env_config_exists" == true ]]; then
+        echo -e "${CYAN}  • Restoring environment-config.json${NC}"
+        cp "$temp_env_config_file" "environment-config.json"
+        rm -f "$temp_env_config_file"
+    fi
+    
+    if [[ "$user_setup_script_exists" == true ]]; then
+        echo -e "${CYAN}  • Restoring setup-dshpc-environment.sh${NC}"
+        cp "$temp_setup_script_file" "setup-dshpc-environment.sh"
+        rm -f "$temp_setup_script_file"
+    fi
+    
+    echo -e "${GREEN}✓ User files restored successfully${NC}"
     
     echo
 }
@@ -224,12 +299,23 @@ setup_environment() {
 generate_env_file() {
     echo -e "${CYAN}⚙️  Generating environment configuration...${NC}"
     
-    local api_key=$(generate_api_key)
-    # Convert to uppercase in a bash 3.2 compatible way
-    local docker_prefix_upper=$(echo "$DOCKER_PREFIX" | tr '[:lower:]' '[:upper:]')
-    
-    # Create .env file in current directory
-    cat > ".env" << EOF
+    # Check if .env already exists
+    if [[ -f ".env" ]]; then
+        echo -e "${GREEN}✓ Environment file already exists, preserving it${NC}"
+        echo -e "${CYAN}💡 To regenerate API key, delete .env and run setup again${NC}"
+        
+        # Extract current API key for display
+        local current_api_key=$(grep "API_KEY=" .env | cut -d'=' -f2)
+        if [[ -n "$current_api_key" ]]; then
+            echo -e "${YELLOW}📝 Current API Key: $current_api_key${NC}"
+        fi
+    else
+        local api_key=$(generate_api_key)
+        # Convert to uppercase in a bash 3.2 compatible way
+        local docker_prefix_upper=$(echo "$DOCKER_PREFIX" | tr '[:lower:]' '[:upper:]')
+        
+        # Create .env file in current directory
+        cat > ".env" << EOF
 # $DISPLAY_NAME Environment Configuration
 # Generated on $(date)
 
@@ -243,10 +329,11 @@ COMPOSE_PROJECT_NAME=${DOCKER_PREFIX}
 # Logging Configuration
 LOG_LEVEL=WARNING
 EOF
-    
-    echo -e "${GREEN}✓ Environment file created: .env${NC}"
-    echo -e "${YELLOW}📝 Generated API Key: $api_key${NC}"
-    echo -e "${CYAN}💡 You can modify these settings in .env${NC}"
+        
+        echo -e "${GREEN}✓ Environment file created: .env${NC}"
+        echo -e "${YELLOW}📝 Generated API Key: $api_key${NC}"
+        echo -e "${CYAN}💡 You can modify these settings in .env${NC}"
+    fi
     
     echo
 }
