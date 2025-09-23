@@ -23,10 +23,11 @@ RUN echo '#!/bin/bash' > /app/start.sh && \
     echo 'NC="\033[0m"' >> /app/start.sh && \
     echo '' >> /app/start.sh && \
     echo 'echo -e "    > Starting API service..."' >> /app/start.sh && \
-    echo 'PORT=${API_EXTERNAL_PORT:-8001}' >> /app/start.sh && \
-    echo 'uvicorn dshpc_api.main:app --host 0.0.0.0 --port ${PORT} --reload --log-level warning --no-access-log & PID=$!' >> /app/start.sh && \
+    echo 'EXTERNAL_PORT=${API_EXTERNAL_PORT:-8001}' >> /app/start.sh && \
+    echo 'uvicorn dshpc_api.main:app --host 0.0.0.0 --port 8001 --reload --log-level warning --no-access-log & PID=$!' >> /app/start.sh && \
     echo 'sleep 2' >> /app/start.sh && \
     echo 'echo -e "${GREEN}>> API service ready!${NC}"' >> /app/start.sh && \
+    echo 'echo -e "${GREEN}>> API available externally on port: ${YELLOW}${EXTERNAL_PORT}${NC}"' >> /app/start.sh && \
     echo 'echo -e ""' >> /app/start.sh && \
     echo 'echo -e "${BOLD}All systems are ${GREEN}ready${NC}${BOLD}! Enjoy using ${YELLOW}dsHPC${NC}${BOLD}!"' >> /app/start.sh && \
     echo 'wait $PID' >> /app/start.sh && \
