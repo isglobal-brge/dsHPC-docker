@@ -64,7 +64,9 @@ def prepare_job_script(job_id: str, job: JobSubmission) -> str:
             f.write(f"#SBATCH --job-name={job.name}\n")
         # Capture output to a file
         output_path = f"/tmp/output_{job_id}.txt"
-        f.write(f"exec 1> {output_path} 2>&1\n")  # Redirect both stdout and stderr
+        error_path = f"/tmp/error_{job_id}.txt"
+        # Redirect stdout to output file and stderr to error file (separate them)
+        f.write(f"exec 1> {output_path} 2> {error_path}\n")
         
         # Add workspace directory and file path to environment variables
         f.write(f"export JOB_WORKSPACE=\"{workspace_dir}\"\n")
@@ -144,9 +146,11 @@ def get_job_info(job_id: str) -> Dict[str, Any]:
 def process_job_output(job_id: str, slurm_id: str, final_state: str) -> bool:
     """Process job output files and update job status."""
     output_path = f"/tmp/output_{job_id}.txt"
+    error_path = f"/tmp/error_{job_id}.txt"
     exit_code_path = f"/tmp/exit_code_{job_id}"
     exit_code = 1 # Default to error if exit code file not found or invalid
     output = None
+    stderr_content = None
     error = None
     job_status = JobStatus.FAILED # Default to FAILED
     
@@ -165,7 +169,7 @@ def process_job_output(job_id: str, slurm_id: str, final_state: str) -> bool:
         error = "Exit code file not found."
         logger.warning(f"Exit code file not found for job {job_id}")
 
-    # Read output file if exists
+    # Read stdout (output) file if exists
     if os.path.exists(output_path):
         try:
             with open(output_path) as f:
@@ -176,6 +180,14 @@ def process_job_output(job_id: str, slurm_id: str, final_state: str) -> bool:
     else:
         error = f"{(error + ' ') if error else ''}Output file not found."
         logger.warning(f"Output file not found for job {job_id}")
+    
+    # Read stderr file if exists (only use it for errors)
+    if os.path.exists(error_path):
+        try:
+            with open(error_path) as f:
+                stderr_content = f.read().strip()
+        except Exception as e:
+            logger.error(f"Error reading stderr file for job {job_id}: {e}")
 
     # Determine final job status based on exit code and Slurm state
     if exit_code == 0:
@@ -200,6 +212,9 @@ def process_job_output(job_id: str, slurm_id: str, final_state: str) -> bool:
         # If exit code is non-zero, always mark as FAILED
         job_status = JobStatus.FAILED
         error = f"{(error + ' ') if error else ''}Script exited with non-zero code: {exit_code}."
+        # Add stderr content to error message only if job failed
+        if stderr_content:
+            error = f"{error} Stderr: {stderr_content}"
         logger.info(f"Job {job_id} marked as FAILED due to non-zero exit code: {exit_code}")
 
     # Update the job status in the database
@@ -208,6 +223,8 @@ def process_job_output(job_id: str, slurm_id: str, final_state: str) -> bool:
         # Clean up temporary files only after successful update
         if os.path.exists(output_path):
             os.remove(output_path)
+        if os.path.exists(error_path):
+            os.remove(error_path)
         if os.path.exists(exit_code_path):
             os.remove(exit_code_path)
         return True
