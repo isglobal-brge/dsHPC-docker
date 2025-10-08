@@ -1,14 +1,17 @@
 from pymongo import MongoClient
-from typing import List, Dict, Any, Tuple
+from typing import List, Dict, Any, Tuple, Optional
 import asyncio
 from datetime import datetime
-from motor.motor_asyncio import AsyncIOMotorClient
+from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorGridFSBucket
+import base64
+import hashlib
 
 from dshpc_api.config.settings import get_settings
 
 # Cached database connections
 _jobs_db = None
 _files_db = None
+_gridfs_bucket = None
 
 async def get_jobs_db():
     """
@@ -31,6 +34,16 @@ async def get_files_db():
         client = AsyncIOMotorClient(settings.MONGO_FILES_URI)
         _files_db = client[settings.MONGO_FILES_DB]
     return _files_db
+
+async def get_gridfs_bucket():
+    """
+    Get a GridFS bucket for storing large files.
+    """
+    global _gridfs_bucket
+    if _gridfs_bucket is None:
+        db = await get_files_db()
+        _gridfs_bucket = AsyncIOMotorGridFSBucket(db)
+    return _gridfs_bucket
 
 async def get_job_by_id(job_id: str) -> Dict[str, Any]:
     """
@@ -65,6 +78,7 @@ async def file_exists(file_hash: str) -> bool:
 async def upload_file(file_data: Dict[str, Any]) -> Tuple[bool, str, Dict[str, Any]]:
     """
     Upload a file to the files database.
+    For large files (>15MB), uses GridFS for storage.
     
     Returns:
         Tuple containing:
@@ -81,16 +95,77 @@ async def upload_file(file_data: Dict[str, Any]) -> Tuple[bool, str, Dict[str, A
     file_data["upload_date"] = now
     file_data["last_checked"] = now
     
-    # Upload to database
-    db = await get_files_db()
-    result = await db.files.insert_one(file_data)
+    # Decode base64 content to get actual file size
+    content_base64 = file_data.get("content", "")
+    try:
+        content_bytes = base64.b64decode(content_base64)
+        file_size = len(content_bytes)
+    except Exception as e:
+        return False, f"Error decoding file content: {str(e)}", None
     
-    # Get the uploaded file
-    uploaded_file = await db.files.find_one({"_id": result.inserted_id})
-    if uploaded_file:
-        uploaded_file["_id"] = str(uploaded_file["_id"])
+    # Use GridFS for files larger than 15MB (leaving 1MB margin for BSON overhead)
+    # 15MB = 15 * 1024 * 1024 bytes
+    GRIDFS_THRESHOLD = 15 * 1024 * 1024
     
-    return True, "File uploaded successfully", uploaded_file
+    if file_size > GRIDFS_THRESHOLD:
+        # Use GridFS for large files
+        try:
+            bucket = await get_gridfs_bucket()
+            
+            # Store file in GridFS
+            grid_id = await bucket.upload_from_stream(
+                file_data["file_hash"],  # Use hash as filename in GridFS
+                content_bytes,
+                metadata={
+                    "filename": file_data.get("filename"),
+                    "content_type": file_data.get("content_type"),
+                    "original_metadata": file_data.get("metadata"),
+                    "upload_date": now,
+                    "file_hash": file_data["file_hash"]
+                }
+            )
+            
+            # Store metadata in regular collection (without content)
+            metadata_doc = {
+                "file_hash": file_data["file_hash"],
+                "filename": file_data.get("filename"),
+                "content_type": file_data.get("content_type"),
+                "metadata": file_data.get("metadata"),
+                "upload_date": now,
+                "last_checked": now,
+                "storage_type": "gridfs",
+                "gridfs_id": grid_id,
+                "file_size": file_size
+            }
+            
+            db = await get_files_db()
+            result = await db.files.insert_one(metadata_doc)
+            
+            # Get the uploaded file metadata
+            uploaded_file = await db.files.find_one({"_id": result.inserted_id})
+            if uploaded_file:
+                uploaded_file["_id"] = str(uploaded_file["_id"])
+                uploaded_file["gridfs_id"] = str(uploaded_file["gridfs_id"])
+                # Don't return the content for GridFS files
+                uploaded_file["content"] = "[Stored in GridFS]"
+            
+            return True, "Large file uploaded successfully using GridFS", uploaded_file
+            
+        except Exception as e:
+            return False, f"Error uploading file to GridFS: {str(e)}", None
+    else:
+        # Use regular storage for small files
+        db = await get_files_db()
+        file_data["storage_type"] = "inline"
+        file_data["file_size"] = file_size
+        result = await db.files.insert_one(file_data)
+        
+        # Get the uploaded file
+        uploaded_file = await db.files.find_one({"_id": result.inserted_id})
+        if uploaded_file:
+            uploaded_file["_id"] = str(uploaded_file["_id"])
+        
+        return True, "File uploaded successfully", uploaded_file
 
 async def check_hashes(hashes: List[str]) -> Tuple[List[str], List[str]]:
     """
@@ -127,12 +202,31 @@ async def check_hashes(hashes: List[str]) -> Tuple[List[str], List[str]]:
     
     return existing_hashes, missing_hashes
 
-async def get_file_by_hash(file_hash: str) -> Dict[str, Any]:
+async def get_file_by_hash(file_hash: str) -> Optional[Dict[str, Any]]:
     """
-    Get a file by its hash.
+    Get a file by its hash, including content from GridFS if applicable.
     """
     db = await get_files_db()
     file = await db.files.find_one({"file_hash": file_hash})
     if file:
         file["_id"] = str(file["_id"])
+        
+        # If file is stored in GridFS, retrieve the content
+        if file.get("storage_type") == "gridfs":
+            try:
+                bucket = await get_gridfs_bucket()
+                grid_id = file.get("gridfs_id")
+                
+                if grid_id:
+                    # Download content from GridFS
+                    grid_out = await bucket.open_download_stream(grid_id)
+                    content_bytes = await grid_out.read()
+                    # Encode back to base64 for consistency
+                    file["content"] = base64.b64encode(content_bytes).decode('utf-8')
+                    file["gridfs_id"] = str(file["gridfs_id"])
+            except Exception as e:
+                # Log error but return metadata
+                file["content"] = ""  # Empty content on error
+                file["error"] = f"Failed to retrieve content from GridFS: {str(e)}"
+    
     return file 
