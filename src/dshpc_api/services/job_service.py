@@ -4,7 +4,7 @@ from typing import Dict, Any, Optional, Tuple
 from datetime import datetime
 
 from dshpc_api.config.settings import get_settings
-from dshpc_api.services.db_service import get_jobs_db, get_files_db
+from dshpc_api.services.db_service import get_jobs_db, get_files_db, get_job_by_id
 from dshpc_api.services.method_service import check_method_functionality
 from dshpc_api.utils.parameter_utils import sort_parameters
 
@@ -118,6 +118,12 @@ async def find_existing_job(file_hash: str, function_hash: str, parameters: Dict
             "function_hash": function_hash,
             "parameters": sorted_params
         }, sort=[("created_at", -1)])
+        
+        if job:
+            # Use get_job_by_id to retrieve the full job data including GridFS output if needed
+            job_id = job.get("job_id")
+            if job_id:
+                job = await get_job_by_id(job_id)
         
         return job
     except Exception as e:
