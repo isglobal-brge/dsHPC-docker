@@ -64,6 +64,10 @@ def prepare_job_script(job_id: str, job: JobSubmission) -> str:
         f.write("#!/bin/bash\n")
         if job.name:
             f.write(f"#SBATCH --job-name={job.name}\n")
+        # Allocate maximum available memory (0 means all available)
+        f.write("#SBATCH --mem=0\n")
+        # Use all available CPUs
+        f.write("#SBATCH --cpus-per-task=8\n")
         # Capture output to a file
         output_path = f"/tmp/output_{job_id}.txt"
         error_path = f"/tmp/error_{job_id}.txt"
