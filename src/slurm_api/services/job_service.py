@@ -2,8 +2,10 @@ import os
 import uuid
 from datetime import datetime
 from typing import Dict, Any, Tuple
+from gridfs import GridFS
+from bson import ObjectId
 
-from slurm_api.config.db_config import jobs_collection
+from slurm_api.config.db_config import jobs_collection, get_jobs_db_client
 from slurm_api.config.logging_config import logger
 from slurm_api.models.job import JobStatus, JobSubmission
 from slurm_api.utils.db_utils import update_job_status
@@ -135,11 +137,53 @@ def create_job(job: JobSubmission) -> Tuple[str, Dict[str, Any]]:
     return job_id, job_doc
 
 def get_job_info(job_id: str) -> Dict[str, Any]:
-    """Get job information from MongoDB."""
+    """Get job information from MongoDB, retrieving large outputs from GridFS if needed."""
     job = jobs_collection.find_one({"job_id": job_id})
     if job:
         # Convert MongoDB ObjectId to string for JSON serialization
         job["_id"] = str(job["_id"])
+        
+        # Check if output is stored in GridFS
+        if job.get("output_storage") == "gridfs" and job.get("output_gridfs_id"):
+            try:
+                db = get_jobs_db_client()
+                fs = GridFS(db, collection="job_outputs")
+                
+                grid_id = job["output_gridfs_id"]
+                if isinstance(grid_id, str):
+                    grid_id = ObjectId(grid_id)
+                
+                # Retrieve output from GridFS
+                grid_out = fs.get(grid_id)
+                job["output"] = grid_out.read().decode('utf-8')
+                grid_out.close()
+                
+                # Convert GridFS ID to string for JSON serialization
+                job["output_gridfs_id"] = str(job["output_gridfs_id"])
+            except Exception as e:
+                logger.error(f"Error retrieving output from GridFS for job {job_id}: {e}")
+                job["output"] = f"[Error retrieving output from GridFS: {str(e)}]"
+        
+        # Check if error is stored in GridFS
+        if job.get("error_storage") == "gridfs" and job.get("error_gridfs_id"):
+            try:
+                db = get_jobs_db_client()
+                fs = GridFS(db, collection="job_outputs")
+                
+                grid_id = job["error_gridfs_id"]
+                if isinstance(grid_id, str):
+                    grid_id = ObjectId(grid_id)
+                
+                # Retrieve error from GridFS
+                grid_out = fs.get(grid_id)
+                job["error"] = grid_out.read().decode('utf-8')
+                grid_out.close()
+                
+                # Convert GridFS ID to string for JSON serialization
+                job["error_gridfs_id"] = str(job["error_gridfs_id"])
+            except Exception as e:
+                logger.error(f"Error retrieving error from GridFS for job {job_id}: {e}")
+                job["error"] = f"[Error retrieving error from GridFS: {str(e)}]"
     
     return job
 

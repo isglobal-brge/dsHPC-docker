@@ -12,6 +12,7 @@ from dshpc_api.config.settings import get_settings
 _jobs_db = None
 _files_db = None
 _gridfs_bucket = None
+_jobs_gridfs_bucket = None
 
 async def get_jobs_db():
     """
@@ -45,14 +46,59 @@ async def get_gridfs_bucket():
         _gridfs_bucket = AsyncIOMotorGridFSBucket(db)
     return _gridfs_bucket
 
-async def get_job_by_id(job_id: str) -> Dict[str, Any]:
+async def get_jobs_gridfs_bucket():
     """
-    Get a job from the jobs database by ID.
+    Get a GridFS bucket for storing large job outputs.
+    """
+    global _jobs_gridfs_bucket
+    if _jobs_gridfs_bucket is None:
+        db = await get_jobs_db()
+        _jobs_gridfs_bucket = AsyncIOMotorGridFSBucket(db, bucket_name="job_outputs")
+    return _jobs_gridfs_bucket
+
+async def get_job_by_id(job_id: str) -> Optional[Dict[str, Any]]:
+    """
+    Get a job from the jobs database by ID, retrieving large outputs from GridFS if needed.
     """
     db = await get_jobs_db()
     job = await db.jobs.find_one({"job_id": job_id})
     if job:
         job["_id"] = str(job["_id"])  # Convert ObjectId to string
+        
+        # Check if output is stored in GridFS
+        if job.get("output_storage") == "gridfs" and job.get("output_gridfs_id"):
+            try:
+                bucket = await get_jobs_gridfs_bucket()
+                grid_id = job["output_gridfs_id"]
+                
+                # Download output from GridFS
+                grid_out = await bucket.open_download_stream(grid_id)
+                output_bytes = await grid_out.read()
+                job["output"] = output_bytes.decode('utf-8')
+                
+                # Convert GridFS ID to string for JSON serialization
+                job["output_gridfs_id"] = str(job["output_gridfs_id"])
+            except Exception as e:
+                # Log error but return metadata
+                job["output"] = f"[Error retrieving output from GridFS: {str(e)}]"
+        
+        # Check if error is stored in GridFS
+        if job.get("error_storage") == "gridfs" and job.get("error_gridfs_id"):
+            try:
+                bucket = await get_jobs_gridfs_bucket()
+                grid_id = job["error_gridfs_id"]
+                
+                # Download error from GridFS
+                grid_out = await bucket.open_download_stream(grid_id)
+                error_bytes = await grid_out.read()
+                job["error"] = error_bytes.decode('utf-8')
+                
+                # Convert GridFS ID to string for JSON serialization
+                job["error_gridfs_id"] = str(job["error_gridfs_id"])
+            except Exception as e:
+                # Log error but return metadata
+                job["error"] = f"[Error retrieving error from GridFS: {str(e)}]"
+    
     return job
 
 async def get_files(limit: int = 100) -> List[Dict[str, Any]]:
