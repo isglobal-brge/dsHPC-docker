@@ -220,8 +220,26 @@ def process_job_output(job_id: str, slurm_id: str, final_state: str) -> bool:
     # Read stdout (output) file if exists
     if os.path.exists(output_path):
         try:
-            with open(output_path) as f:
-                output = f.read()
+            # Check file size first
+            file_size = os.path.getsize(output_path)
+            
+            # For files larger than 100MB, read in chunks to avoid memory issues
+            if file_size > 100 * 1024 * 1024:
+                logger.info(f"Large output file detected for job {job_id}: {file_size / (1024*1024):.1f} MB")
+                # Read file in chunks and build the string
+                output = ""
+                chunk_size = 10 * 1024 * 1024  # 10MB chunks
+                with open(output_path, 'r') as f:
+                    while True:
+                        chunk = f.read(chunk_size)
+                        if not chunk:
+                            break
+                        output += chunk
+                logger.info(f"Successfully read large output file for job {job_id}")
+            else:
+                # For smaller files, read normally
+                with open(output_path) as f:
+                    output = f.read()
         except Exception as e:
             error = f"{(error + ' ') if error else ''}Error reading output file: {str(e)}"
             logger.error(f"Error reading output file for job {job_id}: {e}")
