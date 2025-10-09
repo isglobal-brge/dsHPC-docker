@@ -36,10 +36,17 @@ async def submit_meta_job(request: MetaJobRequest) -> Tuple[bool, str, Optional[
         Tuple of (success, message, response)
     """
     try:
+        logger.info(f"📋 NEW META-JOB SUBMISSION")
+        logger.info(f"  Initial file: {request.initial_file_hash[:8]}...")
+        logger.info(f"  Chain length: {len(request.method_chain)} steps")
+        for i, step in enumerate(request.method_chain):
+            logger.info(f"  Step {i}: {step.method_name} with {len(step.parameters)} params")
+        
         # Validate initial file exists
         files_db = await get_files_db()
         file_exists = await files_db.files.count_documents({"file_hash": request.initial_file_hash}) > 0
         if not file_exists:
+            logger.error(f"Initial file {request.initial_file_hash} not found")
             return False, f"Initial file with hash {request.initial_file_hash} not found", None
         
         # Validate all methods exist and are functional
@@ -153,7 +160,11 @@ async def process_meta_job_chain(meta_job_id: str):
             
             if existing_job and existing_job.get("status") == "CD":
                 # Job already completed, use its output
-                logger.info(f"Meta-job {meta_job_id} step {i}: Using cached result from job {existing_job['job_id']}")
+                logger.info(f"✅ CACHE HIT - Meta-job {meta_job_id} step {i}:")
+                logger.info(f"  Method: {step['method_name']}")
+                logger.info(f"  Input hash: {current_input_hash[:8]}...")
+                logger.info(f"  Cached job ID: {existing_job['job_id']}")
+                logger.info(f"  Skipping execution - using cached output")
                 
                 # Get output file hash from existing job
                 output_file_hash = existing_job.get("output_file_hash")
@@ -187,7 +198,13 @@ async def process_meta_job_chain(meta_job_id: str):
                 
             else:
                 # Need to submit new job
-                logger.info(f"Meta-job {meta_job_id} step {i}: Submitting new job")
+                logger.info(f"🔄 CACHE MISS - Meta-job {meta_job_id} step {i}:")
+                logger.info(f"  Method: {step['method_name']}")
+                logger.info(f"  Input hash: {current_input_hash[:8]}...")
+                if existing_job:
+                    logger.info(f"  Found job but status is: {existing_job.get('status', 'unknown')}")
+                else:
+                    logger.info(f"  No existing job found - submitting new job")
                 
                 success, message, job_data = await submit_job(
                     file_hash=current_input_hash,
@@ -252,6 +269,12 @@ async def process_meta_job_chain(meta_job_id: str):
         # All steps completed successfully
         # Get final output from the last step's output file
         final_output_hash = meta_job["chain"][-1]["output_file_hash"] or current_input_hash
+        
+        logger.info(f"✅ META-JOB COMPLETED - {meta_job_id}")
+        logger.info(f"  Total steps: {len(meta_job['chain'])}")
+        cached_count = sum(1 for s in meta_job['chain'] if s.get('cached', False))
+        logger.info(f"  Cached steps: {cached_count}/{len(meta_job['chain'])}")
+        logger.info(f"  Final output hash: {final_output_hash[:8]}...")
         
         # Retrieve final output content
         final_file = await get_file_by_hash(final_output_hash)
