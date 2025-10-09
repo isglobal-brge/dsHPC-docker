@@ -105,7 +105,15 @@ async def find_existing_job(file_hash: str, function_hash: str, parameters: Dict
     Returns:
         The job document if found, None otherwise
     """
+    import logging
+    logger = logging.getLogger(__name__)
+    
     try:
+        logger.debug(f"🔍 Searching for existing job:")
+        logger.debug(f"  File hash: {file_hash[:8]}...")
+        logger.debug(f"  Function hash: {function_hash[:8]}...")
+        logger.debug(f"  Parameters: {parameters}")
+        
         # Connect to jobs database
         jobs_db = await get_jobs_db()
         
@@ -120,10 +128,14 @@ async def find_existing_job(file_hash: str, function_hash: str, parameters: Dict
         }, sort=[("created_at", -1)])
         
         if job:
-            # Use get_job_by_id to retrieve the full job data including GridFS output if needed
             job_id = job.get("job_id")
+            status = job.get("status")
+            logger.info(f"✅ FOUND existing job: {job_id} (status: {status})")
+            # Use get_job_by_id to retrieve the full job data including GridFS output if needed
             if job_id:
                 job = await get_job_by_id(job_id)
+        else:
+            logger.info(f"❌ NO existing job found for this combination")
         
         return job
     except Exception as e:
