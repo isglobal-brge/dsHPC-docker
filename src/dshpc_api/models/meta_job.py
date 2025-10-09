@@ -51,7 +51,7 @@ class MetaJobStepInfo(BaseModel):
     method_name: str
     function_hash: Optional[str] = None
     parameters: Dict[str, Any] = Field(default_factory=dict)
-    input_file_hash: str
+    input_file_hash: Optional[str] = None  # Can be None initially, filled during processing
     output_file_hash: Optional[str] = None
     job_id: Optional[str] = None
     status: Optional[str] = None
