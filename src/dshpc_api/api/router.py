@@ -11,9 +11,11 @@ from dshpc_api.api.auth import get_api_key
 from dshpc_api.services.db_service import upload_file, check_hashes, get_files
 from dshpc_api.services.job_service import simulate_job
 from dshpc_api.services.method_service import get_available_methods
+from dshpc_api.services.meta_job_service import submit_meta_job as submit_meta_job_service, get_meta_job_info
 from dshpc_api.models.file import FileUpload, FileResponse, HashCheckRequest, HashCheckResponse
 from dshpc_api.models.job import JobRequest, JobResponse
 from dshpc_api.models.method import Method, MethodsResponse
+from dshpc_api.models.meta_job import MetaJobRequest, MetaJobResponse, MetaJobInfo
 
 router = APIRouter()
 
@@ -263,4 +265,56 @@ async def list_available_methods(api_key: str = Security(get_api_key)):
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error listing methods: {str(e)}"
+        )
+
+@router.post("/submit-meta-job", response_model=MetaJobResponse)
+async def submit_meta_job_endpoint(request: MetaJobRequest, api_key: str = Security(get_api_key)):
+    """
+    Submit a meta-job that chains multiple processing steps.
+    
+    Each step's output becomes the input for the next step.
+    The system automatically caches intermediate results to avoid redundant processing.
+    """
+    try:
+        success, message, response = await submit_meta_job_service(request)
+        
+        if not success:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=message
+            )
+        
+        return response
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error submitting meta-job: {str(e)}"
+        )
+
+@router.get("/meta-job/{meta_job_id}", response_model=MetaJobInfo)
+async def get_meta_job_status_endpoint(meta_job_id: str, api_key: str = Security(get_api_key)):
+    """
+    Get the current status and results of a meta-job.
+    
+    Returns detailed information about each step in the processing chain,
+    including which steps used cached results.
+    """
+    try:
+        meta_job_info = await get_meta_job_info(meta_job_id)
+        
+        if not meta_job_info:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Meta-job {meta_job_id} not found"
+            )
+        
+        return meta_job_info
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error retrieving meta-job status: {str(e)}"
         ) 

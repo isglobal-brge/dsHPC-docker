@@ -1,11 +1,13 @@
 import os
 import uuid
+import hashlib
+import base64
 from datetime import datetime
-from typing import Dict, Any, Tuple
+from typing import Dict, Any, Tuple, Optional
 from gridfs import GridFS
 from bson import ObjectId
 
-from slurm_api.config.db_config import jobs_collection, get_jobs_db_client
+from slurm_api.config.db_config import jobs_collection, get_jobs_db_client, files_collection
 from slurm_api.config.logging_config import logger
 from slurm_api.models.job import JobStatus, JobSubmission
 from slurm_api.utils.db_utils import update_job_status
@@ -286,6 +288,22 @@ def process_job_output(job_id: str, slurm_id: str, final_state: str) -> bool:
     # Update the job status in the database
     try:
         update_job_status(job_id, job_status, output=output, error=error)
+        
+        # If job completed successfully and has output, upload it as a new file
+        if job_status == JobStatus.COMPLETED and output:
+            try:
+                output_file_hash = upload_job_output_as_file(job_id, output)
+                if output_file_hash:
+                    # Update job record with output file hash
+                    jobs_collection.update_one(
+                        {"job_id": job_id},
+                        {"$set": {"output_file_hash": output_file_hash}}
+                    )
+                    logger.info(f"Job {job_id} output uploaded as file with hash: {output_file_hash}")
+            except Exception as e:
+                logger.error(f"Error uploading job output as file for {job_id}: {e}")
+                # Don't fail the job processing if output upload fails
+        
         # Clean up temporary files only after successful update
         if os.path.exists(output_path):
             os.remove(output_path)
@@ -296,4 +314,94 @@ def process_job_output(job_id: str, slurm_id: str, final_state: str) -> bool:
         return True
     except Exception as e:
         logger.error(f"Error updating job status for {job_id} after processing output: {e}")
-        return False 
+        return False
+
+
+def upload_job_output_as_file(job_id: str, output: str) -> Optional[str]:
+    """
+    Upload job output as a new file in the files database.
+    
+    Args:
+        job_id: The job ID that produced this output
+        output: The output content to store
+        
+    Returns:
+        The file hash if successfully uploaded, None otherwise
+    """
+    try:
+        # Convert output to bytes
+        output_bytes = output.encode('utf-8')
+        
+        # Calculate hash
+        file_hash = hashlib.sha256(output_bytes).hexdigest()
+        
+        # Check if file with this hash already exists
+        existing_file = files_collection.find_one({"file_hash": file_hash})
+        if existing_file:
+            logger.info(f"Output for job {job_id} already exists as file {file_hash}")
+            return file_hash
+        
+        # Base64 encode for storage
+        content_base64 = base64.b64encode(output_bytes).decode('utf-8')
+        
+        # Determine storage type based on size
+        file_size = len(output_bytes)
+        GRIDFS_THRESHOLD = 15 * 1024 * 1024
+        
+        if file_size > GRIDFS_THRESHOLD:
+            # Use GridFS for large outputs
+            from slurm_api.config.db_config import get_files_db_client
+            files_db = get_files_db_client()
+            fs = GridFS(files_db, collection="fs")
+            
+            # Store in GridFS
+            grid_id = fs.put(output_bytes,
+                           filename=f"job_output_{job_id}",
+                           metadata={
+                               "source_job_id": job_id,
+                               "file_hash": file_hash,
+                               "content_type": "application/json",
+                               "upload_date": datetime.utcnow()
+                           })
+            
+            # Create metadata document
+            file_doc = {
+                "file_hash": file_hash,
+                "filename": f"job_output_{job_id}.json",
+                "content_type": "application/json",
+                "storage_type": "gridfs",
+                "gridfs_id": grid_id,
+                "file_size": file_size,
+                "upload_date": datetime.utcnow(),
+                "last_checked": datetime.utcnow(),
+                "metadata": {
+                    "source": "job_output",
+                    "job_id": job_id
+                }
+            }
+        else:
+            # Store inline for small outputs
+            file_doc = {
+                "file_hash": file_hash,
+                "content": content_base64,
+                "filename": f"job_output_{job_id}.json",
+                "content_type": "application/json",
+                "storage_type": "inline",
+                "file_size": file_size,
+                "upload_date": datetime.utcnow(),
+                "last_checked": datetime.utcnow(),
+                "metadata": {
+                    "source": "job_output",
+                    "job_id": job_id
+                }
+            }
+        
+        # Insert into files collection
+        files_collection.insert_one(file_doc)
+        logger.info(f"Successfully uploaded job {job_id} output as file {file_hash}")
+        
+        return file_hash
+        
+    except Exception as e:
+        logger.error(f"Error uploading job output as file: {e}")
+        return None 

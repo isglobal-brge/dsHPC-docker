@@ -13,6 +13,7 @@ _jobs_db = None
 _files_db = None
 _gridfs_bucket = None
 _jobs_gridfs_bucket = None
+_meta_jobs_db = None
 
 async def get_jobs_db():
     """
@@ -55,6 +56,18 @@ async def get_jobs_gridfs_bucket():
         db = await get_jobs_db()
         _jobs_gridfs_bucket = AsyncIOMotorGridFSBucket(db, bucket_name="job_outputs")
     return _jobs_gridfs_bucket
+
+async def get_meta_jobs_db():
+    """
+    Get a connection to the meta_jobs database/collection.
+    Uses the same database as regular jobs but a different collection.
+    """
+    global _meta_jobs_db
+    if _meta_jobs_db is None:
+        settings = get_settings()
+        client = AsyncIOMotorClient(settings.MONGO_JOBS_URI)
+        _meta_jobs_db = client[settings.MONGO_JOBS_DB]
+    return _meta_jobs_db
 
 async def get_job_by_id(job_id: str) -> Optional[Dict[str, Any]]:
     """
