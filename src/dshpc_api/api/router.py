@@ -1,8 +1,10 @@
-from fastapi import APIRouter, HTTPException, Depends, status, Security
+from fastapi import APIRouter, HTTPException, Depends, status, Security, Response
 import requests
 from typing import Dict, Any, List
 import base64
 import hashlib
+import gzip
+import json
 
 from dshpc_api.config.settings import get_settings
 from dshpc_api.api.auth import get_api_key
@@ -158,7 +160,7 @@ async def health_check():
     """Simple health check endpoint."""
     return {"status": "ok"}
 
-@router.post("/query-job", response_model=JobResponse)
+@router.post("/query-job")
 async def simulate_job_endpoint(job_data: JobRequest, api_key: str = Security(get_api_key)):
     """
     Simulate a job execution based on file_hash, method_name, and parameters.
@@ -173,6 +175,8 @@ async def simulate_job_endpoint(job_data: JobRequest, api_key: str = Security(ge
     - Whether the job was resubmitted
     - Detailed error messages for failed jobs
     - Original status for resubmitted jobs
+    
+    For large responses (>10KB), the response will be gzip compressed automatically.
     """
     try:
         result = await simulate_job(
@@ -209,8 +213,30 @@ async def simulate_job_endpoint(job_data: JobRequest, api_key: str = Security(ge
                     "job_id": result.get("job_id")
                 }
             )
+        
+        # Serialize the result to JSON
+        json_data = json.dumps(result)
+        json_bytes = json_data.encode('utf-8')
+        
+        # If the response is large (> 10KB), compress it
+        if len(json_bytes) > 10 * 1024:  # 10KB threshold
+            compressed_data = gzip.compress(json_bytes, compresslevel=6)
             
-        return result
+            # Return compressed response with appropriate headers
+            return Response(
+                content=compressed_data,
+                media_type="application/json",
+                headers={
+                    "Content-Encoding": "gzip",
+                    "Vary": "Accept-Encoding"
+                }
+            )
+        else:
+            # For small responses, return uncompressed
+            return Response(
+                content=json_bytes,
+                media_type="application/json"
+            )
     except Exception as e:
         if isinstance(e, HTTPException):
             raise e
