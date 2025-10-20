@@ -256,15 +256,13 @@ def get_system_runtime_info() -> Dict[str, Any]:
                 ["/opt/venvs/system_python/bin/python", "-c", "import sys; print(sys.version)"],
                 universal_newlines=True
             ).strip()
-            # Extract only numeric version (e.g., "3.10.12") without compilation timestamp
-            # This ensures consistent hashing across rebuilds of the same Python version
+            # Extract only numeric version (e.g., "3.10.12") without build timestamp
             python_version = python_version_full.split()[0]
             runtime_info["python_version"] = python_version
-            runtime_info["python_version_full"] = python_version_full  # Keep full version for audit trail
+            runtime_info["python_version_full"] = python_version_full  # Keep full version for audit
         except Exception as e:
             logger.warning(f"Error getting Python version: {e}")
             runtime_info["python_version"] = "unknown"
-            runtime_info["python_version_full"] = "unknown"
         
         # Get Python packages
         try:
@@ -285,16 +283,16 @@ def get_system_runtime_info() -> Dict[str, Any]:
                 universal_newlines=True
             ).strip().split("\n")[0]
             # Extract only numeric version (e.g., "4.5.1") without release date
-            # Format: "R version 4.5.1 (2025-06-13) -- "Great Square Root""
-            # This ensures consistent hashing across rebuilds of the same R version
             r_version_parts = r_version_full.split()
-            r_version = r_version_parts[2] if len(r_version_parts) > 2 else r_version_full
+            if len(r_version_parts) >= 3:
+                r_version = r_version_parts[2]  # "R version 4.5.1 ..." -> "4.5.1"
+            else:
+                r_version = r_version_full
             runtime_info["r_version"] = r_version
-            runtime_info["r_version_full"] = r_version_full  # Keep full version for audit trail
+            runtime_info["r_version_full"] = r_version_full  # Keep full version for audit
         except Exception as e:
             logger.warning(f"Error getting R version: {e}")
             runtime_info["r_version"] = "unknown"
-            runtime_info["r_version_full"] = "unknown"
         
         # Get R packages
         try:
@@ -472,8 +470,8 @@ def register_method(method_data: Dict[str, Any], method_dir: str) -> Tuple[bool,
         hasher.update(runtime_json.encode())
         
         # Log only summary of runtime information (not the full JSON)
-        python_version = runtime_info.get('python_version', 'unknown').split()[0]  # Just first part
-        r_version = runtime_info.get('r_version', 'unknown').split()[2] if 'r_version' in runtime_info else 'unknown'
+        python_version = runtime_info.get('python_version', 'unknown')
+        r_version = runtime_info.get('r_version', 'unknown')
         packages_count = {
             'python': len(runtime_info.get('python_packages', {})),
             'r': len(runtime_info.get('r_packages', {})),
