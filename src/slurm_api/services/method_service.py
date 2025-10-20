@@ -465,8 +465,15 @@ def register_method(method_data: Dict[str, Any], method_dir: str) -> Tuple[bool,
         # Get and add system runtime information to the hash
         runtime_info = get_system_runtime_info()
         
-        # Add runtime information to hash
-        runtime_json = json.dumps(runtime_info, sort_keys=True)
+        # Create a copy of runtime_info for hashing, excluding *_full fields
+        # (which contain compilation timestamps that change with each build)
+        runtime_info_for_hash = {
+            k: v for k, v in runtime_info.items()
+            if not k.endswith('_full')
+        }
+        
+        # Add runtime information to hash (without *_full fields)
+        runtime_json = json.dumps(runtime_info_for_hash, sort_keys=True)
         hasher.update(runtime_json.encode())
         
         # Log only summary of runtime information (not the full JSON)
