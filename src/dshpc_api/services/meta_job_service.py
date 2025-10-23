@@ -8,14 +8,19 @@ from datetime import datetime
 from typing import Dict, Any, List, Tuple, Optional
 from dshpc_api.models.meta_job import (
     MetaJobStatus, MetaJobRequest, MetaJobResponse, 
-    MetaJobInfo, MetaJobStepInfo
+    MetaJobInfo, MetaJobStepInfo, CurrentStepInfo
 )
 from dshpc_api.services.db_service import (
     get_meta_jobs_db, get_files_db, get_job_by_id, get_file_by_hash
 )
 from dshpc_api.services.job_service import (
     submit_job, find_existing_job, get_job_status,
-    get_latest_method_hash
+    get_latest_method_hash,
+    RETRIABLE_FAILED_STATUSES,
+    NON_RETRIABLE_FAILED_STATUSES,
+    STATUS_DESCRIPTIONS,
+    COMPLETED_STATUSES,
+    IN_PROGRESS_STATUSES
 )
 from dshpc_api.services.method_service import check_method_functionality
 from dshpc_api.utils.parameter_utils import sort_parameters
@@ -157,13 +162,17 @@ async def process_meta_job_chain(meta_job_id: str):
                 parameters=step["parameters"]
             )
             
-            if existing_job and existing_job.get("status") == "CD":
+            if existing_job and existing_job.get("status") in COMPLETED_STATUSES:
                 # Job already completed, use its output
                 logger.info(f"✅ CACHE HIT - Meta-job {meta_job_id} step {i}:")
                 logger.info(f"  Method: {step['method_name']}")
                 logger.info(f"  Input hash: {current_input_hash[:8]}...")
                 logger.info(f"  Cached job ID: {existing_job['job_id']}")
                 logger.info(f"  Skipping execution - using cached output")
+                
+                # Update current step info even for cached jobs
+                await update_meta_job_current_step(meta_job_id, i, existing_job['job_id'], 
+                                                   existing_job['status'], False)
                 
                 # Get output hash from existing job
                 # The output_hash represents the hash of the job's output content
@@ -234,10 +243,11 @@ async def process_meta_job_chain(meta_job_id: str):
                     }}
                 )
                 
-                # Wait for job to complete
-                job_result = await wait_for_job_completion(job_id)
+                # Wait for job to complete with automatic retry on retriable failures
+                job_result = await wait_for_job_completion_with_retry(job_id, meta_job_id, i)
                 
-                if job_result["status"] != "CD":
+                if job_result["status"] not in COMPLETED_STATUSES:
+                    # Should not happen as wait_for_job_completion_with_retry raises exception for failures
                     raise Exception(f"Job {job_id} failed with status {job_result['status']}: {job_result.get('error', 'Unknown error')}")
                 
                 # Get output hash from job result
@@ -294,6 +304,7 @@ async def process_meta_job_chain(meta_job_id: str):
                 "status": MetaJobStatus.COMPLETED,
                 "final_job_id": final_job_id,
                 "current_step": None,
+                "current_step_info": None,  # Clear current step when completed
                 "updated_at": datetime.utcnow(),
                 "completed_at": datetime.utcnow()
             }}
@@ -352,6 +363,122 @@ async def wait_for_job_completion(job_id: str, timeout: int = 3600, interval: in
         await asyncio.sleep(interval)
 
 
+async def update_meta_job_current_step(meta_job_id: str, step_index: int, job_id: str, 
+                                       job_status: str, is_resubmitted: bool):
+    """
+    Update meta-job with current step information for tracking.
+    
+    Args:
+        meta_job_id: Meta-job ID
+        step_index: Index of the current step (0-based)
+        job_id: Current job ID
+        job_status: Current job status
+        is_resubmitted: Whether this job is a resubmission
+    """
+    meta_jobs_db = await get_meta_jobs_db()
+    
+    # Get step details
+    meta_job = await meta_jobs_db.meta_jobs.find_one({"meta_job_id": meta_job_id})
+    if not meta_job:
+        logger.error(f"Meta-job {meta_job_id} not found when updating current step")
+        return
+    
+    step = meta_job["chain"][step_index]
+    
+    current_step_info = {
+        "step_number": step_index + 1,  # 1-based for user display
+        "method_name": step["method_name"],
+        "parameters": step["parameters"],
+        "job_id": job_id,
+        "job_status": job_status,
+        "status_description": STATUS_DESCRIPTIONS.get(job_status, "Unknown status"),
+        "is_resubmitted": is_resubmitted
+    }
+    
+    await meta_jobs_db.meta_jobs.update_one(
+        {"meta_job_id": meta_job_id},
+        {"$set": {
+            "current_step": step_index,
+            "current_step_info": current_step_info,
+            "updated_at": datetime.utcnow()
+        }}
+    )
+
+
+async def wait_for_job_completion_with_retry(job_id: str, meta_job_id: str, 
+                                             step_index: int, max_retries: int = 3) -> Dict[str, Any]:
+    """
+    Wait for job completion with automatic retry on retriable failures.
+    Updates meta-job current_step info during processing.
+    
+    Args:
+        job_id: Initial job ID to wait for
+        meta_job_id: Meta-job ID for tracking updates
+        step_index: Index of this step in the chain (0-based)
+        max_retries: Maximum number of retry attempts
+        
+    Returns:
+        Final job data when completed successfully
+        
+    Raises:
+        Exception: If job fails with non-retriable status or exceeds max retries
+    """
+    retry_count = 0
+    current_job_id = job_id
+    
+    while retry_count <= max_retries:
+        # Wait for current job to reach terminal state
+        job_result = await wait_for_job_completion(current_job_id)
+        job_status = job_result.get("status")
+        
+        # Update meta-job with current step info
+        await update_meta_job_current_step(meta_job_id, step_index, current_job_id, 
+                                           job_status, retry_count > 0)
+        
+        if job_status in COMPLETED_STATUSES:
+            logger.info(f"Meta-job {meta_job_id} step {step_index}: Job {current_job_id} completed successfully")
+            return job_result
+        
+        elif job_status in RETRIABLE_FAILED_STATUSES:
+            # Resubmit job automatically
+            logger.warning(f"Meta-job {meta_job_id} step {step_index}: Job {current_job_id} failed with retriable status {job_status}")
+            logger.info(f"  Status description: {STATUS_DESCRIPTIONS.get(job_status, 'Unknown')}")
+            logger.info(f"  Attempting automatic resubmission (retry {retry_count + 1}/{max_retries})")
+            
+            # Get job details for resubmission
+            old_job = await get_job_by_id(current_job_id)
+            if not old_job:
+                raise Exception(f"Cannot resubmit: Job {current_job_id} not found in database")
+            
+            success, message, new_job_data = await submit_job(
+                file_hash=old_job["file_hash"],
+                function_hash=old_job["function_hash"],
+                parameters=old_job["parameters"]
+            )
+            
+            if not success:
+                raise Exception(f"Failed to resubmit job after retriable failure: {message}")
+            
+            current_job_id = new_job_data["job_id"]
+            retry_count += 1
+            logger.info(f"  Successfully resubmitted as job {current_job_id}")
+            
+        elif job_status in NON_RETRIABLE_FAILED_STATUSES:
+            # Non-retriable failure - fail the meta-job
+            error_msg = job_result.get("error", "No error details available")
+            logger.error(f"Meta-job {meta_job_id} step {step_index}: Job {current_job_id} failed with non-retriable status {job_status}")
+            logger.error(f"  Error: {error_msg}")
+            raise Exception(f"Job failed with non-retriable status {job_status}: {error_msg}")
+        
+        else:
+            # Unknown status - treat as non-retriable
+            logger.error(f"Meta-job {meta_job_id} step {step_index}: Job {current_job_id} has unknown status {job_status}")
+            raise Exception(f"Job has unknown status: {job_status}")
+    
+    # Exceeded max retries
+    raise Exception(f"Job failed after {max_retries} retry attempts")
+
+
 async def get_meta_job_info(meta_job_id: str) -> Optional[MetaJobInfo]:
     """
     Get full information about a meta-job.
@@ -373,6 +500,14 @@ async def get_meta_job_info(meta_job_id: str) -> Optional[MetaJobInfo]:
     
     # Convert to MetaJobInfo model
     chain = [MetaJobStepInfo(**step) for step in meta_job["chain"]]
+    
+    # Get current step info if available
+    current_step_info = None
+    if meta_job.get("current_step_info"):
+        try:
+            current_step_info = CurrentStepInfo(**meta_job["current_step_info"])
+        except Exception as e:
+            logger.error(f"Error parsing current_step_info for meta-job {meta_job_id}: {e}")
     
     # If meta-job is completed, get the output from the final job
     final_output = None
@@ -401,6 +536,7 @@ async def get_meta_job_info(meta_job_id: str) -> Optional[MetaJobInfo]:
         chain=chain,
         status=meta_job["status"],
         current_step=meta_job.get("current_step"),
+        current_step_info=current_step_info,  # Include current step tracking info
         final_job_id=meta_job.get("final_job_id"),
         final_output=final_output,  # Include the actual output when completed
         error=meta_job.get("error"),

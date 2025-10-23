@@ -58,6 +58,17 @@ class MetaJobStepInfo(BaseModel):
     cached: bool = False  # Whether this step used cached results
 
 
+class CurrentStepInfo(BaseModel):
+    """Information about the currently processing step in a meta-job."""
+    step_number: int  # 1-based for user display
+    method_name: str
+    parameters: Dict[str, Any]
+    job_id: str
+    job_status: str
+    status_description: str
+    is_resubmitted: bool = False
+
+
 class MetaJobResponse(BaseModel):
     """Response model for meta-job submission."""
     meta_job_id: str
@@ -73,6 +84,7 @@ class MetaJobInfo(BaseModel):
     chain: List[MetaJobStepInfo]
     status: MetaJobStatus
     current_step: Optional[int] = None
+    current_step_info: Optional[CurrentStepInfo] = None  # Info about current step
     final_job_id: Optional[str] = None  # ID of the final job in the chain
     final_output: Optional[Any] = None  # Output from final job (when completed)
     error: Optional[str] = None
