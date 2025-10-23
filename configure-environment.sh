@@ -120,12 +120,14 @@ setup_repository() {
     local user_license_exists=false
     local user_env_config_exists=false
     local user_setup_script_exists=false
+    local user_gitignore_exists=false
     local temp_user_env=""
     local temp_env_file=""
     local temp_readme_file=""
     local temp_license_file=""
     local temp_env_config_file=""
     local temp_setup_script_file=""
+    local temp_gitignore_file=""
     
     echo -e "${YELLOW}Preserving your custom files...${NC}"
     
@@ -141,6 +143,13 @@ setup_repository() {
         temp_env_file=$(mktemp)
         echo -e "${CYAN}  • Preserving .env file${NC}"
         cp ".env" "$temp_env_file"
+    fi
+    
+    if [[ -f ".gitignore" ]]; then
+        user_gitignore_exists=true
+        temp_gitignore_file=$(mktemp)
+        echo -e "${CYAN}  • Preserving .gitignore${NC}"
+        cp ".gitignore" "$temp_gitignore_file"
     fi
     
     if [[ -f "README.md" ]]; then
@@ -169,6 +178,13 @@ setup_repository() {
         temp_setup_script_file=$(mktemp)
         echo -e "${CYAN}  • Preserving setup-dshpc-environment.sh${NC}"
         cp "setup-dshpc-environment.sh" "$temp_setup_script_file"
+    fi
+    
+    if [[ -f ".gitignore" ]]; then
+        user_gitignore_exists=true
+        temp_gitignore_file=$(mktemp)
+        echo -e "${CYAN}  • Preserving .gitignore${NC}"
+        cp ".gitignore" "$temp_gitignore_file"
     fi
     
     # Check if base repository needs updating by cloning to temp directory and comparing
@@ -267,6 +283,12 @@ setup_repository() {
         rm -f "$temp_env_file"
     fi
     
+    if [[ "$user_gitignore_exists" == true ]]; then
+        echo -e "${CYAN}  • Restoring .gitignore${NC}"
+        cp "$temp_gitignore_file" ".gitignore"
+        rm -f "$temp_gitignore_file"
+    fi
+    
     if [[ "$user_readme_exists" == true ]]; then
         echo -e "${CYAN}  • Restoring README.md${NC}"
         cp "$temp_readme_file" "README.md"
@@ -289,6 +311,12 @@ setup_repository() {
         echo -e "${CYAN}  • Restoring setup-dshpc-environment.sh${NC}"
         cp "$temp_setup_script_file" "setup-dshpc-environment.sh"
         rm -f "$temp_setup_script_file"
+    fi
+    
+    if [[ "$user_gitignore_exists" == true ]]; then
+        echo -e "${CYAN}  • Restoring .gitignore${NC}"
+        cp "$temp_gitignore_file" ".gitignore"
+        rm -f "$temp_gitignore_file"
     fi
     
     echo -e "${GREEN}✓ User files restored successfully${NC}"
