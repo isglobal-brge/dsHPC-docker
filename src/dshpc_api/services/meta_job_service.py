@@ -85,7 +85,7 @@ async def submit_meta_job(request: MetaJobRequest) -> Tuple[bool, str, Optional[
             "chain": chain_info,
             "status": MetaJobStatus.PENDING,
             "current_step": None,
-            "final_output_hash": None,
+            "final_job_id": None,
             "error": None,
             "created_at": datetime.utcnow(),
             "updated_at": None,
@@ -165,21 +165,28 @@ async def process_meta_job_chain(meta_job_id: str):
                 logger.info(f"  Cached job ID: {existing_job['job_id']}")
                 logger.info(f"  Skipping execution - using cached output")
                 
-                # Get output file hash from existing job
-                output_file_hash = existing_job.get("output_file_hash")
+                # Get output hash from existing job
+                # The output_hash represents the hash of the job's output content
+                output_hash = existing_job.get("output_hash")
                 
-                if not output_file_hash:
-                    # Job doesn't have output_file_hash, need to wait or handle differently
-                    # This might happen for older jobs - we should still have the output
+                if not output_hash:
+                    # Calculate hash from output content
                     job_output = existing_job.get("output")
+                    output_gridfs_id = existing_job.get("output_gridfs_id")
+                    
                     if job_output:
-                        # Hash the output and create a file
-                        output_file_hash = await create_file_from_output(job_output, existing_job["job_id"])
+                        # Small output stored inline
+                        import hashlib
+                        output_hash = hashlib.sha256(job_output.encode('utf-8')).hexdigest()
+                    elif output_gridfs_id:
+                        # Large output in GridFS - use gridfs_id as proxy for hash
+                        # In future, we should calculate actual hash when storing
+                        output_hash = str(output_gridfs_id)
                     else:
                         raise Exception(f"Cached job {existing_job['job_id']} has no output")
                 
                 step["job_id"] = existing_job["job_id"]
-                step["output_file_hash"] = output_file_hash
+                step["output_hash"] = output_hash
                 step["status"] = "completed"
                 step["cached"] = True
                 
@@ -192,8 +199,8 @@ async def process_meta_job_chain(meta_job_id: str):
                     }}
                 )
                 
-                # Use output as input for next step
-                current_input_hash = output_file_hash
+                # Use output hash as input for next step
+                current_input_hash = output_hash
                 
             else:
                 # Need to submit new job
@@ -233,24 +240,25 @@ async def process_meta_job_chain(meta_job_id: str):
                 if job_result["status"] != "CD":
                     raise Exception(f"Job {job_id} failed with status {job_result['status']}: {job_result.get('error', 'Unknown error')}")
                 
-                # Get output file hash
-                output_file_hash = job_result.get("output_file_hash")
+                # Get output hash from job result
+                output_hash = job_result.get("output_hash")
                 
-                if not output_file_hash:
-                    # Job completed but doesn't have output_file_hash yet
-                    # This might happen if the output upload is still processing
-                    # Wait a bit and check again
-                    await asyncio.sleep(2)
-                    job_result = await get_job_by_id(job_id)
-                    output_file_hash = job_result.get("output_file_hash")
+                if not output_hash:
+                    # Calculate hash from output content
+                    job_output = job_result.get("output")
+                    output_gridfs_id = job_result.get("output_gridfs_id")
                     
-                    if not output_file_hash and job_result.get("output"):
-                        # Create file from output
-                        output_file_hash = await create_file_from_output(job_result["output"], job_id)
-                    elif not output_file_hash:
+                    if job_output:
+                        # Small output stored inline
+                        import hashlib
+                        output_hash = hashlib.sha256(job_output.encode('utf-8')).hexdigest()
+                    elif output_gridfs_id:
+                        # Large output in GridFS
+                        output_hash = str(output_gridfs_id)
+                    else:
                         raise Exception(f"Job {job_id} has no output")
                 
-                step["output_file_hash"] = output_file_hash
+                step["output_hash"] = output_hash
                 step["status"] = "completed"
                 
                 # Update chain in database
@@ -262,29 +270,29 @@ async def process_meta_job_chain(meta_job_id: str):
                     }}
                 )
                 
-                # Use output as input for next step
-                current_input_hash = output_file_hash
+                # Use output hash as input for next step
+                current_input_hash = output_hash
         
         # All steps completed successfully
-        # Get final output from the last step's output file
-        final_output_hash = meta_job["chain"][-1]["output_file_hash"] or current_input_hash
+        # Get final job ID from the last step
+        final_job_id = meta_job["chain"][-1]["job_id"]
         
         logger.info(f"✅ META-JOB COMPLETED - {meta_job_id}")
         logger.info(f"  Total steps: {len(meta_job['chain'])}")
         cached_count = sum(1 for s in meta_job['chain'] if s.get('cached', False))
         logger.info(f"  Cached steps: {cached_count}/{len(meta_job['chain'])}")
-        logger.info(f"  Final output hash: {final_output_hash[:8]}...")
+        logger.info(f"  Final job ID: {final_job_id}")
         
-        # NOTE: We don't store final_output content in the meta-job document
-        # to avoid hitting MongoDB's 16MB document size limit.
-        # Clients should retrieve the output using final_output_hash from files collection.
+        # NOTE: The final output is stored in the last job's document (jobs collection).
+        # Clients should retrieve it using the final_job_id.
+        # This avoids duplicating data and respects the job-based architecture.
         
         # Update meta-job as completed
         await meta_jobs_db.meta_jobs.update_one(
             {"meta_job_id": meta_job_id},
             {"$set": {
                 "status": MetaJobStatus.COMPLETED,
-                "final_output_hash": final_output_hash,
+                "final_job_id": final_job_id,
                 "current_step": None,
                 "updated_at": datetime.utcnow(),
                 "completed_at": datetime.utcnow()
@@ -344,49 +352,6 @@ async def wait_for_job_completion(job_id: str, timeout: int = 3600, interval: in
         await asyncio.sleep(interval)
 
 
-async def create_file_from_output(output: str, job_id: str) -> str:
-    """
-    Create a file from job output and return its hash.
-    
-    Args:
-        output: Job output content
-        job_id: Source job ID
-        
-    Returns:
-        File hash
-    """
-    import base64
-    
-    # Calculate hash
-    output_bytes = output.encode('utf-8')
-    file_hash = hashlib.sha256(output_bytes).hexdigest()
-    
-    # Check if file already exists
-    files_db = await get_files_db()
-    existing = await files_db.files.find_one({"file_hash": file_hash})
-    if existing:
-        return file_hash
-    
-    # Create file document
-    file_doc = {
-        "file_hash": file_hash,
-        "content": base64.b64encode(output_bytes).decode('utf-8'),
-        "filename": f"job_output_{job_id}.json",
-        "content_type": "application/json",
-        "storage_type": "inline",
-        "file_size": len(output_bytes),
-        "upload_date": datetime.utcnow(),
-        "last_checked": datetime.utcnow(),
-        "metadata": {
-            "source": "meta_job_output",
-            "job_id": job_id
-        }
-    }
-    
-    await files_db.files.insert_one(file_doc)
-    return file_hash
-
-
 async def get_meta_job_info(meta_job_id: str) -> Optional[MetaJobInfo]:
     """
     Get full information about a meta-job.
@@ -412,8 +377,7 @@ async def get_meta_job_info(meta_job_id: str) -> Optional[MetaJobInfo]:
         chain=chain,
         status=meta_job["status"],
         current_step=meta_job.get("current_step"),
-        final_output=meta_job.get("final_output"),
-        final_output_hash=meta_job.get("final_output_hash"),
+        final_job_id=meta_job.get("final_job_id"),
         error=meta_job.get("error"),
         created_at=meta_job["created_at"],
         updated_at=meta_job.get("updated_at"),
