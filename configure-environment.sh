@@ -52,33 +52,70 @@ generate_api_key() {
 
 # Print banner
 print_banner() {
-    # Calculate box width based on longest line
     local title="$DISPLAY_NAME Setup"
     local desc="$DESCRIPTION"
     
-    # Get lengths (remove ANSI codes for accurate count)
+    # Configuration
+    local max_line_width=60  # Max characters per line
+    local max_desc_lines=3   # Max lines for description
+    local box_width=64       # Fixed box width
+    local content_width=$((box_width - 2))
+    
+    # Title
     local title_len=${#title}
-    local desc_len=${#desc}
+    local title_padding=$(( (content_width - title_len) / 2 ))
     
-    # Use the longer of the two, with minimum of 50
-    local content_width=$([[ $title_len -gt $desc_len ]] && echo $title_len || echo $desc_len)
-    content_width=$([[ $content_width -gt 50 ]] && echo $content_width || echo 50)
-    
-    # Total box width = content + 2 spaces padding
-    local box_width=$((content_width + 2))
+    # Split description into lines if too long
+    local desc_lines=()
+    if [[ ${#desc} -gt $max_line_width ]]; then
+        # Split into words
+        local words=($desc)
+        local current_line=""
+        
+        for word in "${words[@]}"; do
+            if [[ ${#current_line} -eq 0 ]]; then
+                current_line="$word"
+            elif [[ $((${#current_line} + 1 + ${#word})) -le $max_line_width ]]; then
+                current_line="$current_line $word"
+            else
+                # Line would be too long, save current and start new
+                desc_lines+=("$current_line")
+                current_line="$word"
+                
+                # Check if we've reached max lines
+                if [[ ${#desc_lines[@]} -ge $max_desc_lines ]]; then
+                    desc_lines[$((max_desc_lines - 1))]="${desc_lines[$((max_desc_lines - 1))]}..."
+                    break
+                fi
+            fi
+        done
+        
+        # Add last line if we haven't reached limit
+        if [[ ${#desc_lines[@]} -lt $max_desc_lines ]] && [[ -n "$current_line" ]]; then
+            desc_lines+=("$current_line")
+        fi
+    else
+        desc_lines=("$desc")
+    fi
     
     # Generate horizontal line
     local hline=$(printf '─%.0s' $(seq 1 $box_width))
     
-    # Calculate padding for centering
-    local title_padding=$(( (content_width - title_len) / 2 ))
-    local desc_padding=$(( (content_width - desc_len) / 2 ))
-    
+    # Print box
     echo -e "${BLUE}┌${hline}┐${NC}"
+    
+    # Print title (centered)
     printf "${BLUE}│${NC} %*s${BOLD}${CYAN}%s${NC}%*s ${BLUE}│${NC}\n" \
            $title_padding "" "$title" $((content_width - title_len - title_padding)) ""
-    printf "${BLUE}│${NC} %*s%s%*s ${BLUE}│${NC}\n" \
-           $desc_padding "" "$desc" $((content_width - desc_len - desc_padding)) ""
+    
+    # Print description lines (centered)
+    for line in "${desc_lines[@]}"; do
+        local line_len=${#line}
+        local line_padding=$(( (content_width - line_len) / 2 ))
+        printf "${BLUE}│${NC} %*s%s%*s ${BLUE}│${NC}\n" \
+               $line_padding "" "$line" $((content_width - line_len - line_padding)) ""
+    done
+    
     echo -e "${BLUE}└${hline}┘${NC}"
     echo
 }
