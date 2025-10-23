@@ -326,7 +326,8 @@ async def process_meta_job_chain(meta_job_id: str):
         )
 
 
-async def wait_for_job_completion(job_id: str, timeout: int = 3600, interval: int = 5) -> Dict[str, Any]:
+async def wait_for_job_completion(job_id: str, timeout: int = 3600, interval: int = 5, 
+                                  meta_job_id: str = None, step_index: int = None) -> Dict[str, Any]:
     """
     Wait for a job to complete.
     
@@ -334,6 +335,8 @@ async def wait_for_job_completion(job_id: str, timeout: int = 3600, interval: in
         job_id: Job ID to wait for
         timeout: Maximum time to wait in seconds
         interval: Polling interval in seconds
+        meta_job_id: Optional meta-job ID for tracking updates
+        step_index: Optional step index for tracking updates
         
     Returns:
         Final job data
@@ -354,6 +357,10 @@ async def wait_for_job_completion(job_id: str, timeout: int = 3600, interval: in
         
         if job_data:
             status = job_data.get("status")
+            
+            # Update meta-job step info if tracking is enabled
+            if meta_job_id is not None and step_index is not None:
+                await update_meta_job_current_step(meta_job_id, step_index, job_id, status, False)
             
             # Check if job is completed or failed
             if status in ["CD", "F", "CA", "TO", "NF", "OOM", "BF", "DL", "ER"]:
@@ -427,21 +434,17 @@ async def wait_for_job_completion_with_retry(job_id: str, meta_job_id: str,
     current_job_id = job_id
     
     while retry_count <= max_retries:
-        # Update current step info BEFORE waiting (so clients can see progress)
-        # Get initial job status
-        initial_job = await get_job_by_id(current_job_id)
-        if initial_job:
-            initial_status = initial_job.get("status", "PD")
-            await update_meta_job_current_step(meta_job_id, step_index, current_job_id, 
-                                               initial_status, retry_count > 0)
-        
         # Wait for current job to reach terminal state
-        job_result = await wait_for_job_completion(current_job_id)
+        # Pass meta_job_id and step_index so it updates current_step_info during execution
+        job_result = await wait_for_job_completion(current_job_id, 
+                                                    meta_job_id=meta_job_id, 
+                                                    step_index=step_index)
         job_status = job_result.get("status")
         
-        # Update meta-job with final step status
-        await update_meta_job_current_step(meta_job_id, step_index, current_job_id, 
-                                           job_status, retry_count > 0)
+        # Final update with resubmission flag if applicable
+        if retry_count > 0:
+            await update_meta_job_current_step(meta_job_id, step_index, current_job_id, 
+                                               job_status, True)
         
         if job_status in COMPLETED_STATUSES:
             logger.info(f"Meta-job {meta_job_id} step {step_index}: Job {current_job_id} completed successfully")
