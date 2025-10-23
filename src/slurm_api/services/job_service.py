@@ -208,10 +208,12 @@ def process_job_output(job_id: str, slurm_id: str, final_state: str) -> bool:
     if os.path.exists(exit_code_path):
         try:
             with open(exit_code_path) as f:
-                exit_code = int(f.read().strip())
+                exit_code_str = f.read().strip()
+                exit_code = int(exit_code_str)
+                logger.info(f"Job {job_id}: Read exit code {exit_code} from file")
         except ValueError:
             error = "Invalid exit code format."
-            logger.warning(f"Invalid exit code format for job {job_id}")
+            logger.warning(f"Invalid exit code format for job {job_id}: {exit_code_str}")
         except Exception as e:
             error = f"Error reading exit code: {str(e)}"
             logger.error(f"Error reading exit code for job {job_id}: {e}")
