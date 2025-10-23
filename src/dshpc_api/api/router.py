@@ -104,6 +104,91 @@ async def check_file_hashes(hash_data: HashCheckRequest, api_key: str = Security
             detail=f"Error checking hashes: {str(e)}"
         )
 
+@router.get("/files/{file_hash}")
+async def get_file_content(file_hash: str, api_key: str = Security(get_api_key)):
+    """
+    Get the content of a file by its hash.
+    
+    Returns the file content (decoded from base64 if stored that way).
+    For large files stored in GridFS, retrieves from GridFS.
+    """
+    try:
+        from dshpc_api.services.db_service import get_file_by_hash
+        import base64
+        
+        file_doc = await get_file_by_hash(file_hash)
+        
+        if not file_doc:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"File with hash {file_hash} not found"
+            )
+        
+        # Get content - either from inline storage or GridFS
+        content = file_doc.get("content")
+        
+        if content:
+            # Content is stored inline (small file), likely base64 encoded
+            try:
+                # Try to decode as base64
+                decoded_content = base64.b64decode(content).decode('utf-8')
+                return Response(
+                    content=decoded_content,
+                    media_type=file_doc.get("content_type", "application/octet-stream")
+                )
+            except:
+                # If decode fails, return as is
+                return Response(
+                    content=content,
+                    media_type=file_doc.get("content_type", "application/octet-stream")
+                )
+        
+        # If no content but has gridfs_id, it's in GridFS
+        gridfs_id = file_doc.get("gridfs_id")
+        if gridfs_id:
+            from dshpc_api.services.db_service import get_files_db
+            import gridfs
+            
+            files_db = await get_files_db()
+            fs = gridfs.GridFS(files_db._database)
+            
+            try:
+                grid_out = fs.get(gridfs_id)
+                content_bytes = grid_out.read()
+                
+                # Try to decode as utf-8 string
+                try:
+                    content_str = content_bytes.decode('utf-8')
+                    return Response(
+                        content=content_str,
+                        media_type=file_doc.get("content_type", "application/octet-stream")
+                    )
+                except:
+                    # Return as bytes if not utf-8
+                    return Response(
+                        content=content_bytes,
+                        media_type=file_doc.get("content_type", "application/octet-stream")
+                    )
+            except Exception as e:
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail=f"Error retrieving file from GridFS: {str(e)}"
+                )
+        
+        # No content found
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"File {file_hash} exists but has no content"
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error retrieving file: {str(e)}"
+        )
+
 @router.get("/files", response_model=List[FileResponse])
 async def list_all_files(api_key: str = Security(get_api_key)):
     """
