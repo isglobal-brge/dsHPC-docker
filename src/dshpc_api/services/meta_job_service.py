@@ -356,6 +356,9 @@ async def get_meta_job_info(meta_job_id: str) -> Optional[MetaJobInfo]:
     """
     Get full information about a meta-job.
     
+    When the meta-job is completed, includes the final output from the last job.
+    This allows clients to get results without knowing internal file hashes.
+    
     Args:
         meta_job_id: Meta-job ID
         
@@ -371,6 +374,27 @@ async def get_meta_job_info(meta_job_id: str) -> Optional[MetaJobInfo]:
     # Convert to MetaJobInfo model
     chain = [MetaJobStepInfo(**step) for step in meta_job["chain"]]
     
+    # If meta-job is completed, get the output from the final job
+    final_output = None
+    if meta_job["status"] == MetaJobStatus.COMPLETED and meta_job.get("final_job_id"):
+        try:
+            final_job = await get_job_by_id(meta_job["final_job_id"])
+            if final_job:
+                # Get output from job (could be inline or in GridFS)
+                final_output = final_job.get("output")
+                if not final_output and final_job.get("output_gridfs_id"):
+                    # Large output in GridFS
+                    from dshpc_api.services.db_service import get_jobs_db
+                    import gridfs
+                    
+                    jobs_db = await get_jobs_db()
+                    fs = gridfs.GridFS(jobs_db._database)
+                    grid_out = fs.get(final_job["output_gridfs_id"])
+                    final_output = grid_out.read().decode('utf-8')
+        except Exception as e:
+            logger.error(f"Error retrieving final output for meta-job {meta_job_id}: {e}")
+            # Don't fail, just return without output
+    
     return MetaJobInfo(
         meta_job_id=meta_job["meta_job_id"],
         initial_file_hash=meta_job["initial_file_hash"],
@@ -378,6 +402,7 @@ async def get_meta_job_info(meta_job_id: str) -> Optional[MetaJobInfo]:
         status=meta_job["status"],
         current_step=meta_job.get("current_step"),
         final_job_id=meta_job.get("final_job_id"),
+        final_output=final_output,  # Include the actual output when completed
         error=meta_job.get("error"),
         created_at=meta_job["created_at"],
         updated_at=meta_job.get("updated_at"),

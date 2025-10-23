@@ -74,6 +74,7 @@ class MetaJobInfo(BaseModel):
     status: MetaJobStatus
     current_step: Optional[int] = None
     final_job_id: Optional[str] = None  # ID of the final job in the chain
+    final_output: Optional[Any] = None  # Output from final job (when completed)
     error: Optional[str] = None
     created_at: datetime
     updated_at: Optional[datetime] = None
