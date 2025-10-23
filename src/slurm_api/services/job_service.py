@@ -259,8 +259,28 @@ def process_job_output(job_id: str, slurm_id: str, final_state: str) -> bool:
         except Exception as e:
             logger.error(f"Error reading stderr file for job {job_id}: {e}")
 
-    # Determine final job status based on exit code and Slurm state
-    if exit_code == 0:
+    # Parse output JSON to check for internal errors (if output exists and is JSON)
+    output_has_error = False
+    if output:
+        try:
+            import json
+            output_data = json.loads(output)
+            if isinstance(output_data, dict) and output_data.get('status') == 'error':
+                output_has_error = True
+                # Extract error message from output
+                output_error_msg = output_data.get('error') or output_data.get('message') or 'Unknown error from script'
+                logger.warning(f"Job {job_id}: Output indicates internal error: {output_error_msg[:100]}")
+        except:
+            # Output is not JSON or can't be parsed - that's OK
+            pass
+    
+    # Determine final job status based on exit code, Slurm state, AND output content
+    if output_has_error:
+        # If output explicitly says "error", mark as FAILED regardless of exit code
+        job_status = JobStatus.FAILED
+        error = f"Script reported error status: {output_error_msg}"
+        logger.info(f"Job {job_id} marked as FAILED due to error status in output")
+    elif exit_code == 0:
         try:
             # If exit code is 0, use the Slurm final state if it's terminal
             if final_state in [s.value for s in [JobStatus.COMPLETED, JobStatus.FAILED, JobStatus.CANCELLED, JobStatus.TIMEOUT, JobStatus.NODE_FAIL, JobStatus.OUT_OF_MEMORY, JobStatus.BOOT_FAIL, JobStatus.DEADLINE, JobStatus.PREEMPTED]]:
