@@ -326,15 +326,15 @@ async def process_meta_job_chain(meta_job_id: str):
         )
 
 
-async def wait_for_job_completion(job_id: str, timeout: int = 3600, interval: int = 5, 
+async def wait_for_job_completion(job_id: str, timeout: int = None, interval: int = 5, 
                                   meta_job_id: str = None, step_index: int = None) -> Dict[str, Any]:
     """
     Wait for a job to complete.
     
     Args:
         job_id: Job ID to wait for
-        timeout: Maximum time to wait in seconds
-        interval: Polling interval in seconds
+        timeout: Maximum time to wait in seconds (None for no timeout)
+        interval: Polling interval in seconds (default: 5)
         meta_job_id: Optional meta-job ID for tracking updates
         step_index: Optional step index for tracking updates
         
@@ -344,9 +344,10 @@ async def wait_for_job_completion(job_id: str, timeout: int = 3600, interval: in
     start_time = datetime.utcnow()
     
     while True:
-        # Check timeout
-        if (datetime.utcnow() - start_time).total_seconds() > timeout:
-            raise TimeoutError(f"Job {job_id} timed out after {timeout} seconds")
+        # Check timeout (only if specified)
+        if timeout is not None:
+            if (datetime.utcnow() - start_time).total_seconds() > timeout:
+                raise TimeoutError(f"Job {job_id} timed out after {timeout} seconds")
         
         # Get job status
         job_data = await get_job_status(job_id)
