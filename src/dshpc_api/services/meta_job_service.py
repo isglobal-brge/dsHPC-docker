@@ -85,7 +85,6 @@ async def submit_meta_job(request: MetaJobRequest) -> Tuple[bool, str, Optional[
             "chain": chain_info,
             "status": MetaJobStatus.PENDING,
             "current_step": None,
-            "final_output": None,
             "final_output_hash": None,
             "error": None,
             "created_at": datetime.utcnow(),
@@ -276,25 +275,15 @@ async def process_meta_job_chain(meta_job_id: str):
         logger.info(f"  Cached steps: {cached_count}/{len(meta_job['chain'])}")
         logger.info(f"  Final output hash: {final_output_hash[:8]}...")
         
-        # Retrieve final output content
-        final_file = await get_file_by_hash(final_output_hash)
-        final_output = None
-        
-        if final_file:
-            # Decode content if stored as base64
-            if final_file.get("content"):
-                import base64
-                try:
-                    final_output = base64.b64decode(final_file["content"]).decode('utf-8')
-                except:
-                    final_output = final_file["content"]
+        # NOTE: We don't store final_output content in the meta-job document
+        # to avoid hitting MongoDB's 16MB document size limit.
+        # Clients should retrieve the output using final_output_hash from files collection.
         
         # Update meta-job as completed
         await meta_jobs_db.meta_jobs.update_one(
             {"meta_job_id": meta_job_id},
             {"$set": {
                 "status": MetaJobStatus.COMPLETED,
-                "final_output": final_output,
                 "final_output_hash": final_output_hash,
                 "current_step": None,
                 "updated_at": datetime.utcnow(),
