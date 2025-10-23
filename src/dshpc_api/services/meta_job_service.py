@@ -427,11 +427,19 @@ async def wait_for_job_completion_with_retry(job_id: str, meta_job_id: str,
     current_job_id = job_id
     
     while retry_count <= max_retries:
+        # Update current step info BEFORE waiting (so clients can see progress)
+        # Get initial job status
+        initial_job = await get_job_by_id(current_job_id)
+        if initial_job:
+            initial_status = initial_job.get("status", "PD")
+            await update_meta_job_current_step(meta_job_id, step_index, current_job_id, 
+                                               initial_status, retry_count > 0)
+        
         # Wait for current job to reach terminal state
         job_result = await wait_for_job_completion(current_job_id)
         job_status = job_result.get("status")
         
-        # Update meta-job with current step info
+        # Update meta-job with final step status
         await update_meta_job_current_step(meta_job_id, step_index, current_job_id, 
                                            job_status, retry_count > 0)
         
