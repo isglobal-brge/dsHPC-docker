@@ -52,10 +52,34 @@ generate_api_key() {
 
 # Print banner
 print_banner() {
-    echo -e "${BLUE}┌────────────────────────────────────────────────────┐${NC}"
-    echo -e "${BLUE}│${NC} ${BOLD}${CYAN}$DISPLAY_NAME Setup${NC} ${BLUE}│${NC}"
-    echo -e "${BLUE}│${NC} ${DESCRIPTION}${NC} ${BLUE}│${NC}"
-    echo -e "${BLUE}└────────────────────────────────────────────────────┘${NC}"
+    # Calculate box width based on longest line
+    local title="$DISPLAY_NAME Setup"
+    local desc="$DESCRIPTION"
+    
+    # Get lengths (remove ANSI codes for accurate count)
+    local title_len=${#title}
+    local desc_len=${#desc}
+    
+    # Use the longer of the two, with minimum of 50
+    local content_width=$([[ $title_len -gt $desc_len ]] && echo $title_len || echo $desc_len)
+    content_width=$([[ $content_width -gt 50 ]] && echo $content_width || echo 50)
+    
+    # Total box width = content + 2 spaces padding
+    local box_width=$((content_width + 2))
+    
+    # Generate horizontal line
+    local hline=$(printf '─%.0s' $(seq 1 $box_width))
+    
+    # Calculate padding for centering
+    local title_padding=$(( (content_width - title_len) / 2 ))
+    local desc_padding=$(( (content_width - desc_len) / 2 ))
+    
+    echo -e "${BLUE}┌${hline}┐${NC}"
+    printf "${BLUE}│${NC} %*s${BOLD}${CYAN}%s${NC}%*s ${BLUE}│${NC}\n" \
+           $title_padding "" "$title" $((content_width - title_len - title_padding)) ""
+    printf "${BLUE}│${NC} %*s%s%*s ${BLUE}│${NC}\n" \
+           $desc_padding "" "$desc" $((content_width - desc_len - desc_padding)) ""
+    echo -e "${BLUE}└${hline}┘${NC}"
     echo
 }
 
@@ -556,7 +580,7 @@ main() {
     print_banner
     
     echo -e "${BOLD}Setting up $DISPLAY_NAME environment...${NC}"
-    echo -e "Repository: $BASE_REPO"
+    echo -e "Base repository: $BASE_REPO"
     echo -e "Docker prefix: $DOCKER_PREFIX"
     echo
     
