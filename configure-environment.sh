@@ -52,7 +52,7 @@ generate_api_key() {
 
 # Print banner
 print_banner() {
-    local title="$DISPLAY_NAME Setup"
+    local title="$DISPLAY_NAME"
     local desc="$DESCRIPTION"
     
     # Configuration
@@ -60,6 +60,11 @@ print_banner() {
     local max_desc_lines=3   # Max lines for description
     local box_width=64       # Fixed box width
     local content_width=$((box_width - 2))
+    
+    # Truncate title if too long
+    if [[ ${#title} -gt 60 ]]; then
+        title="${title:0:57}..."
+    fi
     
     # Title
     local title_len=${#title}
@@ -107,6 +112,9 @@ print_banner() {
     # Print title (centered)
     printf "${BLUE}│${NC} %*s${BOLD}${CYAN}%s${NC}%*s ${BLUE}│${NC}\n" \
            $title_padding "" "$title" $((content_width - title_len - title_padding)) ""
+    
+    # Print empty separator line between title and description
+    printf "${BLUE}│${NC} %*s ${BLUE}│${NC}\n" $content_width ""
     
     # Print description lines (centered)
     for line in "${desc_lines[@]}"; do
