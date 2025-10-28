@@ -12,7 +12,12 @@ from dshpc_api.services.db_service import upload_file, check_hashes, get_files
 from dshpc_api.services.job_service import simulate_job
 from dshpc_api.services.method_service import get_available_methods
 from dshpc_api.services.meta_job_service import submit_meta_job as submit_meta_job_service, get_meta_job_info
-from dshpc_api.models.file import FileUpload, FileResponse, HashCheckRequest, HashCheckResponse
+from dshpc_api.services.chunked_upload_service import get_chunked_upload_service
+from dshpc_api.models.file import (
+    FileUpload, FileResponse, HashCheckRequest, HashCheckResponse,
+    ChunkedUploadInitRequest, ChunkedUploadInitResponse, ChunkedUploadChunk,
+    ChunkedUploadChunkResponse, ChunkedUploadFinalizeRequest
+)
 from dshpc_api.models.job import JobRequest, JobResponse
 from dshpc_api.models.method import Method, MethodsResponse
 from dshpc_api.models.meta_job import MetaJobRequest, MetaJobResponse, MetaJobInfo
@@ -317,4 +322,181 @@ async def get_meta_job_status_endpoint(meta_job_id: str, api_key: str = Security
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error retrieving meta-job status: {str(e)}"
+        )
+
+# Chunked upload endpoints
+
+@router.post("/files/upload-chunked/init", response_model=ChunkedUploadInitResponse, status_code=status.HTTP_201_CREATED)
+async def init_chunked_upload(
+    request: ChunkedUploadInitRequest,
+    api_key: str = Security(get_api_key)
+):
+    """
+    Initialize a chunked upload session.
+    
+    This endpoint creates a new session for uploading large files in chunks.
+    The client must provide the complete file hash, total size, and chunk size.
+    
+    Returns a session_id that must be used for subsequent chunk uploads.
+    """
+    try:
+        service = get_chunked_upload_service()
+        success, message, session_id = await service.init_upload_session(
+            file_hash=request.file_hash,
+            filename=request.filename,
+            content_type=request.content_type,
+            total_size=request.total_size,
+            chunk_size=request.chunk_size,
+            metadata=request.metadata
+        )
+        
+        if not success:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=message
+            )
+        
+        return ChunkedUploadInitResponse(
+            session_id=session_id,
+            file_hash=request.file_hash,
+            message=message
+        )
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error initializing chunked upload: {str(e)}"
+        )
+
+
+@router.post("/files/upload-chunked/{session_id}/chunk", response_model=ChunkedUploadChunkResponse)
+async def upload_chunk(
+    session_id: str,
+    chunk: ChunkedUploadChunk,
+    api_key: str = Security(get_api_key)
+):
+    """
+    Upload a single chunk for an active session.
+    
+    Chunks can be uploaded in any order, but must be numbered sequentially starting from 0.
+    Each chunk must be base64 encoded.
+    """
+    try:
+        service = get_chunked_upload_service()
+        success, message, response_data = await service.store_chunk(
+            session_id=session_id,
+            chunk_number=chunk.chunk_number,
+            chunk_data=chunk.chunk_data
+        )
+        
+        if not success:
+            # Check if session not found
+            if "not found" in message.lower():
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=message
+                )
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=message
+            )
+        
+        return ChunkedUploadChunkResponse(
+            session_id=response_data["session_id"],
+            chunk_number=response_data["chunk_number"],
+            chunks_received=response_data["chunks_received"],
+            message=message
+        )
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error uploading chunk: {str(e)}"
+        )
+
+
+@router.post("/files/upload-chunked/{session_id}/finalize", response_model=FileResponse)
+async def finalize_chunked_upload(
+    session_id: str,
+    request: ChunkedUploadFinalizeRequest,
+    api_key: str = Security(get_api_key)
+):
+    """
+    Finalize a chunked upload session.
+    
+    This endpoint combines all uploaded chunks into the final file, verifies the hash,
+    and stores the file in the database. After successful finalization, temporary chunks
+    are automatically cleaned up.
+    
+    The total_chunks parameter must match the number of chunks actually uploaded.
+    """
+    try:
+        service = get_chunked_upload_service()
+        success, message, file_response = await service.finalize_upload(
+            session_id=session_id,
+            total_chunks=request.total_chunks
+        )
+        
+        if not success:
+            # Check if session not found
+            if "not found" in message.lower():
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=message
+                )
+            # Hash verification or other errors
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=message
+            )
+        
+        return file_response
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error finalizing upload: {str(e)}"
+        )
+
+
+@router.delete("/files/upload-chunked/{session_id}")
+async def cancel_chunked_upload(
+    session_id: str,
+    api_key: str = Security(get_api_key)
+):
+    """
+    Cancel a chunked upload session.
+    
+    This endpoint cancels an active session and cleans up all temporary chunks.
+    Useful for handling client-side errors or user cancellations.
+    """
+    try:
+        service = get_chunked_upload_service()
+        success, message = await service.cancel_upload(session_id)
+        
+        if not success:
+            if "not found" in message.lower():
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=message
+                )
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=message
+            )
+        
+        return {"message": message}
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error cancelling upload: {str(e)}"
         ) 

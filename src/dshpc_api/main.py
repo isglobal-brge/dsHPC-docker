@@ -19,6 +19,10 @@ async def startup_event():
     uvicorn_logger = logging.getLogger("uvicorn")
     uvicorn_logger.setLevel(logging.WARNING)
     
+    # Start background cleanup task for chunked uploads
+    from dshpc_api.background.cleanup_task import start_cleanup_task
+    start_cleanup_task()
+    
     # Log only important messages at API startup
     logger.info("\033[1;32mdsHPC API service started successfully!\033[0m")
 
