@@ -182,78 +182,65 @@ validate_environment() {
 setup_repository() {
     echo -e "${CYAN}📥 Setting up $ENV_NAME repository...${NC}"
     
+    # =============================================================================
+    # PRESERVATION POLICY:
+    # - PRESERVED (User configuration): environment/, .env, .gitignore, config/slurm.conf
+    # - UPDATED (Repository files): src/, docker-compose.yml, Dockerfiles, etc.
+    # =============================================================================
+    
     # Save user's files that should be preserved
     local user_env_exists=false
     local user_env_file_exists=false
-    local user_readme_exists=false
-    local user_license_exists=false
-    local user_env_config_exists=false
-    local user_setup_script_exists=false
     local user_gitignore_exists=false
+    local user_slurm_conf_exists=false
+    local override_slurm_conf=false
     local temp_user_env=""
     local temp_env_file=""
-    local temp_readme_file=""
-    local temp_license_file=""
-    local temp_env_config_file=""
-    local temp_setup_script_file=""
     local temp_gitignore_file=""
+    local temp_slurm_conf_file=""
     
-    echo -e "${YELLOW}Preserving your custom files...${NC}"
+    echo -e "${YELLOW}Preserving your custom configuration files...${NC}"
     
+    # Preserve environment/ directory (user's methods and dependencies)
     if [[ -d "environment" ]]; then
         user_env_exists=true
         temp_user_env=$(mktemp -d)
-        echo -e "${CYAN}  • Preserving environment/ directory${NC}"
+        echo -e "${CYAN}  • Preserving environment/ directory (user configuration)${NC}"
         cp -r environment/* "$temp_user_env/" 2>/dev/null || true
     fi
     
+    # Preserve .env file (API keys and local configuration)
     if [[ -f ".env" ]]; then
         user_env_file_exists=true
         temp_env_file=$(mktemp)
-        echo -e "${CYAN}  • Preserving .env file${NC}"
+        echo -e "${CYAN}  • Preserving .env file (API keys)${NC}"
         cp ".env" "$temp_env_file"
     fi
     
+    # Preserve .gitignore (user's local ignore rules)
     if [[ -f ".gitignore" ]]; then
         user_gitignore_exists=true
         temp_gitignore_file=$(mktemp)
-        echo -e "${CYAN}  • Preserving .gitignore${NC}"
+        echo -e "${CYAN}  • Preserving .gitignore (local ignore rules)${NC}"
         cp ".gitignore" "$temp_gitignore_file"
     fi
     
-    if [[ -f "README.md" ]]; then
-        user_readme_exists=true
-        temp_readme_file=$(mktemp)
-        echo -e "${CYAN}  • Preserving README.md${NC}"
-        cp "README.md" "$temp_readme_file"
-    fi
-    
-    if [[ -f "LICENSE" ]]; then
-        user_license_exists=true
-        temp_license_file=$(mktemp)
-        echo -e "${CYAN}  • Preserving LICENSE${NC}"
-        cp "LICENSE" "$temp_license_file"
-    fi
-    
-    if [[ -f "environment-config.json" ]]; then
-        user_env_config_exists=true
-        temp_env_config_file=$(mktemp)
-        echo -e "${CYAN}  • Preserving environment-config.json${NC}"
-        cp "environment-config.json" "$temp_env_config_file"
-    fi
-    
-    if [[ -f "setup-dshpc-environment.sh" ]]; then
-        user_setup_script_exists=true
-        temp_setup_script_file=$(mktemp)
-        echo -e "${CYAN}  • Preserving setup-dshpc-environment.sh${NC}"
-        cp "setup-dshpc-environment.sh" "$temp_setup_script_file"
-    fi
-    
-    if [[ -f ".gitignore" ]]; then
-        user_gitignore_exists=true
-        temp_gitignore_file=$(mktemp)
-        echo -e "${CYAN}  • Preserving .gitignore${NC}"
-        cp ".gitignore" "$temp_gitignore_file"
+    # Check for existing Slurm configuration
+    if [[ -f "config/slurm.conf" ]]; then
+        user_slurm_conf_exists=true
+        echo -e "${YELLOW}⚠️  Existing Slurm configuration detected: config/slurm.conf${NC}"
+        echo -e "${CYAN}This file may contain custom resource settings.${NC}"
+        read -p "Do you want to override it with repository defaults? (y/N): " -n 1 -r
+        echo
+        
+        if [[ $REPLY =~ ^[Yy]$ ]]; then
+            override_slurm_conf=true
+            echo -e "${YELLOW}  • Will update config/slurm.conf from repository${NC}"
+        else
+            temp_slurm_conf_file=$(mktemp)
+            echo -e "${CYAN}  • Preserving config/slurm.conf (custom Slurm configuration)${NC}"
+            cp "config/slurm.conf" "$temp_slurm_conf_file"
+        fi
     fi
     
     # Check if base repository needs updating by cloning to temp directory and comparing
@@ -304,22 +291,43 @@ setup_repository() {
             # Save the original directory
             local original_dir=$(pwd)
             
+            # CRITICAL: Remove directories that MUST be fully updated from repository
+            # This ensures clean update without merge conflicts
+            echo -e "${YELLOW}Removing old repository files to ensure clean update...${NC}"
+            
+            # Remove src/ completely to ensure full update
+            if [[ -d "$original_dir/src" ]]; then
+                echo -e "${CYAN}  • Removing old src/ directory${NC}"
+                rm -rf "$original_dir/src"
+            fi
+            
+            # Remove config/ directory if user wants to override slurm.conf or it doesn't exist
+            if [[ "$override_slurm_conf" == true ]] || [[ "$user_slurm_conf_exists" == false ]]; then
+                if [[ -d "$original_dir/config" ]]; then
+                    echo -e "${CYAN}  • Removing old config/ directory${NC}"
+                    rm -rf "$original_dir/config"
+                fi
+            fi
+            
             # Move ALL contents from temp directory to current directory
             cd "$temp_dir/${ENV_NAME}-docker"
+            
+            echo -e "${YELLOW}Copying repository files...${NC}"
             
             # Move regular files and directories
             for item in *; do
                 if [[ -e "$item" ]]; then
-                    # Simply overwrite existing files (user files are already preserved)
-                    mv "$item" "$original_dir/"
+                    echo -e "${CYAN}  • Updating: $item${NC}"
+                    # Use cp -rf to handle directories properly, then remove source
+                    cp -rf "$item" "$original_dir/"
                 fi
             done
             
-            # Also move hidden files like .gitignore
+            # Also move hidden files (excluding .git, .env, .gitignore - already preserved)
             for item in .[^.]*; do
-                if [[ "$item" != ".git" && -e "$item" ]]; then
-                    # Simply overwrite existing files (user files are already preserved)
-                    mv "$item" "$original_dir/"
+                if [[ "$item" != ".git" && "$item" != ".env" && "$item" != ".gitignore" && -e "$item" ]]; then
+                    echo -e "${CYAN}  • Updating: $item${NC}"
+                    cp -rf "$item" "$original_dir/"
                 fi
             done
             
@@ -336,9 +344,10 @@ setup_repository() {
         echo -e "${GREEN}✓ Base repository is already up to date${NC}"
     fi
     
-    # Restore all preserved user files
-    echo -e "${YELLOW}Restoring your preserved files...${NC}"
+    # Restore preserved user files
+    echo -e "${YELLOW}Restoring your preserved configuration...${NC}"
     
+    # Restore environment/ directory (user's methods and dependencies)
     if [[ "$user_env_exists" == true ]]; then
         echo -e "${CYAN}  • Restoring environment/ directory${NC}"
         # Copy user's environment files over the repo's defaults
@@ -346,49 +355,49 @@ setup_repository() {
         rm -rf "$temp_user_env"
     fi
     
+    # Restore .env file (API keys and local configuration)
     if [[ "$user_env_file_exists" == true ]]; then
         echo -e "${CYAN}  • Restoring .env file${NC}"
         cp "$temp_env_file" ".env"
         rm -f "$temp_env_file"
     fi
     
+    # Restore .gitignore (user's local ignore rules)
     if [[ "$user_gitignore_exists" == true ]]; then
         echo -e "${CYAN}  • Restoring .gitignore${NC}"
         cp "$temp_gitignore_file" ".gitignore"
         rm -f "$temp_gitignore_file"
     fi
     
-    if [[ "$user_readme_exists" == true ]]; then
-        echo -e "${CYAN}  • Restoring README.md${NC}"
-        cp "$temp_readme_file" "README.md"
-        rm -f "$temp_readme_file"
+    # Restore config/slurm.conf if user chose to preserve it
+    if [[ "$user_slurm_conf_exists" == true ]] && [[ "$override_slurm_conf" == false ]]; then
+        # Ensure config directory exists
+        mkdir -p config
+        echo -e "${CYAN}  • Restoring config/slurm.conf (custom Slurm configuration)${NC}"
+        cp "$temp_slurm_conf_file" "config/slurm.conf"
+        rm -f "$temp_slurm_conf_file"
     fi
     
-    if [[ "$user_license_exists" == true ]]; then
-        echo -e "${CYAN}  • Restoring LICENSE${NC}"
-        cp "$temp_license_file" "LICENSE"
-        rm -f "$temp_license_file"
+    echo -e "${GREEN}✓ User configuration restored successfully${NC}"
+    echo
+    echo -e "${BOLD}${CYAN}Update Summary:${NC}"
+    echo -e "${GREEN}✓ UPDATED from repository:${NC}"
+    echo -e "  • src/ directory (all source code)"
+    echo -e "  • docker-compose.yml"
+    echo -e "  • Dockerfiles and build scripts"
+    if [[ "$override_slurm_conf" == true ]] || [[ "$user_slurm_conf_exists" == false ]]; then
+        echo -e "  • config/ directory (including slurm.conf)"
+    else
+        echo -e "  • config/ directory (README and templates)"
     fi
-    
-    if [[ "$user_env_config_exists" == true ]]; then
-        echo -e "${CYAN}  • Restoring environment-config.json${NC}"
-        cp "$temp_env_config_file" "environment-config.json"
-        rm -f "$temp_env_config_file"
+    echo
+    echo -e "${YELLOW}✓ PRESERVED (your configuration):${NC}"
+    echo -e "  • environment/ directory (methods, dependencies)"
+    echo -e "  • .env file (API keys)"
+    echo -e "  • .gitignore (local ignore rules)"
+    if [[ "$user_slurm_conf_exists" == true ]] && [[ "$override_slurm_conf" == false ]]; then
+        echo -e "  • config/slurm.conf (custom Slurm configuration)"
     fi
-    
-    if [[ "$user_setup_script_exists" == true ]]; then
-        echo -e "${CYAN}  • Restoring setup-dshpc-environment.sh${NC}"
-        cp "$temp_setup_script_file" "setup-dshpc-environment.sh"
-        rm -f "$temp_setup_script_file"
-    fi
-    
-    if [[ "$user_gitignore_exists" == true ]]; then
-        echo -e "${CYAN}  • Restoring .gitignore${NC}"
-        cp "$temp_gitignore_file" ".gitignore"
-        rm -f "$temp_gitignore_file"
-    fi
-    
-    echo -e "${GREEN}✓ User files restored successfully${NC}"
     
     echo
 }
@@ -523,8 +532,22 @@ configure_slurm() {
         mkdir -p config
     fi
     
-    # Create or update slurm.conf with detected resources
-    cat > "config/slurm.conf" << EOF
+    # Only create slurm.conf if it doesn't exist
+    if [[ -f "config/slurm.conf" ]]; then
+        echo -e "${GREEN}✓ Slurm configuration already exists: config/slurm.conf${NC}"
+        echo -e "${CYAN}💡 To regenerate, delete config/slurm.conf and run setup again${NC}"
+        
+        # Show current configuration resources if available
+        if grep -q "CPUs=" "config/slurm.conf" 2>/dev/null; then
+            local current_cpus=$(grep "CPUs=" "config/slurm.conf" | sed 's/.*CPUs=\([0-9]*\).*/\1/')
+            local current_mem=$(grep "RealMemory=" "config/slurm.conf" | sed 's/.*RealMemory=\([0-9]*\).*/\1/')
+            echo -e "${CYAN}Current config: ${current_cpus} CPUs, ${current_mem} MB RAM${NC}"
+            echo -e "${CYAN}Detected resources: ${DETECTED_CPUS} CPUs, ${DETECTED_MEMORY} MB RAM${NC}"
+        fi
+    else
+        echo -e "${YELLOW}Creating new Slurm configuration...${NC}"
+        # Create slurm.conf with detected resources
+        cat > "config/slurm.conf" << EOF
 ClusterName=${DOCKER_PREFIX}-slurm
 SlurmctldHost=localhost
 
@@ -546,8 +569,9 @@ PartitionName=debug Nodes=localhost Default=YES MaxTime=INFINITE State=UP DefMem
 # PROCESS TRACKING
 ProctrackType=proctrack/linuxproc
 EOF
+        echo -e "${GREEN}✓ Slurm configured with: ${DETECTED_CPUS} CPUs, ${DETECTED_MEMORY} MB RAM${NC}"
+    fi
     
-    echo -e "${GREEN}✓ Slurm configured with: ${DETECTED_CPUS} CPUs, ${DETECTED_MEMORY} MB RAM${NC}"
     echo
 }
 
