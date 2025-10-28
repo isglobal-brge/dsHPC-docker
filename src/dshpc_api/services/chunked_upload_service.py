@@ -18,7 +18,7 @@ from typing import Optional, Tuple, List
 from pathlib import Path
 
 from dshpc_api.config.settings import get_settings
-from dshpc_api.services.db_service import upload_file, get_db
+from dshpc_api.services.db_service import upload_file, get_files_db
 from dshpc_api.models.file import ChunkedUploadSession
 
 
@@ -82,7 +82,7 @@ class ChunkedUploadService:
             )
             
             # Store session in database
-            db = await get_db()
+            db = await get_files_db()
             sessions_collection = db['chunked_upload_sessions']
             await sessions_collection.insert_one(session_data.dict())
             
@@ -106,7 +106,7 @@ class ChunkedUploadService:
             ChunkedUploadSession or None if not found
         """
         try:
-            db = await get_db()
+            db = await get_files_db()
             sessions_collection = db['chunked_upload_sessions']
             session_data = await sessions_collection.find_one({"session_id": session_id})
             
@@ -163,7 +163,7 @@ class ChunkedUploadService:
                 f.write(chunk_bytes)
             
             # Update session in database
-            db = await get_db()
+            db = await get_files_db()
             sessions_collection = db['chunked_upload_sessions']
             
             # Add chunk number to chunks_received if not already present
@@ -213,7 +213,7 @@ class ChunkedUploadService:
                 return False, f"Session is not active (status: {session.status})", None
             
             # Update session status to finalizing
-            db = await get_db()
+            db = await get_files_db()
             sessions_collection = db['chunked_upload_sessions']
             await sessions_collection.update_one(
                 {"session_id": session_id},
@@ -297,7 +297,7 @@ class ChunkedUploadService:
         except Exception as e:
             # Try to mark session as failed
             try:
-                db = await get_db()
+                db = await get_files_db()
                 sessions_collection = db['chunked_upload_sessions']
                 await sessions_collection.update_one(
                     {"session_id": session_id},
@@ -325,7 +325,7 @@ class ChunkedUploadService:
                 return False, f"Session {session_id} not found"
             
             # Update session status
-            db = await get_db()
+            db = await get_files_db()
             sessions_collection = db['chunked_upload_sessions']
             await sessions_collection.update_one(
                 {"session_id": session_id},
@@ -366,7 +366,7 @@ class ChunkedUploadService:
             Tuple of (sessions_cleaned, sessions_failed)
         """
         try:
-            db = await get_db()
+            db = await get_files_db()
             sessions_collection = db['chunked_upload_sessions']
             
             # Find abandoned sessions
