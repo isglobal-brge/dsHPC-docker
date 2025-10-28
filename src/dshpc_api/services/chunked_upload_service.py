@@ -259,22 +259,83 @@ class ChunkedUploadService:
                 )
                 return False, f"Hash verification failed: expected {session.file_hash}, got {calculated_hash}", None
             
-            # Read combined file and encode to base64
-            with open(combined_path, 'rb') as f:
-                file_content = f.read()
+            # Get file size
+            file_size = os.path.getsize(combined_path)
             
-            content_base64 = base64.b64encode(file_content).decode('utf-8')
+            # Upload to database - use GridFS for files > 15 MB
+            GRIDFS_THRESHOLD = 15 * 1024 * 1024
+            now = datetime.utcnow()
             
-            # Upload to database using existing upload_file function
-            file_data = {
-                "file_hash": session.file_hash,
-                "content": content_base64,
-                "filename": session.filename,
-                "content_type": session.content_type,
-                "metadata": session.metadata
-            }
+            if file_size > GRIDFS_THRESHOLD:
+                # Use GridFS for large files - stream directly from disk
+                from dshpc_api.services.db_service import get_gridfs_bucket, get_files_db
+                
+                try:
+                    bucket = await get_gridfs_bucket()
+                    
+                    # Stream file directly to GridFS without loading into memory
+                    with open(combined_path, 'rb') as f:
+                        grid_id = await bucket.upload_from_stream(
+                            session.file_hash,  # Use hash as filename
+                            f,
+                            metadata={
+                                "filename": session.filename,
+                                "content_type": session.content_type,
+                                "original_metadata": session.metadata,
+                                "upload_date": now,
+                                "file_hash": session.file_hash
+                            }
+                        )
+                    
+                    # Store metadata in regular collection
+                    metadata_doc = {
+                        "file_hash": session.file_hash,
+                        "filename": session.filename,
+                        "content_type": session.content_type,
+                        "metadata": session.metadata,
+                        "upload_date": now,
+                        "last_checked": now,
+                        "storage_type": "gridfs",
+                        "gridfs_id": grid_id,
+                        "file_size": file_size
+                    }
+                    
+                    db = await get_files_db()
+                    result = await db.files.insert_one(metadata_doc)
+                    uploaded_file = await db.files.find_one({"_id": result.inserted_id})
+                    
+                    if uploaded_file:
+                        uploaded_file["_id"] = str(uploaded_file["_id"])
+                        uploaded_file["gridfs_id"] = str(uploaded_file["gridfs_id"])
+                        uploaded_file["content"] = "[Stored in GridFS]"
+                    
+                    success = True
+                    message = "Large file uploaded successfully using GridFS"
+                
+                except Exception as e:
+                    await sessions_collection.update_one(
+                        {"session_id": session_id},
+                        {"$set": {"status": "failed"}}
+                    )
+                    return False, f"Error uploading to GridFS: {str(e)}", None
             
-            success, message, uploaded_file = await upload_file(file_data)
+            else:
+                # For files < 15 MB, use regular storage with base64
+                with open(combined_path, 'rb') as f:
+                    file_content = f.read()
+                
+                content_base64 = base64.b64encode(file_content).decode('utf-8')
+                
+                file_data = {
+                    "file_hash": session.file_hash,
+                    "content": content_base64,
+                    "filename": session.filename,
+                    "content_type": session.content_type,
+                    "metadata": session.metadata
+                }
+                
+                from dshpc_api.services.db_service import upload_file
+                success, message, uploaded_file = await upload_file(file_data)
             
             if success:
                 # Mark session as completed
