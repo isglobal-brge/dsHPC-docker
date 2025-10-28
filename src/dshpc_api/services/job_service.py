@@ -96,12 +96,18 @@ async def get_methods_db():
     client = AsyncIOMotorClient(settings.MONGO_METHODS_URI)
     return client[settings.MONGO_METHODS_DB]
 
-async def find_existing_job(file_hash: str, function_hash: str, parameters: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+async def find_existing_job(
+    file_hash: Optional[str] = None,
+    file_inputs: Optional[Dict[str, str]] = None,
+    function_hash: str = None,
+    parameters: Dict[str, Any] = None
+) -> Optional[Dict[str, Any]]:
     """
-    Find an existing job with the given file_hash, function_hash, and parameters.
+    Find an existing job with the given file_hash/file_inputs, function_hash, and parameters.
     
     Args:
-        file_hash: The hash of the input file
+        file_hash: The hash of the input file (single file)
+        file_inputs: Dict of input name → hash (multi-file)
         function_hash: The hash of the method
         parameters: The job parameters
         
@@ -112,23 +118,33 @@ async def find_existing_job(file_hash: str, function_hash: str, parameters: Dict
     logger = logging.getLogger(__name__)
     
     try:
-        logger.debug(f"🔍 Searching for existing job:")
-        logger.debug(f"  File hash: {file_hash[:8]}...")
-        logger.debug(f"  Function hash: {function_hash[:8]}...")
-        logger.debug(f"  Parameters: {parameters}")
-        
         # Connect to jobs database
         jobs_db = await get_jobs_db()
         
         # Sort parameters to ensure consistent ordering
         sorted_params = sort_parameters(parameters)
         
+        # Build query based on input type
+        if file_inputs:
+            # Multi-file: sort file_inputs by key for deterministic comparison
+            sorted_inputs = dict(sorted(file_inputs.items()))
+            query = {
+                "file_inputs": sorted_inputs,
+                "function_hash": function_hash,
+                "parameters": sorted_params
+            }
+            logger.debug(f"🔍 Searching for multi-file job: {list(sorted_inputs.keys())}")
+        else:
+            # Single file (legacy)
+            query = {
+                "file_hash": file_hash,
+                "function_hash": function_hash,
+                "parameters": sorted_params
+            }
+            logger.debug(f"🔍 Searching for single-file job: {file_hash[:8] if file_hash else 'none'}...")
+        
         # Query for jobs with the given parameters
-        job = await jobs_db.jobs.find_one({
-            "file_hash": file_hash,
-            "function_hash": function_hash,
-            "parameters": sorted_params
-        }, sort=[("created_at", -1)])
+        job = await jobs_db.jobs.find_one(query, sort=[("created_at", -1)])
         
         if job:
             job_id = job.get("job_id")
@@ -145,12 +161,18 @@ async def find_existing_job(file_hash: str, function_hash: str, parameters: Dict
         print(f"Error finding existing job: {e}")
         return None
 
-async def submit_job(file_hash: str, function_hash: str, parameters: Dict[str, Any]) -> Tuple[bool, str, Dict[str, Any]]:
+async def submit_job(
+    file_hash: Optional[str] = None,
+    file_inputs: Optional[Dict[str, str]] = None,
+    function_hash: str = None,
+    parameters: Dict[str, Any] = None
+) -> Tuple[bool, str, Dict[str, Any]]:
     """
     Submit a job to the slurm_api.
     
     Args:
-        file_hash: The hash of the input file
+        file_hash: The hash of the input file (single file)
+        file_inputs: Dict of input name → hash (multi-file)
         function_hash: The hash of the method
         parameters: The job parameters
         
@@ -168,12 +190,21 @@ async def submit_job(file_hash: str, function_hash: str, parameters: Dict[str, A
         
         # Prepare job submission payload
         payload = {
-            "file_hash": file_hash,
             "function_hash": function_hash,
             "parameters": sorted_params
         }
         
+        # Add file input (single or multi)
+        if file_inputs:
+            # Multi-file: sort by key for deterministic submission
+            sorted_inputs = dict(sorted(file_inputs.items()))
+            payload["file_inputs"] = sorted_inputs
+        else:
+            # Single file (legacy)
+            payload["file_hash"] = file_hash
+        
         # Submit job to slurm_api
+        logger.info(f"Submitting to slurm_api with payload: {payload}")
         async with aiohttp.ClientSession() as session:
             async with session.post(
                 f"{settings.SLURM_API_URL}/submit",

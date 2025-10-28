@@ -24,6 +24,7 @@ class Method(BaseModel):
 class MethodExecution(BaseModel):
     """Model for method execution."""
     function_hash: str
-    file_hash: str
+    file_hash: Optional[str] = None  # Single file (legacy)
+    file_inputs: Optional[Dict[str, str]] = None  # Multi-file (new)
     parameters: Dict[str, Any] = Field(default_factory=dict)
     name: Optional[str] = None 

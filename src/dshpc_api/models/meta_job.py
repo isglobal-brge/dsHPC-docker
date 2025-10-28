@@ -1,7 +1,7 @@
 """
 Meta-job models for chaining multiple processing steps.
 """
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, validator
 from typing import List, Optional, Dict, Any
 from datetime import datetime
 from enum import Enum
@@ -24,8 +24,23 @@ class MethodChainStep(BaseModel):
 
 class MetaJobRequest(BaseModel):
     """Request model for submitting a meta-job."""
-    initial_file_hash: str = Field(..., description="Hash of the initial input file")
+    initial_file_hash: Optional[str] = Field(None, description="Hash of the initial input file (single file - legacy)")
+    initial_file_inputs: Optional[Dict[str, str]] = Field(None, description="Named dict of file hashes (multi-file - new)")
     method_chain: List[MethodChainStep] = Field(..., min_items=1, description="Chain of methods to execute sequentially")
+    
+    @validator('initial_file_inputs')
+    def check_file_inputs(cls, v, values):
+        # Exactly one of initial_file_hash or initial_file_inputs must be provided
+        has_hash = values.get('initial_file_hash') is not None
+        has_inputs = v is not None
+        
+        if not has_hash and not has_inputs:
+            raise ValueError("Must provide either initial_file_hash or initial_file_inputs")
+        
+        if has_hash and has_inputs:
+            raise ValueError("Provide either initial_file_hash OR initial_file_inputs, not both")
+        
+        return v
     
     class Config:
         schema_extra = {
@@ -80,7 +95,8 @@ class MetaJobResponse(BaseModel):
 class MetaJobInfo(BaseModel):
     """Full status information for a meta-job."""
     meta_job_id: str
-    initial_file_hash: str
+    initial_file_hash: Optional[str] = None  # Single file (can be None for multi-file)
+    initial_file_inputs: Optional[Dict[str, str]] = None  # Multi-file inputs
     chain: List[MetaJobStepInfo]
     status: MetaJobStatus
     current_step: Optional[int] = None

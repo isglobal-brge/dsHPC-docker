@@ -20,29 +20,61 @@ from slurm_api.utils.parameter_utils import sort_parameters
 
 def prepare_job_script(job_id: str, job: JobSubmission) -> str:
     """Prepare a job script file and return its path."""
-    # Check if file hash exists in database
-    file_doc = find_file_by_hash(job.file_hash)
-    if not file_doc:
-        raise ValueError(f"File with hash {job.file_hash} not found in database")
+    logger.info(f"prepare_job_script called for job {job_id}")
+    logger.info(f"  file_hash: {job.file_hash}")
+    logger.info(f"  file_inputs: {job.file_inputs}")
     
     # Create a unique workspace for the job
     workspace_dir = create_job_workspace()
+    logger.info(f"  workspace: {workspace_dir}")
     
     # Download file(s) to workspace using folder structure
-    # For single file: use "input" folder (unified approach)
-    file_folder = os.path.join(workspace_dir, "input")
-    os.makedirs(file_folder, exist_ok=True)
+    file_paths = {}
     
-    success, message, file_path = download_file(job.file_hash, file_folder)
-    if not success:
-        raise ValueError(f"Failed to download file: {message}")
+    if job.file_inputs:
+        # Multi-file: download each to its named folder
+        logger.info(f"Multi-file mode: {len(job.file_inputs)} files")
+        for input_name, file_hash in job.file_inputs.items():
+            logger.info(f"  Downloading '{input_name}': {file_hash[:12]}...")
+            
+            # Check file exists
+            file_doc = find_file_by_hash(file_hash)
+            if not file_doc:
+                logger.error(f"File '{input_name}' not found")
+                raise ValueError(f"File '{input_name}' with hash {file_hash} not found in database")
+            
+            # Create folder for this input
+            file_folder = os.path.join(workspace_dir, input_name)
+            os.makedirs(file_folder, exist_ok=True)
+            logger.info(f"    Folder created: {file_folder}")
+            
+            # Download file
+            success, message, file_path = download_file(file_hash, file_folder)
+            if not success:
+                logger.error(f"Download failed for '{input_name}': {message}")
+                raise ValueError(f"Failed to download file '{input_name}': {message}")
+            
+            logger.info(f"    Downloaded to: {file_path}")
+            file_paths[input_name] = file_path
+    else:
+        # Single file: use "input" folder (unified approach)
+        file_doc = find_file_by_hash(job.file_hash)
+        if not file_doc:
+            raise ValueError(f"File with hash {job.file_hash} not found in database")
+        
+        file_folder = os.path.join(workspace_dir, "input")
+        os.makedirs(file_folder, exist_ok=True)
+        
+        success, message, file_path = download_file(job.file_hash, file_folder)
+        if not success:
+            raise ValueError(f"Failed to download file: {message}")
+        
+        file_paths["input"] = file_path
     
     # Create metadata.json with file paths and workspace info
     metadata = {
         "workspace_dir": workspace_dir,
-        "files": {
-            "input": file_path  # Single file uses "input" key
-        }
+        "files": file_paths  # Dict of all files (single or multi)
     }
     
     metadata_file_path = os.path.join(workspace_dir, "metadata.json")
@@ -64,12 +96,25 @@ def prepare_job_script(job_id: str, job: JobSubmission) -> str:
         sorted_params = sort_parameters(job.parameters)
         
         # Prepare method execution
-        method_execution = MethodExecution(
-            function_hash=job.function_hash,
-            file_hash=job.file_hash,
-            parameters=sorted_params,
-            name=job.name
-        )
+        # For backward compatibility, use file_hash or file_inputs
+        if job.file_inputs:
+            # Multi-file: pass file_inputs instead
+            method_execution = MethodExecution(
+                function_hash=job.function_hash,
+                file_hash=None,  # Not used for multi-file
+                file_inputs=job.file_inputs,
+                parameters=sorted_params,
+                name=job.name
+            )
+        else:
+            # Single file (legacy)
+            method_execution = MethodExecution(
+                function_hash=job.function_hash,
+                file_hash=job.file_hash,
+                file_inputs=None,
+                parameters=sorted_params,
+                name=job.name
+            )
         
         success, message, method_execution_data = prepare_method_execution(
             workspace_dir, method_execution
@@ -93,9 +138,18 @@ def prepare_job_script(job_id: str, job: JobSubmission) -> str:
         # Redirect stdout to output file and stderr to error file (separate them)
         f.write(f"exec 1> {output_path} 2> {error_path}\n")
         
-        # Add workspace directory and file path to environment variables
+        # Add workspace directory to environment variables
         f.write(f"export JOB_WORKSPACE=\"{workspace_dir}\"\n")
-        f.write(f"export INPUT_FILE=\"{file_path}\"\n")
+        
+        # Add file paths as environment variables
+        for input_name, input_path in file_paths.items():
+            # Export as INPUT_FILE_XXX (e.g., INPUT_FILE_PRIMARY)
+            env_var_name = f"INPUT_FILE_{input_name.upper()}"
+            f.write(f"export {env_var_name}=\"{input_path}\"\n")
+        
+        # For backward compatibility: also export INPUT_FILE for first file
+        first_file_key = sorted(file_paths.keys())[0]
+        f.write(f"export INPUT_FILE=\"{file_paths[first_file_key]}\"\n")
         
         if method_execution_data:
             # Add method-specific environment variables
@@ -113,8 +167,15 @@ def prepare_job_script(job_id: str, job: JobSubmission) -> str:
             # Execute the method command with the script name (basename)
             command = method_execution_data['command']
             script_filename = os.path.basename(method_execution_data['script_path'])
+            
+            # For args[1] (backward compat): use first file
+            # Single file: file_paths["input"]
+            # Multi-file: file_paths[first_key] (sorted alphabetically)
+            first_file_key = sorted(file_paths.keys())[0]
+            first_file_path = file_paths[first_file_key]
+            
             # Use relative paths for input file, metadata, and params
-            relative_input_file = os.path.relpath(file_path, method_dir)
+            relative_input_file = os.path.relpath(first_file_path, method_dir)
             relative_metadata_file = os.path.relpath(metadata_file_path, method_dir)
             relative_params_file = os.path.relpath(method_execution_data['params_file'], method_dir)
             # Pass: script input_file metadata.json params.json
@@ -147,7 +208,6 @@ def create_job(job: JobSubmission) -> Tuple[str, Dict[str, Any]]:
         "job_id": job_id,
         "slurm_id": None,
         "function_hash": job.function_hash,
-        "file_hash": job.file_hash,
         "parameters": sorted_params,
         "status": JobStatus.PENDING,
         "created_at": datetime.utcnow(),
@@ -155,6 +215,17 @@ def create_job(job: JobSubmission) -> Tuple[str, Dict[str, Any]]:
         "output": None,
         "error": None
     }
+    
+    # Add file information (single or multi)
+    if job.file_inputs:
+        # Multi-file: sort by key for deterministic storage
+        sorted_inputs = dict(sorted(job.file_inputs.items()))
+        job_doc["file_inputs"] = sorted_inputs
+        job_doc["file_hash"] = None  # Explicitly None for multi-file
+    else:
+        # Single file
+        job_doc["file_hash"] = job.file_hash
+        job_doc["file_inputs"] = None
     
     # Insert job document
     jobs_collection.insert_one(job_doc)

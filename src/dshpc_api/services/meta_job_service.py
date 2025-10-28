@@ -42,24 +42,42 @@ async def submit_meta_job(request: MetaJobRequest) -> Tuple[bool, str, Optional[
     """
     try:
         logger.info(f"📋 NEW META-JOB SUBMISSION")
-        logger.info(f"  Initial file: {request.initial_file_hash[:8]}...")
+        if request.initial_file_inputs:
+            logger.info(f"  Initial files: {list(request.initial_file_inputs.keys())}")
+        else:
+            logger.info(f"  Initial file: {request.initial_file_hash[:8] if request.initial_file_hash else 'none'}...")
         logger.info(f"  Chain length: {len(request.method_chain)} steps")
         for i, step in enumerate(request.method_chain):
             logger.info(f"  Step {i}: {step.method_name} with {len(step.parameters)} params")
         
-        # Validate initial file exists AND is completed
+        # Validate initial file(s) exist AND are completed
         files_db = await get_files_db()
-        file_doc = await files_db.files.find_one({"file_hash": request.initial_file_hash})
         
-        if not file_doc:
-            logger.error(f"Initial file {request.initial_file_hash} not found")
-            return False, f"Initial file with hash {request.initial_file_hash} not found", None
-        
-        # Check if file upload is completed
-        if file_doc.get("status") != "completed":
-            file_status = file_doc.get("status", "unknown")
-            logger.error(f"Initial file {request.initial_file_hash} not completed (status: {file_status})")
-            return False, f"Initial file with hash {request.initial_file_hash} is not ready (status: {file_status}). Please wait for upload to complete.", None
+        if request.initial_file_inputs:
+            # Multi-file: validate ALL files
+            for name, file_hash in request.initial_file_inputs.items():
+                file_doc = await files_db.files.find_one({"file_hash": file_hash})
+                
+                if not file_doc:
+                    logger.error(f"File '{name}' with hash {file_hash} not found")
+                    return False, f"File '{name}' with hash {file_hash} not found", None
+                
+                if file_doc.get("status") != "completed":
+                    file_status = file_doc.get("status", "unknown")
+                    logger.error(f"File '{name}' not completed (status: {file_status})")
+                    return False, f"File '{name}' is not ready (status: {file_status}). Please wait for upload to complete.", None
+        else:
+            # Single file (legacy)
+            file_doc = await files_db.files.find_one({"file_hash": request.initial_file_hash})
+            
+            if not file_doc:
+                logger.error(f"Initial file {request.initial_file_hash} not found")
+                return False, f"Initial file with hash {request.initial_file_hash} not found", None
+            
+            if file_doc.get("status") != "completed":
+                file_status = file_doc.get("status", "unknown")
+                logger.error(f"Initial file {request.initial_file_hash} not completed (status: {file_status})")
+                return False, f"Initial file with hash {request.initial_file_hash} is not ready (status: {file_status}). Please wait for upload to complete.", None
         
         # Validate all methods exist and are functional
         for step in request.method_chain:
@@ -77,13 +95,24 @@ async def submit_meta_job(request: MetaJobRequest) -> Tuple[bool, str, Optional[
             function_hash = await get_latest_method_hash(step.method_name)
             if not function_hash:
                 return False, f"Method '{step.method_name}' not found or not active", None
-                
+            
+            # For first step: use initial_file_hash or initial_file_inputs
+            step_input = None
+            step_file_inputs = None
+            
+            if i == 0:
+                if request.initial_file_inputs:
+                    step_file_inputs = request.initial_file_inputs
+                else:
+                    step_input = request.initial_file_hash
+            
             chain_info.append({
                 "step": i,
                 "method_name": step.method_name,
                 "function_hash": function_hash,
                 "parameters": sort_parameters(step.parameters),
-                "input_file_hash": request.initial_file_hash if i == 0 else None,
+                "input_file_hash": step_input,  # Single file or None
+                "input_file_inputs": step_file_inputs,  # Multi-file or None
                 "output_file_hash": None,
                 "job_id": None,
                 "status": "pending",
@@ -93,7 +122,8 @@ async def submit_meta_job(request: MetaJobRequest) -> Tuple[bool, str, Optional[
         # Create meta-job document
         meta_job_doc = {
             "meta_job_id": meta_job_id,
-            "initial_file_hash": request.initial_file_hash,
+            "initial_file_hash": request.initial_file_hash,  # Can be None
+            "initial_file_inputs": request.initial_file_inputs,  # Can be None
             "chain": chain_info,
             "status": MetaJobStatus.PENDING,
             "current_step": None,
@@ -146,7 +176,9 @@ async def process_meta_job_chain(meta_job_id: str):
             logger.error(f"Meta-job {meta_job_id} not found")
             return
         
-        current_input_hash = meta_job["initial_file_hash"]
+        # Initialize with initial file hash or file_inputs
+        current_input_hash = meta_job.get("initial_file_hash")
+        current_file_inputs = meta_job.get("initial_file_inputs")
         
         # Process each step in the chain
         for i, step in enumerate(meta_job["chain"]):
@@ -159,12 +191,23 @@ async def process_meta_job_chain(meta_job_id: str):
                 }}
             )
             
-            # Set input hash for this step
-            step["input_file_hash"] = current_input_hash
+            # For first step: use initial file(s), for subsequent steps: use previous output
+            if i == 0:
+                step_file_hash = current_input_hash
+                step_file_inputs = current_file_inputs
+            else:
+                # Subsequent steps always use single file (output from previous step)
+                step_file_hash = current_input_hash
+                step_file_inputs = None
+            
+            # Update step with input info
+            step["input_file_hash"] = step_file_hash
+            step["input_file_inputs"] = step_file_inputs
             
             # Check if this step already exists (deduplication)
             existing_job = await find_existing_job(
-                file_hash=current_input_hash,
+                file_hash=step_file_hash,
+                file_inputs=step_file_inputs,
                 function_hash=step["function_hash"],
                 parameters=step["parameters"]
             )
@@ -173,7 +216,10 @@ async def process_meta_job_chain(meta_job_id: str):
                 # Job already completed, use its output
                 logger.info(f"✅ CACHE HIT - Meta-job {meta_job_id} step {i}:")
                 logger.info(f"  Method: {step['method_name']}")
-                logger.info(f"  Input hash: {current_input_hash[:8]}...")
+                if step_file_inputs:
+                    logger.info(f"  Input files: {list(step_file_inputs.keys())}")
+                else:
+                    logger.info(f"  Input hash: {step_file_hash[:8] if step_file_hash else 'none'}...")
                 logger.info(f"  Cached job ID: {existing_job['job_id']}")
                 logger.info(f"  Skipping execution - using cached output")
                 
@@ -222,14 +268,18 @@ async def process_meta_job_chain(meta_job_id: str):
                 # Need to submit new job
                 logger.info(f"🔄 CACHE MISS - Meta-job {meta_job_id} step {i}:")
                 logger.info(f"  Method: {step['method_name']}")
-                logger.info(f"  Input hash: {current_input_hash[:8]}...")
+                if step_file_inputs:
+                    logger.info(f"  Input files: {list(step_file_inputs.keys())}")
+                else:
+                    logger.info(f"  Input hash: {step_file_hash[:8] if step_file_hash else 'none'}...")
                 if existing_job:
                     logger.info(f"  Found job but status is: {existing_job.get('status', 'unknown')}")
                 else:
                     logger.info(f"  No existing job found - submitting new job")
                 
                 success, message, job_data = await submit_job(
-                    file_hash=current_input_hash,
+                    file_hash=step_file_hash,
+                    file_inputs=step_file_inputs,
                     function_hash=step["function_hash"],
                     parameters=step["parameters"]
                 )

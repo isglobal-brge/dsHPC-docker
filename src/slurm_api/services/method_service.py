@@ -114,10 +114,13 @@ def prepare_method_execution(workspace_dir: str, method_execution: MethodExecuti
         if not method_doc:
             return False, f"Method with hash {method_execution.function_hash} not found", None
         
-        # Validate file exists
-        file_doc = find_file_by_hash(method_execution.file_hash)
-        if not file_doc:
-            return False, f"File with hash {method_execution.file_hash} not found", None
+        # Validate file(s) exist
+        # For multi-file, validation already done in prepare_job_script
+        # For single file, validate here
+        if method_execution.file_hash:
+            file_doc = find_file_by_hash(method_execution.file_hash)
+            if not file_doc:
+                return False, f"File with hash {method_execution.file_hash} not found", None
         
         # Create method directory in workspace
         method_dir = os.path.join(workspace_dir, "method")

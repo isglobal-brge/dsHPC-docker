@@ -23,8 +23,21 @@ class JobSubmission(BaseModel):
     script: Optional[str] = None
     name: Optional[str] = None
     parameters: Optional[Dict[str, Any]] = None
-    file_hash: str
+    file_hash: Optional[str] = None  # Single file (legacy)
+    file_inputs: Optional[Dict[str, str]] = None  # Multi-file (new)
     function_hash: str
+    
+    @validator('file_inputs')
+    def validate_file_input(cls, v, values):
+        """Validate that exactly one of file_hash or file_inputs is provided."""
+        has_hash = values.get('file_hash') is not None
+        has_inputs = v is not None
+        
+        if not has_hash and not has_inputs:
+            raise ValueError("Must provide either file_hash or file_inputs")
+        if has_hash and has_inputs:
+            raise ValueError("Provide either file_hash OR file_inputs, not both")
+        return v
     
     @validator('script')
     def validate_script_or_function_hash(cls, v, values):

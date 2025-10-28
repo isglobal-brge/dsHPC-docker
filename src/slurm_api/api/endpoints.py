@@ -25,14 +25,31 @@ router = APIRouter()
 @router.post("/submit")
 async def submit_job(job: JobSubmission):
     """Submit a new job to SLURM."""
+    logger.info(f"=== JOB SUBMISSION RECEIVED ===")
+    logger.info(f"file_hash: {job.file_hash}")
+    logger.info(f"file_inputs: {job.file_inputs}")
+    logger.info(f"function_hash: {job.function_hash}")
+    
     try:
-        # Validate file_hash exists in database
-        file_doc = find_file_by_hash(job.file_hash)
-        if not file_doc:
-            raise HTTPException(
-                status_code=400,
-                detail=f"File with hash {job.file_hash} not found in database"
-            )
+        # Validate file(s) exist in database
+        logger.info("Starting file validation...")
+        if job.file_inputs:
+            # Multi-file: validate all files
+            for name, file_hash in job.file_inputs.items():
+                file_doc = find_file_by_hash(file_hash)
+                if not file_doc:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"File '{name}' with hash {file_hash} not found in database"
+                    )
+        else:
+            # Single file
+            file_doc = find_file_by_hash(job.file_hash)
+            if not file_doc:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"File with hash {job.file_hash} not found in database"
+                )
         
         # Validate function_hash exists if provided
         if job.function_hash:
@@ -53,11 +70,21 @@ async def submit_job(job: JobSubmission):
         
         # Check for duplicate jobs
         # Find any existing job with the same core identifiers
-        existing_job = jobs_collection.find_one({
-            "function_hash": job.function_hash,
-            "file_hash": job.file_hash,
-            "parameters": sorted_params
-        })
+        if job.file_inputs:
+            sorted_inputs = dict(sorted(job.file_inputs.items()))
+            query = {
+                "function_hash": job.function_hash,
+                "file_inputs": sorted_inputs,
+                "parameters": sorted_params
+            }
+        else:
+            query = {
+                "function_hash": job.function_hash,
+                "file_hash": job.file_hash,
+                "parameters": sorted_params
+            }
+        
+        existing_job = jobs_collection.find_one(query)
         
         if existing_job:
             # If the existing job is completed or still active, return it as duplicate
@@ -80,11 +107,15 @@ async def submit_job(job: JobSubmission):
                  # Proceed to create new job below
         
         # If no completed or active duplicate found, create job in database
+        logger.info(f"Creating job in DB...")
         job_id, job_doc = create_job(job)
+        logger.info(f"Job created: {job_id}")
         
         try:
             # Prepare job script file
+            logger.info(f"Preparing job script...")
             script_path = prepare_job_script(job_id, job)
+            logger.info(f"Script prepared: {script_path}")
             
             # Submit job to Slurm
             success, message, slurm_id = submit_slurm_job(script_path)
@@ -115,7 +146,9 @@ async def submit_job(job: JobSubmission):
             )
             
     except Exception as e:
+        import traceback
         logger.error(f"Error submitting job: {e}")
+        logger.error(f"Traceback: {traceback.format_exc()}")
         raise HTTPException(
             status_code=500,
             detail=f"Internal server error: {str(e)}"

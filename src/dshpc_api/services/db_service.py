@@ -223,6 +223,9 @@ async def upload_file(file_data: Dict[str, Any]) -> Tuple[bool, str, Dict[str, A
         db = await get_files_db()
         file_data["storage_type"] = "inline"
         file_data["file_size"] = file_size
+        file_data["status"] = "completed"  # Mark inline files as completed immediately
+        file_data["upload_date"] = now
+        file_data["last_checked"] = now
         result = await db.files.insert_one(file_data)
         
         # Get the uploaded file
