@@ -212,6 +212,9 @@ class ChunkedUploadService:
             if session.status != "active":
                 return False, f"Session is not active (status: {session.status})", None
             
+            # Import db functions at the start
+            from dshpc_api.services.db_service import get_files_db, get_gridfs_bucket, upload_file
+            
             # Update session status to finalizing
             db = await get_files_db()
             sessions_collection = db['chunked_upload_sessions']
@@ -268,8 +271,6 @@ class ChunkedUploadService:
             
             if file_size > GRIDFS_THRESHOLD:
                 # Use GridFS for large files - stream directly from disk
-                from dshpc_api.services.db_service import get_gridfs_bucket, get_files_db
-                
                 try:
                     bucket = await get_gridfs_bucket()
                     
@@ -334,7 +335,6 @@ class ChunkedUploadService:
                     "metadata": session.metadata
                 }
                 
-                from dshpc_api.services.db_service import upload_file
                 success, message, uploaded_file = await upload_file(file_data)
             
             if success:
