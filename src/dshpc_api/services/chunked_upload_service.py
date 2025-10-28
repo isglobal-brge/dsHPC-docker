@@ -298,7 +298,8 @@ class ChunkedUploadService:
                         "last_checked": now,
                         "storage_type": "gridfs",
                         "gridfs_id": grid_id,
-                        "file_size": file_size
+                        "file_size": file_size,
+                        "status": "completed"  # Mark as completed after successful finalization
                     }
                     
                     db = await get_files_db()

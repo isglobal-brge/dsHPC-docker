@@ -128,10 +128,15 @@ async def get_files(limit: int = 100) -> List[Dict[str, Any]]:
 
 async def file_exists(file_hash: str) -> bool:
     """
-    Check if a file with the given hash exists in the database.
+    Check if a file with the given hash exists and is completed.
+    Only returns True for files with status="completed".
+    Files being uploaded (status="uploading") are not considered as existing.
     """
     db = await get_files_db()
-    count = await db.files.count_documents({"file_hash": file_hash})
+    count = await db.files.count_documents({
+        "file_hash": file_hash,
+        "status": "completed"
+    })
     return count > 0
 
 async def upload_file(file_data: Dict[str, Any]) -> Tuple[bool, str, Dict[str, Any]]:
@@ -194,7 +199,8 @@ async def upload_file(file_data: Dict[str, Any]) -> Tuple[bool, str, Dict[str, A
                 "last_checked": now,
                 "storage_type": "gridfs",
                 "gridfs_id": grid_id,
-                "file_size": file_size
+                "file_size": file_size,
+                "status": "completed"  # Single upload, immediately completed
             }
             
             db = await get_files_db()

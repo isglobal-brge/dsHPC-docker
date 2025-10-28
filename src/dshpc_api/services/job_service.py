@@ -289,16 +289,28 @@ async def simulate_job(file_hash: str, method_name: str, parameters: Optional[Di
                 "error_details": f"Could not find an active method with name '{method_name}'"
             }
         
-        # Check if the file exists
+        # Check if the file exists AND is completed
         files_db = await get_files_db()
-        file_exists = await files_db.files.count_documents({"file_hash": file_hash}) > 0
-        if not file_exists:
+        file_doc = await files_db.files.find_one({"file_hash": file_hash})
+        
+        if not file_doc:
             return {
                 "job_id": None,
                 "status": None,
                 "message": f"File with hash '{file_hash}' not found",
                 "status_detail": "Input file not found",
                 "error_details": f"No file exists in the database with hash '{file_hash}'"
+            }
+        
+        # Check if file upload is completed
+        if file_doc.get("status") != "completed":
+            file_status = file_doc.get("status", "unknown")
+            return {
+                "job_id": None,
+                "status": None,
+                "message": f"File with hash '{file_hash}' is not ready (status: {file_status})",
+                "status_detail": "Input file not ready",
+                "error_details": f"File upload is in progress or failed. Current status: {file_status}. Please wait for upload to complete."
             }
         
         # Check if there's an existing job with these parameters (using sorted parameters)
