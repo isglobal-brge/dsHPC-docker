@@ -1,5 +1,6 @@
 import os
 import uuid
+import json
 import hashlib
 import base64
 from datetime import datetime
@@ -27,10 +28,26 @@ def prepare_job_script(job_id: str, job: JobSubmission) -> str:
     # Create a unique workspace for the job
     workspace_dir = create_job_workspace()
     
-    # Download the file to the workspace
-    success, message, file_path = download_file(job.file_hash, workspace_dir)
+    # Download file(s) to workspace using folder structure
+    # For single file: use "input" folder (unified approach)
+    file_folder = os.path.join(workspace_dir, "input")
+    os.makedirs(file_folder, exist_ok=True)
+    
+    success, message, file_path = download_file(job.file_hash, file_folder)
     if not success:
         raise ValueError(f"Failed to download file: {message}")
+    
+    # Create metadata.json with file paths and workspace info
+    metadata = {
+        "workspace_dir": workspace_dir,
+        "files": {
+            "input": file_path  # Single file uses "input" key
+        }
+    }
+    
+    metadata_file_path = os.path.join(workspace_dir, "metadata.json")
+    with open(metadata_file_path, "w") as meta_f:
+        json.dump(metadata, meta_f, indent=2)
     
     script_path = f"/tmp/job_{job_id}.sh"
     
@@ -96,10 +113,12 @@ def prepare_job_script(job_id: str, job: JobSubmission) -> str:
             # Execute the method command with the script name (basename)
             command = method_execution_data['command']
             script_filename = os.path.basename(method_execution_data['script_path'])
-            # Use relative path for input file and params file as we are in workspace_dir
+            # Use relative paths for input file, metadata, and params
             relative_input_file = os.path.relpath(file_path, method_dir)
+            relative_metadata_file = os.path.relpath(metadata_file_path, method_dir)
             relative_params_file = os.path.relpath(method_execution_data['params_file'], method_dir)
-            f.write(f"{command} \"{script_filename}\" \"{relative_input_file}\" \"{relative_params_file}\"\n")
+            # Pass: script input_file metadata.json params.json
+            f.write(f"{command} \"{script_filename}\" \"{relative_input_file}\" \"{relative_metadata_file}\" \"{relative_params_file}\"\n")
         else:
             # If no method is provided, we must have a script
             if not job.script:
