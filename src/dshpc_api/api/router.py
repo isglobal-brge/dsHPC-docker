@@ -47,51 +47,6 @@ def verify_content_hash(content_base64: str, provided_hash: str) -> bool:
     except Exception:
         return False
 
-@router.post("/files/upload", response_model=FileResponse, status_code=status.HTTP_201_CREATED)
-async def upload_new_file(file_data: FileUpload, api_key: str = Security(get_api_key)):
-    """
-    Upload a new file to the database.
-    If a file with the same hash already exists, the upload will be rejected.
-    
-    All file content should be base64 encoded, regardless of file type.
-    Set the appropriate content_type (e.g., "image/jpeg", "application/zip", "text/csv") 
-    to indicate the file format.
-    """
-    try:
-        # Verify the hash matches the content
-        if not verify_content_hash(file_data.content, file_data.file_hash):
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Content hash verification failed. The provided hash does not match the content."
-            )
-            
-        # Prepare data for database
-        db_file_data = {
-            "file_hash": file_data.file_hash,
-            "content": file_data.content,
-            "filename": file_data.filename,
-            "content_type": file_data.content_type,
-            "metadata": file_data.metadata
-        }
-        
-        # Upload file
-        success, message, uploaded_file = await upload_file(db_file_data)
-        
-        if not success:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail=message
-            )
-        
-        return uploaded_file
-    except Exception as e:
-        if isinstance(e, HTTPException):
-            raise e
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Error uploading file: {str(e)}"
-        )
-
 @router.post("/files/check-hashes", response_model=HashCheckResponse)
 async def check_file_hashes(hash_data: HashCheckRequest, api_key: str = Security(get_api_key)):
     """
@@ -462,6 +417,50 @@ async def finalize_chunked_upload(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error finalizing upload: {str(e)}"
+        )
+
+
+@router.get("/files/upload-chunked/{session_id}/status")
+async def get_chunked_upload_status(
+    session_id: str,
+    api_key: str = Security(get_api_key)
+):
+    """
+    Get the status of a chunked upload session.
+    
+    Returns information about the session including chunks received,
+    total expected chunks, and current status.
+    Useful for debugging and implementing resume logic.
+    """
+    try:
+        service = get_chunked_upload_service()
+        session = await service.get_session(session_id)
+        
+        if not session:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Session {session_id} not found"
+            )
+        
+        return {
+            "session_id": session.session_id,
+            "file_hash": session.file_hash,
+            "filename": session.filename,
+            "total_size": session.total_size,
+            "chunk_size": session.chunk_size,
+            "chunks_received": len(session.chunks_received),
+            "chunks_list": sorted(session.chunks_received),
+            "status": session.status,
+            "created_at": session.created_at,
+            "last_updated": session.last_updated
+        }
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error getting session status: {str(e)}"
         )
 
 
