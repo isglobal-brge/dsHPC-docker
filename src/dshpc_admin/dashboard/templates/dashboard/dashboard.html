@@ -13,9 +13,9 @@
         
         {% if env_config.authors %}
         <!-- Authors Accordions -->
-        <hr style="margin: 0 -1.5rem; border-color: #cbd5e1;">
-        <div class="accordion" id="authorsAccordion" style="margin-left: -1.5rem; margin-right: -1.5rem; margin-top: 1rem;">
+        <div class="accordion" id="authorsAccordion" style="margin-left: -1.5rem; margin-right: -1.5rem;">
             <div class="accordion-item">
+                <hr style="margin: 0; padding: 0; border-color: rgba(0,0,0,0.5);">
                 <h2 class="accordion-header">
                     <button class="accordion-button collapsed text-center justify-content-center" type="button" data-bs-toggle="collapse" data-bs-target="#envAuthors" style="font-weight: 400; font-size: 0.9rem; color: #334155;">
                         {{ env_config.environment_name }} Authors
@@ -62,8 +62,9 @@
             
             <!-- dsHPC Authors Accordion -->
             <div class="accordion-item">
+                <hr style="margin: 0; padding: 0; border-color: rgba(0,0,0,0.5);">
                 <h2 class="accordion-header">
-                    <button class="accordion-button collapsed text-center justify-content-center" type="button" data-bs-toggle="collapse" data-bs-target="#dshpcAuthors" style="font-weight: 400; font-size: 0.9rem; color: #334155; padding-bottom: 16px;">
+                    <button class="accordion-button collapsed text-center justify-content-center" type="button" data-bs-toggle="collapse" data-bs-target="#dshpcAuthors" style="font-weight: 400; font-size: 0.9rem; color: #334155;">
                         dsHPC Authors
                     </button>
                 </h2>

@@ -330,17 +330,25 @@
             transition: all 0.2s ease;
         }
         
-        /* Flat accordion (no borders, rounded corners) */
+        /* Flat accordion (no borders, no margin) */
         #authorsAccordion .accordion-item {
-            border: 1px solid #cbd5e1;
-            border-radius: 6px;
-            margin-bottom: 0.5rem;
+            border: none;
+            border-radius: 0;
+            margin: 0;
+            overflow: visible;
+        }
+        
+        /* Last accordion item matches card bottom radius */
+        #authorsAccordion .accordion-item:last-child {
+            border-bottom-left-radius: 12px;
+            border-bottom-right-radius: 12px;
             overflow: hidden;
         }
         
         #authorsAccordion .accordion-button {
             background: transparent;
             border: none;
+            padding: 24px;
         }
         
         #authorsAccordion .accordion-button:not(.collapsed) {
@@ -350,6 +358,7 @@
         
         #authorsAccordion .accordion-body {
             background: transparent;
+            padding: 24px;
         }
         
         .accordion-modern .accordion-item:hover {
