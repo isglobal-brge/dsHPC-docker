@@ -3,11 +3,14 @@ FROM python:3.11-slim
 WORKDIR /app
 
 # Install dependencies
-COPY requirements.txt .
+COPY src/dshpc_admin/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy application
-COPY . .
+COPY src/dshpc_admin/ .
+
+# Collect static files
+RUN python manage.py collectstatic --noinput || true
 
 # Expose port
 EXPOSE 8000
