@@ -575,6 +575,17 @@
             from { transform: rotate(0deg); }
             to { transform: rotate(360deg); }
         }
+        
+        /* Social icons hover */
+        .social-icon {
+            transition: transform 0.2s ease, opacity 0.2s ease;
+            display: inline-block;
+        }
+        
+        .social-icon:hover {
+            transform: scale(1.2);
+            opacity: 0.8;
+        }
     </style>
     
     {% block extra_css %}{% endblock %}
@@ -583,15 +594,26 @@
     <!-- Sidebar -->
     <div class="sidebar">
         <div class="sidebar-header">
-            <h4><i class="bi bi-hdd-network-fill"></i> dsHPCAdmin</h4>
-            <small class="text-white-50">High-Performance Computing</small>
+            <h4>dsHPC Admin</h4>
+            {% load dashboard_filters %}
+            <small class="text-white-50" title="{{ env_config.environment_name }}">
+                {% if env_config.environment_name %}
+                    {% if env_config.environment_name|length > 30 %}
+                        {{ env_config.environment_name|slice:":27" }}...
+                    {% else %}
+                        {{ env_config.environment_name }}
+                    {% endif %}
+                {% else %}
+                    High-Performance Computing
+                {% endif %}
+            </small>
         </div>
         
         <nav class="sidebar-nav">
             <ul class="nav flex-column">
                 <li class="nav-item">
                     <a class="nav-link {% if request.resolver_match.url_name == 'dashboard' %}active{% endif %}" href="{% url 'dashboard' %}">
-                        <i class="bi bi-speedometer2"></i> Dashboard
+                        <i class="bi bi-speedometer2"></i> Overview
                     </a>
                 </li>
                 <li class="nav-item">

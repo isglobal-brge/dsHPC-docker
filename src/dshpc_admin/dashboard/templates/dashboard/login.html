@@ -35,13 +35,8 @@
         }
         
         .login-header h4 {
-            margin: 0;
+            margin: 0 0 0.5rem 0;
             font-weight: 600;
-        }
-        
-        .login-header .icon {
-            font-size: 3rem;
-            margin-bottom: 1rem;
         }
         
         .login-body {
@@ -86,11 +81,8 @@
 <body>
     <div class="login-card">
         <div class="login-header">
-            <div class="icon">
-                <i class="bi bi-hdd-network-fill"></i>
-            </div>
-            <h4>dsHPCAdmin</h4>
-            <small class="text-white-50">High-Performance Computing</small>
+            <h4>dsHPC Admin</h4>
+            <small class="text-white-50" title="{{ env_name }}">{{ env_name }}</small>
         </div>
         
         <div class="login-body">

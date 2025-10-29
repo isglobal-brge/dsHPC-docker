@@ -17,6 +17,21 @@ def login_view(request):
     if request.session.get('authenticated', False):
         return redirect('dashboard')
     
+    # Load environment config for environment name
+    env_name = "High-Performance Computing"
+    try:
+        import json
+        import os
+        config_path = '/app/environment-config.json'
+        if os.path.exists(config_path):
+            with open(config_path, 'r') as f:
+                config = json.load(f)
+                environment_name = config.get('environment_name', env_name)
+                # Truncate if too long
+                env_name = environment_name if len(environment_name) <= 30 else environment_name[:27] + '...'
+    except:
+        pass
+    
     if request.method == 'POST':
         password = request.POST.get('password', '')
         
@@ -31,7 +46,10 @@ def login_view(request):
         else:
             messages.error(request, 'Invalid password. Please try again.')
     
-    return render(request, 'dashboard/login.html', {'page_title': 'Login'})
+    return render(request, 'dashboard/login.html', {
+        'page_title': 'Login',
+        'env_name': env_name
+    })
 
 
 def logout_view(request):
@@ -67,7 +85,7 @@ def dashboard_home(request):
         'stats': stats,
         'env_config': env_config,
         'docker_prefix': docker_prefix,
-        'page_title': 'Dashboard'
+        'page_title': 'Overview'
     }
     
     return render(request, 'dashboard/dashboard.html', context)
@@ -106,6 +124,20 @@ def container_status(request):
         'timestamp': snapshot_data['timestamp'],
         'age_seconds': snapshot_data['age_seconds']
     })
+
+
+def get_env_config():
+    """Helper to load environment config."""
+    try:
+        import json
+        import os
+        config_path = '/app/environment-config.json'
+        if os.path.exists(config_path):
+            with open(config_path, 'r') as f:
+                return json.load(f)
+    except:
+        pass
+    return {}
 
 
 @login_required_simple
@@ -224,13 +256,14 @@ def files_list(request):
         'date_from': date_from,
         'date_to': date_to,
         'snapshot_time': snapshot_time,
+        'env_config': get_env_config(),
         'page_title': 'Files'
     }
     
     return render(request, 'dashboard/files_list.html', context)
 
 
-@login_required_simple
+@login_required_simple  
 def jobs_list(request):
     """List all jobs with advanced filtering."""
     from datetime import datetime
@@ -399,6 +432,7 @@ def jobs_list(request):
         'per_page': per_page,
         'page_range': page_range,
         'snapshot_time': snapshot_time,
+        'env_config': get_env_config(),
         'page_title': 'Jobs'
     }
     
@@ -565,6 +599,7 @@ def meta_jobs_list(request):
         'date_from': date_from,
         'date_to': date_to,
         'snapshot_time': snapshot_time,
+        'env_config': get_env_config(),
         'page_title': 'Meta-Jobs'
     }
     
@@ -664,6 +699,7 @@ def methods_list(request):
         'page_range': page_range,
         'methods_count': len(active_methods) + len(inactive_methods),
         'snapshot_time': snapshot_time,
+        'env_config': get_env_config(),
         'page_title': 'Methods'
     }
     
@@ -689,6 +725,7 @@ def slurm_queue(request):
     context = {
         'queue': snapshot_data['queue'],
         'snapshot_time': snapshot_data['timestamp'],
+        'env_config': get_env_config(),
         'page_title': 'Slurm'
     }
     
@@ -807,6 +844,7 @@ def logs_viewer(request):
         'logs': logs,
         'error': error,
         'lines': lines,
+        'env_config': get_env_config(),
         'page_title': 'Logs'
     }
     
