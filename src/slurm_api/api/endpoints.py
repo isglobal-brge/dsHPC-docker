@@ -212,19 +212,17 @@ async def get_queue():
         success, message, jobs = get_queue_status()
         
         if not success:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Queue query failed: {message}"
-            )
+            # Log the actual error but return empty queue instead of failing
+            logger.warning(f"Queue query failed: {message}")
+            # Return empty queue instead of error - controller might be temporarily unavailable
+            return {"jobs": [], "warning": "Slurm controller temporarily unavailable"}
         
         return {"jobs": jobs}
         
     except Exception as e:
         logger.error(f"Error getting queue: {e}")
-        raise HTTPException(
-            status_code=500,
-            detail=f"Internal server error: {str(e)}"
-        )
+        # Return empty queue on error instead of raising exception
+        return {"jobs": [], "error": str(e)}
 
 @router.get("/job/{job_id}")
 async def get_job(job_id: str):

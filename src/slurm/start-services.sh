@@ -75,13 +75,59 @@ fi
 service munge start >/dev/null 2>&1
 echo -e "${GREEN}>> Munge service started!${NC}"
 
+# Clean up cluster name file if it exists and doesn't match
+if [ -f /var/spool/clustername ]; then
+    STORED_CLUSTER=$(cat /var/spool/clustername)
+    EXPECTED_CLUSTER=$(grep "^ClusterName=" /etc/slurm/slurm.conf | cut -d'=' -f2)
+    
+    if [ "$STORED_CLUSTER" != "$EXPECTED_CLUSTER" ]; then
+        echo -e "${YELLOW}>> Cluster name mismatch detected (${STORED_CLUSTER} -> ${EXPECTED_CLUSTER})${NC}"
+        echo -e "${YELLOW}>> Cleaning Slurm state files to prevent corruption...${NC}"
+        rm -f /var/spool/clustername
+        rm -f /var/spool/job_state*
+        rm -f /var/spool/node_state*
+        echo -e "${GREEN}>> State files cleaned!${NC}"
+    fi
+fi
+
 # Start Slurm services
+echo -e "${CYAN}>> Starting slurmctld...${NC}"
 service slurmctld start >/dev/null 2>&1
+SLURMCTLD_EXIT=$?
+
+echo -e "${CYAN}>> Starting slurmd...${NC}"
 service slurmd start >/dev/null 2>&1
-echo -e "${GREEN}>> Slurm services started!${NC}"
+SLURMD_EXIT=$?
+
+if [ $SLURMCTLD_EXIT -eq 0 ] && [ $SLURMD_EXIT -eq 0 ]; then
+    echo -e "${GREEN}>> Slurm services started successfully!${NC}"
+else
+    echo -e "${RED}>> Warning: Some Slurm services may have failed to start${NC}"
+    echo -e "${YELLOW}>> Checking service status...${NC}"
+    service slurmctld status || true
+    service slurmd status || true
+fi
 
 # Wait for Slurm services to fully initialize
 sleep 5
+
+# Verify slurmctld is actually running
+if ! pgrep -x slurmctld > /dev/null; then
+    echo -e "${RED}>> ERROR: slurmctld is not running! Attempting to restart...${NC}"
+    # Check logs for errors
+    tail -20 /var/log/slurm/slurmctld.log | grep -i "fatal\|error" || true
+    
+    # Try to start again
+    service slurmctld start
+    sleep 3
+    
+    if ! pgrep -x slurmctld > /dev/null; then
+        echo -e "${RED}>> CRITICAL: slurmctld failed to start. Job submission will not work.${NC}"
+        echo -e "${YELLOW}>> Check /var/log/slurm/slurmctld.log for details${NC}"
+    else
+        echo -e "${GREEN}>> slurmctld started successfully on second attempt${NC}"
+    fi
+fi
 
 # Check if the node exists and conditionally set to IDLE state only if needed
 if scontrol show node=localhost &>/dev/null; then
