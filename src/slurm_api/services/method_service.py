@@ -455,13 +455,19 @@ def register_method(method_data: Dict[str, Any], method_dir: str) -> Tuple[bool,
             if key in method_data:
                 hasher.update(str(method_data[key]).encode())
         
-        # Hash all script files in the directory
-        for item in os.listdir(method_dir):
-            item_path = os.path.join(method_dir, item)
-            if os.path.isfile(item_path):
-                # Add the filename to ensure files with same content but different names hash differently
-                hasher.update(item.encode())
-                with open(item_path, 'rb') as f:
+        # Hash all script files in the directory recursively
+        for root, dirs, files in os.walk(method_dir):
+            # Sort directories and files for consistent results
+            dirs.sort()
+            files.sort()
+            
+            for filename in files:
+                filepath = os.path.join(root, filename)
+                rel_path = os.path.relpath(filepath, method_dir)
+                
+                # Add the relative path to ensure files with same content but different paths hash differently
+                hasher.update(rel_path.encode())
+                with open(filepath, 'rb') as f:
                     # Read and hash the file content
                     hasher.update(f.read())
         
