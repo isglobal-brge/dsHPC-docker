@@ -37,7 +37,9 @@ function refreshQueue() {
             const count = document.querySelectorAll('#queueContainer tbody tr').length;
             document.getElementById('jobCount').textContent = count + ' job(s)';
             refreshBtn.disabled = false;
+            // Reset countdown and update display immediately
             countdown = 5;
+            document.getElementById('countdown').textContent = countdown;
         })
         .catch(e => {
             console.error('Error refreshing queue:', e);

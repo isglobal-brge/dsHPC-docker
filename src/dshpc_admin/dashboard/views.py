@@ -473,8 +473,8 @@ def methods_list(request):
     page = int(request.GET.get('page', 1))
     per_page = int(request.GET.get('per_page', 50))
     
-    # Build query
-    query = {} if show_inactive else {'active': True}
+    # Build base query (always get all methods for client-side toggle)
+    query = {}
     
     # Search filter
     if search:
@@ -487,30 +487,41 @@ def methods_list(request):
     if version_filter:
         query['version'] = {'$regex': version_filter, '$options': 'i'}
     
-    # Get total count
+    # Get total count (only active for pagination, but retrieve all for display)
     total_methods = methods_db.methods.count_documents(query)
     total_pages = max(1, (total_methods + per_page - 1) // per_page)
     
     # Ensure page is within bounds
     page = max(1, min(page, total_pages))
     
-    # Get methods from database - active first, then by name
+    # Get methods - always retrieve both active and inactive for client-side toggle
     skip = (page - 1) * per_page
-    methods = list(methods_db.methods.find(query).sort([('active', -1), ('name', 1)]).skip(skip).limit(per_page))
     
-    # Convert ObjectId to string and separate active/inactive
+    # Get active methods
+    active_query = query.copy()
+    active_query['active'] = True
+    active_methods_cursor = list(methods_db.methods.find(active_query).sort('name', 1).skip(skip).limit(per_page))
+    
+    # Always get inactive methods too (for same page) - without pagination to keep it simple
+    inactive_query = query.copy()
+    inactive_query['active'] = {'$ne': True}
+    inactive_methods_cursor = list(methods_db.methods.find(inactive_query).sort('name', 1).skip(skip).limit(per_page))
+    
+    # Convert ObjectId to string
     active_methods = []
     inactive_methods = []
     
-    for m in methods:
+    for m in active_methods_cursor:
         if '_id' in m:
             m['id'] = str(m['_id'])
             del m['_id']
-        
-        if m.get('active', False):
-            active_methods.append(m)
-        else:
-            inactive_methods.append(m)
+        active_methods.append(m)
+    
+    for m in inactive_methods_cursor:
+        if '_id' in m:
+            m['id'] = str(m['_id'])
+            del m['_id']
+        inactive_methods.append(m)
     
     # Generate page range for pagination
     page_range = []
@@ -535,7 +546,7 @@ def methods_list(request):
         'total_methods': total_methods,
         'per_page': per_page,
         'page_range': page_range,
-        'methods_count': len(methods),
+        'methods_count': len(active_methods) + len(inactive_methods),
         'page_title': 'Methods'
     }
     
@@ -569,6 +580,163 @@ def slurm_queue(request):
         return render(request, 'dashboard/slurm_queue_content.html', context)
     
     return render(request, 'dashboard/slurm_queue.html', context)
+
+
+def environment_info(request):
+    """Show environment information from Slurm container."""
+    import docker
+    from django.core.cache import cache
+    from django.utils import timezone
+    from datetime import timedelta
+    
+    container_name = 'dshpc-epiflare-slurm'
+    cache_key = 'environment_info_data'
+    cache_timeout = 5  # seconds
+    
+    # Check if we have cached data
+    cached_data = cache.get(cache_key)
+    last_update = cache.get(f'{cache_key}_timestamp')
+    
+    # If we have cached data and it's less than 5 seconds old, use it
+    if cached_data and last_update:
+        time_since_update = (timezone.now() - last_update).total_seconds()
+        if time_since_update < cache_timeout:
+            cached_data['cached'] = True
+            cached_data['cache_age'] = int(time_since_update)
+            cached_data['next_refresh'] = int(cache_timeout - time_since_update)
+            context = {
+                'env_data': cached_data,
+                'page_title': 'Environment'
+            }
+            return render(request, 'dashboard/environment.html', context)
+    
+    # Otherwise, fetch fresh data
+    env_data = {
+        'python': {},
+        'r': {},
+        'system': {},
+        'slurm': {},
+        'error': None,
+        'cached': False
+    }
+    
+    try:
+        client = docker.from_env()
+        container = client.containers.get(container_name)
+        
+        # Get Python version and packages
+        try:
+            python_version = container.exec_run('python3 --version').output.decode('utf-8').strip()
+            env_data['python']['version'] = python_version
+            
+            # Get pip list
+            pip_list = container.exec_run('/opt/venvs/system_python/bin/pip list --format=json').output.decode('utf-8')
+            import json
+            env_data['python']['packages'] = json.loads(pip_list) if pip_list else []
+        except Exception as e:
+            env_data['python']['error'] = str(e)
+        
+        # Get R version and packages
+        try:
+            r_version = container.exec_run('R --version').output.decode('utf-8').split('\n')[0]
+            env_data['r']['version'] = r_version
+            
+            # Get installed R packages
+            r_packages_cmd = 'R -s -e "ip <- installed.packages(); cat(jsonlite::toJSON(data.frame(Package=ip[,\'Package\'], Version=ip[,\'Version\'])))"'
+            r_packages = container.exec_run(['bash', '-c', r_packages_cmd]).output.decode('utf-8')
+            # Extract JSON from R output
+            import re
+            json_match = re.search(r'\[.*\]', r_packages, re.DOTALL)
+            if json_match:
+                env_data['r']['packages'] = json.loads(json_match.group(0))
+            else:
+                env_data['r']['packages'] = []
+        except Exception as e:
+            env_data['r']['error'] = str(e)
+        
+        # Get system info
+        try:
+            # OS information
+            os_name = container.exec_run(['bash', '-c', 'cat /etc/os-release | grep "^PRETTY_NAME=" | cut -d\'"\' -f2']).output.decode('utf-8').strip()
+            env_data['system']['os_name'] = os_name if os_name else 'Unknown'
+            
+            # Kernel version
+            kernel = container.exec_run('uname -r').output.decode('utf-8').strip()
+            env_data['system']['kernel'] = kernel
+            
+            # Architecture
+            arch = container.exec_run('uname -m').output.decode('utf-8').strip()
+            env_data['system']['architecture'] = arch
+            
+            # CPU info
+            cpu_info = container.exec_run('nproc').output.decode('utf-8').strip()
+            env_data['system']['cpus'] = cpu_info
+            
+            # Memory info - parse for visualization
+            mem_raw = container.exec_run('free -b').output.decode('utf-8')
+            mem_lines = mem_raw.strip().split('\n')
+            if len(mem_lines) > 1:
+                mem_parts = mem_lines[1].split()
+                if len(mem_parts) >= 7:
+                    env_data['system']['mem_total'] = int(mem_parts[1])
+                    env_data['system']['mem_used'] = int(mem_parts[2])
+                    env_data['system']['mem_free'] = int(mem_parts[3])
+                    env_data['system']['mem_available'] = int(mem_parts[6])
+                    env_data['system']['mem_used_pct'] = int((int(mem_parts[2]) / int(mem_parts[1])) * 100)
+            
+            # Disk info - parse for visualization
+            disk_raw = container.exec_run(['bash', '-c', 'df -B1 / | tail -1']).output.decode('utf-8')
+            disk_parts = disk_raw.strip().split()
+            if len(disk_parts) >= 5:
+                env_data['system']['disk_total'] = int(disk_parts[1])
+                env_data['system']['disk_used'] = int(disk_parts[2])
+                env_data['system']['disk_available'] = int(disk_parts[3])
+                env_data['system']['disk_used_pct'] = int(disk_parts[4].replace('%', ''))
+            
+            # APT packages - get ALL installed packages properly
+            apt_cmd = 'dpkg-query -W -f=\'${Package}\t${Version}\n\' | sort'
+            apt_output = container.exec_run(['bash', '-c', apt_cmd]).output.decode('utf-8')
+            apt_packages = []
+            for line in apt_output.strip().split('\n'):
+                if line and '\t' in line:
+                    parts = line.split('\t')
+                    if len(parts) == 2:
+                        apt_packages.append({'name': parts[0], 'version': parts[1]})
+            env_data['system']['apt_packages'] = apt_packages
+            env_data['system']['apt_packages_count'] = len(apt_packages)
+        except Exception as e:
+            env_data['system']['error'] = str(e)
+        
+        # Get Slurm configuration
+        try:
+            slurm_conf = container.exec_run('cat /etc/slurm/slurm.conf').output.decode('utf-8')
+            env_data['slurm']['config'] = slurm_conf
+            
+            # Get Slurm version
+            slurm_version = container.exec_run('scontrol --version').output.decode('utf-8').strip()
+            env_data['slurm']['version'] = slurm_version
+            
+            # Get node info
+            node_info = container.exec_run('scontrol show node').output.decode('utf-8')
+            env_data['slurm']['node_info'] = node_info
+        except Exception as e:
+            env_data['slurm']['error'] = str(e)
+            
+    except docker.errors.NotFound:
+        env_data['error'] = f"Container '{container_name}' not found"
+    except Exception as e:
+        env_data['error'] = f"Error accessing container: {str(e)}"
+    
+    # Cache the data for 5 seconds
+    cache.set(cache_key, env_data, timeout=cache_timeout)
+    cache.set(f'{cache_key}_timestamp', timezone.now(), timeout=cache_timeout)
+    
+    context = {
+        'env_data': env_data,
+        'page_title': 'Environment'
+    }
+    
+    return render(request, 'dashboard/environment.html', context)
 
 
 def logs_viewer(request):
@@ -628,7 +796,7 @@ def logs_viewer(request):
         'logs': logs,
         'error': error,
         'lines': lines,
-        'page_title': 'Logs Viewer'
+        'page_title': 'Logs'
     }
     
     return render(request, 'dashboard/logs_viewer.html', context)

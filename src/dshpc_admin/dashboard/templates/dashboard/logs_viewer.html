@@ -164,8 +164,9 @@ function refreshLogs(showIndicator = false) {
             document.getElementById('refreshIndicator').classList.add('hidden');
         });
     
-    // Reset countdown
+    // Reset countdown and update display immediately
     countdown = 5;
+    document.getElementById('countdown').textContent = countdown;
 }
 
 // Track user scrolling

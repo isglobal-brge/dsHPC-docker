@@ -1,0 +1,458 @@
+{% extends "base.html" %}
+{% load dashboard_filters %}
+
+{% block page_actions %}
+{% if env_data.cached %}
+<small class="text-muted">
+    <i class="bi bi-clock-history"></i> Cached {{ env_data.cache_age }}s ago
+</small>
+{% endif %}
+{% endblock %}
+
+{% block content %}
+{% if env_data.error %}
+<div class="alert alert-danger">
+    <i class="bi bi-exclamation-triangle-fill"></i> <strong>Error:</strong> {{ env_data.error }}
+</div>
+{% else %}
+
+<!-- System Resources -->
+<div class="card shadow-sm mb-4">
+    <div class="card-header bg-dark text-white">
+        <i class="bi bi-hdd"></i> System Resources
+    </div>
+    <div class="card-body">
+        {% if env_data.system.error %}
+        <div class="alert alert-danger small">{{ env_data.system.error }}</div>
+        {% else %}
+        <div class="row g-4">
+            <!-- CPUs -->
+            <div class="col-md-4">
+                <div class="card bg-light border-0 h-100">
+                    <div class="card-body text-center">
+                        <i class="bi bi-cpu fs-1 text-primary mb-3 d-block"></i>
+                        <h3 class="mb-1">{{ env_data.system.cpus }}</h3>
+                        <p class="text-muted mb-0">CPU Cores</p>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Memory -->
+            <div class="col-md-4">
+                <div class="card bg-light border-0 h-100">
+                    <div class="card-body">
+                        <div class="d-flex align-items-center mb-2">
+                            <i class="bi bi-memory fs-4 text-success me-2"></i>
+                            <h6 class="mb-0">Memory</h6>
+                        </div>
+                        {% if env_data.system.mem_total %}
+                        <div class="mb-2">
+                            <div class="d-flex justify-content-between small mb-1">
+                                <span>Used: {{ env_data.system.mem_used|pretty_bytes }}</span>
+                                <span>{{ env_data.system.mem_used_pct }}%</span>
+                            </div>
+                            <div class="progress" style="height: 20px;">
+                                <div class="progress-bar bg-success" style="width: {{ env_data.system.mem_used_pct }}%">
+                                    {{ env_data.system.mem_used_pct }}%
+                                </div>
+                            </div>
+                            <div class="d-flex justify-content-between small text-muted mt-1">
+                                <span>Total: {{ env_data.system.mem_total|pretty_bytes }}</span>
+                                <span>Free: {{ env_data.system.mem_available|pretty_bytes }}</span>
+                            </div>
+                        </div>
+                        {% endif %}
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Disk -->
+            <div class="col-md-4">
+                <div class="card bg-light border-0 h-100">
+                    <div class="card-body">
+                        <div class="d-flex align-items-center mb-2">
+                            <i class="bi bi-hdd-fill fs-4 text-info me-2"></i>
+                            <h6 class="mb-0">Disk Usage</h6>
+                        </div>
+                        {% if env_data.system.disk_total %}
+                        <div class="mb-2">
+                            <div class="d-flex justify-content-between small mb-1">
+                                <span>Used: {{ env_data.system.disk_used|pretty_bytes }}</span>
+                                <span>{{ env_data.system.disk_used_pct }}%</span>
+                            </div>
+                            <div class="progress" style="height: 20px;">
+                                <div class="progress-bar {% if env_data.system.disk_used_pct > 80 %}bg-danger{% elif env_data.system.disk_used_pct > 60 %}bg-warning{% else %}bg-info{% endif %}" 
+                                     style="width: {{ env_data.system.disk_used_pct }}%">
+                                    {{ env_data.system.disk_used_pct }}%
+                                </div>
+                            </div>
+                            <div class="d-flex justify-content-between small text-muted mt-1">
+                                <span>Total: {{ env_data.system.disk_total|pretty_bytes }}</span>
+                                <span>Free: {{ env_data.system.disk_available|pretty_bytes }}</span>
+                            </div>
+                        </div>
+                        {% endif %}
+                    </div>
+                </div>
+            </div>
+        </div>
+        {% endif %}
+    </div>
+</div>
+
+<!-- System Environment -->
+<div class="card shadow-sm mb-4">
+    <div class="card-header bg-dark text-white d-flex justify-content-between align-items-center">
+        <span><i class="bi bi-ubuntu"></i> System Environment</span>
+        {% if env_data.system.apt_packages_count %}
+        <span class="badge bg-light text-dark">{{ env_data.system.apt_packages_count }} packages</span>
+        {% endif %}
+    </div>
+    <div class="card-body">
+        {% if env_data.system.os_name or env_data.system.kernel %}
+        <div class="mb-4">
+            <h6 class="mb-3"><i class="bi bi-info-circle"></i> Operating System</h6>
+            
+            {% if env_data.system.os_name %}
+            <div class="info-row">
+                <div class="label">OS Version</div>
+                <div class="value"><code>{{ env_data.system.os_name }}</code></div>
+            </div>
+            {% endif %}
+            
+            {% if env_data.system.kernel %}
+            <div class="info-row">
+                <div class="label">Kernel</div>
+                <div class="value"><code>{{ env_data.system.kernel }}</code></div>
+            </div>
+            {% endif %}
+            
+            {% if env_data.system.architecture %}
+            <div class="info-row">
+                <div class="label">Architecture</div>
+                <div class="value"><code>{{ env_data.system.architecture }}</code></div>
+            </div>
+            {% endif %}
+        </div>
+        {% endif %}
+        
+        {% if env_data.system.apt_packages %}
+        <div>
+            <h6 class="mb-3"><i class="bi bi-boxes"></i> APT Packages</h6>
+            <div class="accordion sub-accordion" id="aptPackagesAccordion">
+                <div class="accordion-item">
+                    <h2 class="accordion-header">
+                        <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#aptPackages">
+                            <span>View all {{ env_data.system.apt_packages|length }} APT packages</span>
+                        </button>
+                    </h2>
+                    <div id="aptPackages" class="accordion-collapse collapse">
+                        <div class="accordion-body">
+                            <div class="mb-3">
+                                <input type="text" class="form-control form-control-sm" id="aptSearch" placeholder="Search packages..." onkeyup="filterPackages('aptSearch', 'aptPackagesTable')">
+                            </div>
+                            <div class="table-responsive" style="max-height: 450px; overflow-y: auto;">
+                                <table class="table table-sm table-striped mb-0" id="aptPackagesTable">
+                                    <thead class="table-light sticky-top">
+                                        <tr>
+                                            <th style="width: 50%;">Package</th>
+                                            <th style="width: 50%;">Version</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        {% for pkg in env_data.system.apt_packages %}
+                                        <tr>
+                                            <td><code>{{ pkg.name }}</code></td>
+                                            <td>{{ pkg.version }}</td>
+                                        </tr>
+                                        {% endfor %}
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        {% endif %}
+    </div>
+</div>
+
+<!-- Python Environment -->
+<div class="card shadow-sm mb-4">
+    <div class="card-header bg-dark text-white d-flex justify-content-between align-items-center">
+        <span><i class="bi bi-file-code"></i> Python Environment</span>
+        {% if env_data.python.packages %}
+        <span class="badge bg-light text-dark">{{ env_data.python.packages|length }} packages</span>
+        {% endif %}
+    </div>
+    <div class="card-body">
+        {% if env_data.python.error %}
+        <div class="alert alert-danger small">{{ env_data.python.error }}</div>
+        {% else %}
+        <div class="info-row">
+            <div class="label">Python Version</div>
+            <div class="value"><code>{{ env_data.python.version }}</code></div>
+        </div>
+        
+        {% if env_data.python.packages %}
+        <div class="mt-4">
+            <h6 class="mb-3"><i class="bi bi-box-seam"></i> Installed Packages</h6>
+            <div class="accordion sub-accordion" id="pythonPackagesAccordion">
+                <div class="accordion-item">
+                    <h2 class="accordion-header">
+                        <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#pythonPackages">
+                            <span>View all {{ env_data.python.packages|length }} Python packages</span>
+                        </button>
+                    </h2>
+                    <div id="pythonPackages" class="accordion-collapse collapse">
+                        <div class="accordion-body">
+                            <div class="mb-3">
+                                <input type="text" class="form-control form-control-sm" id="pythonSearch" placeholder="Search packages..." onkeyup="filterPackages('pythonSearch', 'pythonPackagesTable')">
+                            </div>
+                            <div class="table-responsive" style="max-height: 450px; overflow-y: auto;">
+                                <table class="table table-sm table-striped mb-0" id="pythonPackagesTable">
+                                    <thead class="table-light sticky-top">
+                                        <tr>
+                                            <th style="width: 50%;">Package</th>
+                                            <th style="width: 50%;">Version</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        {% for pkg in env_data.python.packages %}
+                                        <tr>
+                                            <td><code>{{ pkg.name }}</code></td>
+                                            <td>{{ pkg.version }}</td>
+                                        </tr>
+                                        {% endfor %}
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        {% endif %}
+        {% endif %}
+    </div>
+</div>
+
+<!-- Python Environment -->
+<div class="card shadow-sm mb-4">
+    <div class="card-header bg-dark text-white d-flex justify-content-between align-items-center">
+        <span><i class="bi bi-file-code"></i> Python Environment</span>
+        {% if env_data.python.packages %}
+        <span class="badge bg-light text-dark">{{ env_data.python.packages|length }} packages</span>
+        {% endif %}
+    </div>
+    <div class="card-body">
+        {% if env_data.python.error %}
+        <div class="alert alert-danger small">{{ env_data.python.error }}</div>
+        {% else %}
+        <div class="info-row">
+            <div class="label">Python Version</div>
+            <div class="value"><code>{{ env_data.python.version }}</code></div>
+        </div>
+        
+        {% if env_data.python.packages %}
+        <div class="mt-4">
+            <h6 class="mb-3"><i class="bi bi-box-seam"></i> Installed Packages</h6>
+            <div class="accordion sub-accordion" id="pythonPackagesAccordion">
+                <div class="accordion-item">
+                    <h2 class="accordion-header">
+                        <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#pythonPackages">
+                            <span>View all {{ env_data.python.packages|length }} Python packages</span>
+                        </button>
+                    </h2>
+                    <div id="pythonPackages" class="accordion-collapse collapse">
+                        <div class="accordion-body">
+                            <div class="mb-3">
+                                <input type="text" class="form-control form-control-sm" id="pythonSearch" placeholder="Search packages..." onkeyup="filterPackages('pythonSearch', 'pythonPackagesTable')">
+                            </div>
+                            <div class="table-responsive" style="max-height: 450px; overflow-y: auto;">
+                                <table class="table table-sm table-striped mb-0" id="pythonPackagesTable">
+                                    <thead class="table-light sticky-top">
+                                        <tr>
+                                            <th style="width: 50%;">Package</th>
+                                            <th style="width: 50%;">Version</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        {% for pkg in env_data.python.packages %}
+                                        <tr>
+                                            <td><code>{{ pkg.name }}</code></td>
+                                            <td>{{ pkg.version }}</td>
+                                        </tr>
+                                        {% endfor %}
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        {% endif %}
+        {% endif %}
+    </div>
+</div>
+
+<!-- R Environment -->
+<div class="card shadow-sm mb-4">
+    <div class="card-header bg-dark text-white d-flex justify-content-between align-items-center">
+        <span><i class="bi bi-bar-chart-fill"></i> R Environment</span>
+        {% if env_data.r.packages %}
+        <span class="badge bg-light text-dark">{{ env_data.r.packages|length }} packages</span>
+        {% endif %}
+    </div>
+    <div class="card-body">
+        {% if env_data.r.error %}
+        <div class="alert alert-danger small">{{ env_data.r.error }}</div>
+        {% else %}
+        <div class="info-row">
+            <div class="label">R Version</div>
+            <div class="value"><code>{{ env_data.r.version }}</code></div>
+        </div>
+        
+        {% if env_data.r.packages %}
+        <div class="mt-4">
+            <h6 class="mb-3"><i class="bi bi-box-seam"></i> Installed Packages</h6>
+            <div class="accordion sub-accordion" id="rPackagesAccordion">
+                <div class="accordion-item">
+                    <h2 class="accordion-header">
+                        <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#rPackages">
+                            <span>View all {{ env_data.r.packages|length }} R packages</span>
+                        </button>
+                    </h2>
+                    <div id="rPackages" class="accordion-collapse collapse">
+                        <div class="accordion-body">
+                            <div class="mb-3">
+                                <input type="text" class="form-control form-control-sm" id="rSearch" placeholder="Search packages..." onkeyup="filterPackages('rSearch', 'rPackagesTable')">
+                            </div>
+                            <div class="table-responsive" style="max-height: 450px; overflow-y: auto;">
+                                <table class="table table-sm table-striped mb-0" id="rPackagesTable">
+                                    <thead class="table-light sticky-top">
+                                        <tr>
+                                            <th style="width: 50%;">Package</th>
+                                            <th style="width: 50%;">Version</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        {% for pkg in env_data.r.packages %}
+                                        <tr>
+                                            <td><code>{{ pkg.Package }}</code></td>
+                                            <td>{{ pkg.Version }}</td>
+                                        </tr>
+                                        {% endfor %}
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        {% endif %}
+        {% endif %}
+    </div>
+</div>
+
+<!-- Slurm Configuration -->
+<div class="card shadow-sm mb-4">
+    <div class="card-header bg-dark text-white">
+        <i class="bi bi-cpu"></i> Slurm Configuration
+    </div>
+    <div class="card-body">
+        {% if env_data.slurm.error %}
+        <div class="alert alert-danger small">{{ env_data.slurm.error }}</div>
+        {% else %}
+        {% if env_data.slurm.version %}
+        <div class="info-row">
+            <div class="label">Slurm Version</div>
+            <div class="value"><code>{{ env_data.slurm.version }}</code></div>
+        </div>
+        {% endif %}
+        
+        {% if env_data.slurm.config %}
+        <div class="mt-4">
+            <h6 class="mb-3"><i class="bi bi-file-text"></i> Configuration File (slurm.conf)</h6>
+            <div class="terminal" style="max-height: 500px;" id="slurmConfig">{{ env_data.slurm.config }}</div>
+        </div>
+        {% endif %}
+        
+        {% if env_data.slurm.node_info %}
+        <div class="mt-4">
+            <h6 class="mb-3"><i class="bi bi-hdd-network"></i> Node Information</h6>
+            <div class="terminal" style="max-height: 400px;" id="nodeInfo">{{ env_data.slurm.node_info }}</div>
+        </div>
+        {% endif %}
+        {% endif %}
+    </div>
+</div>
+{% endif %}
+{% endblock %}
+
+{% block extra_js %}
+<script>
+    // Filter packages function
+    function filterPackages(searchId, tableId) {
+        const input = document.getElementById(searchId);
+        const filter = input.value.toLowerCase();
+        const table = document.getElementById(tableId);
+        const rows = table.getElementsByTagName('tbody')[0].getElementsByTagName('tr');
+        
+        let visibleCount = 0;
+        for (let i = 0; i < rows.length; i++) {
+            const cells = rows[i].getElementsByTagName('td');
+            let found = false;
+            
+            for (let j = 0; j < cells.length; j++) {
+                const cellText = cells[j].textContent || cells[j].innerText;
+                if (cellText.toLowerCase().indexOf(filter) > -1) {
+                    found = true;
+                    break;
+                }
+            }
+            
+            if (found) {
+                rows[i].style.display = '';
+                visibleCount++;
+            } else {
+                rows[i].style.display = 'none';
+            }
+        }
+    }
+    
+    // Syntax highlight slurm.conf
+    const configElement = document.getElementById('slurmConfig');
+    if (configElement) {
+        let configText = configElement.textContent;
+        
+        // Highlight comments (lines starting with #)
+        configText = configText.split('\n').map(line => {
+            if (line.trim().startsWith('#')) {
+                return `<span class="ansi-green">${line}</span>`;
+            }
+            // Highlight key=value pairs
+            return line.replace(/^(\w+)=(.+)$/, '<span class="ansi-cyan">$1</span>=<span class="ansi-yellow">$2</span>');
+        }).join('\n');
+        
+        configElement.innerHTML = configText;
+    }
+    
+    // Syntax highlight node info
+    const nodeInfoElement = document.getElementById('nodeInfo');
+    if (nodeInfoElement) {
+        let nodeText = nodeInfoElement.textContent;
+        
+        // Highlight key=value pairs
+        nodeText = nodeText.split('\n').map(line => {
+            // Highlight keys before = sign
+            return line.replace(/(\w+)=([^\s]+)/g, '<span class="ansi-cyan">$1</span>=<span class="ansi-yellow">$2</span>');
+        }).join('\n');
+        
+        nodeInfoElement.innerHTML = nodeText;
+    }
+</script>
+{% endblock %}

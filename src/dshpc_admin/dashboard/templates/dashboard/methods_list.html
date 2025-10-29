@@ -418,14 +418,14 @@
 {% block extra_js %}
 <script>
     // Show/hide inactive toggle WITHOUT page reload
-    const showInactiveCheckbox = document.getElementById('showInactive');
-    if (showInactiveCheckbox) {
-        showInactiveCheckbox.addEventListener('change', function() {
-            const inactiveMethods = document.getElementById('inactiveMethods');
-            if (inactiveMethods) {
+    document.addEventListener('DOMContentLoaded', function() {
+        const showInactiveCheckbox = document.getElementById('showInactive');
+        const inactiveMethods = document.getElementById('inactiveMethods');
+        
+        if (showInactiveCheckbox && inactiveMethods) {
+            showInactiveCheckbox.addEventListener('change', function() {
                 if (this.checked) {
                     inactiveMethods.style.display = 'block';
-                    // Add animation
                     inactiveMethods.style.opacity = '0';
                     setTimeout(() => {
                         inactiveMethods.style.transition = 'opacity 0.3s ease';
@@ -438,9 +438,9 @@
                         inactiveMethods.style.display = 'none';
                     }, 300);
                 }
-            }
-        });
-    }
+            });
+        }
+    });
     
     // Per page selector
     document.getElementById('perPageSelect')?.addEventListener('change', function() {

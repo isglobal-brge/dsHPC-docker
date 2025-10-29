@@ -595,6 +595,11 @@
                     </a>
                 </li>
                 <li class="nav-item">
+                    <a class="nav-link {% if request.resolver_match.url_name == 'environment_info' %}active{% endif %}" href="{% url 'environment_info' %}">
+                        <i class="bi bi-gear-fill"></i> Environment
+                    </a>
+                </li>
+                <li class="nav-item">
                     <a class="nav-link {% if request.resolver_match.url_name == 'logs_viewer' %}active{% endif %}" href="{% url 'logs_viewer' %}">
                         <i class="bi bi-terminal"></i> Logs
                     </a>
