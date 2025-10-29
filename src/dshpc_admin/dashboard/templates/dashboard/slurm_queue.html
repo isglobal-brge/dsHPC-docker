@@ -8,21 +8,19 @@
 {% endblock %}
 
 {% block content %}
-<!-- Last Update Indicator -->
-{% if snapshot_time %}
-<div class="text-end mb-2">
+<!-- Info Bar -->
+<div class="d-flex justify-content-between align-items-center mb-2">
+    <small class="text-muted"><span id="jobCount">{{ queue|length }}</span> job(s) in queue</small>
+    {% if snapshot_time %}
     <small class="text-muted">
         <i class="bi bi-clock-history"></i> Last update: {{ snapshot_time|date:"Y-m-d H:i:s" }}
     </small>
+    {% endif %}
 </div>
-{% endif %}
 
 <div class="card shadow-sm">
-    <div class="card-header bg-dark text-white d-flex justify-content-between align-items-center">
-        <div class="d-flex align-items-center gap-3">
-            <span><i class="bi bi-cpu"></i> Slurm Queue</span>
-            <span class="badge bg-light text-dark" id="jobCount">{{ queue|length }} job(s)</span>
-        </div>
+    <div class="card-header bg-dark text-white">
+        <span><i class="bi bi-cpu"></i> Slurm Queue</span>
     </div>
     <div class="card-body p-3" id="queueContainer">
         <div id="queueContent"></div>
@@ -92,11 +90,16 @@ function refreshQueue() {
 }
 
 function updateQueue(newJobs) {
+    // Update job count
+    const jobCountElement = document.getElementById('jobCount');
+    if (jobCountElement) {
+        jobCountElement.textContent = (newJobs || []).length;
+    }
+    
     // Don't update if there are open accordions
     const hasOpenAccordions = document.querySelectorAll('#slurmJobsAccordion .accordion-collapse.show').length > 0;
     
     if (hasOpenAccordions) {
-        // Don't touch anything if user is viewing details
         return;
     }
     
@@ -126,7 +129,6 @@ function updateQueue(newJobs) {
     const newJobIds = newJobs.map(j => j.job_id).sort().join(',');
     
     if (currentJobIds !== newJobIds) {
-        // Jobs changed, safe to update since no accordions are open
         renderQueue(newJobs);
     }
     
@@ -404,49 +406,27 @@ function loadJobLogs(slurmId, index, isAutoRefresh = false) {
                 logsFooter.innerHTML = `<i class="bi bi-clock-history"></i> ${timeStr}`;
             }
             
-            let html = '';
-            let terminalIndex = 0;
+            // Combine all logs into one terminal (like log viewer)
+            let combinedLogs = '';
             
-            // Slurm stdout (combined stdout/stderr from Slurm)
             if (data.stdout) {
-                const lines = data.stdout.split('\n');
-                const displayLines = lines.slice(-200).join('\n');
-                html += `
-                    <h6 class="mb-2"><i class="bi bi-file-text"></i> Slurm Output (slurm-${slurmId}.out)</h6>
-                    <div class="terminal terminal-${terminalIndex}" style="max-height: 300px;">${escapeHtml(displayLines)}</div>
-                    ${lines.length > 200 ? '<div class="alert alert-info small mt-2">Showing last 200 lines of ' + lines.length + ' total</div>' : ''}
-                `;
-                terminalIndex++;
+                combinedLogs += '=== Slurm Output ===\n' + data.stdout + '\n\n';
             }
             
-            // System error output (R package loading messages, etc.)
             if (data.system_error) {
-                const lines = data.system_error.split('\n');
-                const displayLines = lines.slice(-200).join('\n');
-                html += `
-                    <h6 class="mb-2 mt-3"><i class="bi bi-info-circle"></i> System Messages</h6>
-                    <div class="terminal terminal-${terminalIndex}" style="max-height: 300px;">${escapeHtml(displayLines)}</div>
-                    ${lines.length > 200 ? '<div class="alert alert-info small mt-2">Showing last 200 lines of ' + lines.length + ' total</div>' : ''}
-                `;
-                terminalIndex++;
+                combinedLogs += '=== System Messages ===\n' + data.system_error + '\n\n';
             }
             
-            // System output (actual job output)
             if (data.system_output) {
-                const lines = data.system_output.split('\n');
-                const displayLines = lines.slice(-200).join('\n');
-                html += `
-                    <h6 class="mb-2 mt-3"><i class="bi bi-terminal"></i> Job Output</h6>
-                    <div class="terminal terminal-${terminalIndex}" style="max-height: 300px;">${escapeHtml(displayLines)}</div>
-                    ${lines.length > 200 ? '<div class="alert alert-info small mt-2">Showing last 200 lines of ' + lines.length + ' total</div>' : ''}
-                `;
-                terminalIndex++;
+                combinedLogs += '=== Job Output ===\n' + data.system_output;
             }
             
-            if (!data.stdout && !data.stderr && !data.system_output && !data.system_error) {
+            if (combinedLogs) {
+                html = `<div class="terminal">${escapeHtml(combinedLogs)}</div>`;
+            } else {
                 html = `
-                    <div class="alert alert-info small">
-                        <i class="bi bi-info-circle"></i> No logs available yet for this job
+                    <div class="terminal text-center py-5">
+                        <p class="text-muted">No logs available yet for this job</p>
                     </div>
                 `;
             }

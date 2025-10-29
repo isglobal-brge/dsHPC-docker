@@ -292,7 +292,8 @@ class MonitorWorker:
         
         try:
             import requests
-            slurm_api_url = 'http://localhost:8000'
+            # Get slurm API URL from environment
+            slurm_api_url = os.environ.get('SLURM_API_URL', f'http://{self.docker_prefix}-slurm:8000')
             
             response = requests.get(f"{slurm_api_url}/queue", timeout=3)
             if response.status_code == 200:
