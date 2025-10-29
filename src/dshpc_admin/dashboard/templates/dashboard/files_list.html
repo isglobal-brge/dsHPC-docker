@@ -53,7 +53,7 @@
 
 <!-- Files Accordion -->
 <div class="accordion accordion-modern" id="filesAccordion">
-    {% for file in files %}
+                    {% for file in files %}
     <div class="accordion-item">
         <h2 class="accordion-header">
             <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#file{{ forloop.counter }}">
@@ -70,12 +70,12 @@
                     <div class="d-flex gap-2 align-items-center">
                         <span class="badge {{ file.status|status_badge_class }}">
                             <i class="{{ file.status|status_icon }}"></i> {{ file.status|default:"completed" }}
-                        </span>
+                            </span>
                         <span class="badge bg-info">{{ file.storage_type|upper }}</span>
                         <small class="text-muted">{{ file.upload_date|date:"Y-m-d H:i" }}</small>
                     </div>
                 </div>
-            </button>
+                            </button>
         </h2>
         <div id="file{{ forloop.counter }}" class="accordion-collapse collapse" data-bs-parent="#filesAccordion">
             <div class="accordion-body">
@@ -109,14 +109,14 @@
                                 <span class="text-muted">({{ file.file_size|filesizeformat }})</span>
                             </div>
                         </div>
-                        
+                                        
                         <div class="info-row">
                             <div class="label">Storage Type</div>
                             <div class="value">
                                 <span class="badge bg-info">{{ file.storage_type|upper }}</span>
                             </div>
                         </div>
-                        
+                                        
                         <div class="info-row">
                             <div class="label">Status</div>
                             <div class="value">
@@ -125,18 +125,18 @@
                                 </span>
                             </div>
                         </div>
-                        
+                                        
                         <div class="info-row">
                             <div class="label">Upload Date</div>
                             <div class="value">{{ file.upload_date|date:"Y-m-d H:i:s" }}</div>
                         </div>
-                        
-                        {% if file.content_type %}
+                                        
+                                        {% if file.content_type %}
                         <div class="info-row">
                             <div class="label">Content Type</div>
                             <div class="value"><code>{{ file.content_type }}</code></div>
                         </div>
-                        {% endif %}
+                                        {% endif %}
                         
                         {% if file.gridfs_id %}
                         <div class="info-row">

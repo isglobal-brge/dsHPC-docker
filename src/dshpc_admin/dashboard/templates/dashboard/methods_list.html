@@ -7,11 +7,11 @@
         <i class="bi bi-funnel"></i> Advanced Filters
     </button>
     <div class="form-check form-switch ms-3">
-        <input class="form-check-input" type="checkbox" id="showInactive" 
+    <input class="form-check-input" type="checkbox" id="showInactive" 
                {% if show_inactive %}checked{% endif %}>
         <label class="form-check-label small" for="showInactive">
             Show Inactive
-        </label>
+    </label>
     </div>
     <span class="text-muted small">{{ total_methods }} method(s)</span>
 </div>
@@ -50,13 +50,13 @@
     {% if active_methods %}
     <h5 class="mb-3"><i class="bi bi-check-circle text-success"></i> Active Methods</h5>
     <div class="accordion accordion-modern" id="activeMethodsAccordion">
-        {% for method in active_methods %}
-        <div class="accordion-item">
-            <h2 class="accordion-header">
-                <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#method{{ forloop.counter }}">
-                    <div class="d-flex w-100 justify-content-between align-items-center pe-3">
+    {% for method in active_methods %}
+    <div class="accordion-item">
+        <h2 class="accordion-header">
+            <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#method{{ forloop.counter }}">
+                <div class="d-flex w-100 justify-content-between align-items-center pe-3">
                         <div class="d-flex align-items-center gap-3 flex-grow-1">
-                            <div>
+                    <div>
                                 <strong>{{ method.name }}</strong>
                                 <div class="small text-muted">
                                     <code>{{ method.function_hash }}</code>
@@ -66,12 +66,12 @@
                         <div class="d-flex gap-2 align-items-center">
                             <span class="badge bg-success">v{{ method.version }}</span>
                             <span class="badge bg-info">Active</span>
-                        </div>
                     </div>
-                </button>
-            </h2>
-            <div id="method{{ forloop.counter }}" class="accordion-collapse collapse" data-bs-parent="#activeMethodsAccordion">
-                <div class="accordion-body">
+                </div>
+            </button>
+        </h2>
+        <div id="method{{ forloop.counter }}" class="accordion-collapse collapse" data-bs-parent="#activeMethodsAccordion">
+            <div class="accordion-body">
                     <div class="row">
                         <div class="col-md-6">
                             <h6 class="mb-3"><i class="bi bi-info-circle"></i> Method Information</h6>
@@ -80,17 +80,17 @@
                                 <div class="label">Name</div>
                                 <div class="value"><strong>{{ method.name }}</strong></div>
                             </div>
-                            
+                    
                             <div class="info-row">
                                 <div class="label">Description</div>
                                 <div class="value">{{ method.description|default:"No description" }}</div>
                             </div>
-                            
+                    
                             <div class="info-row">
                                 <div class="label">Version</div>
                                 <div class="value"><span class="badge bg-success">v{{ method.version }}</span></div>
                             </div>
-                            
+                    
                             <div class="info-row">
                                 <div class="label">Function Hash</div>
                                 <div class="value">
@@ -113,7 +113,7 @@
                                 <div class="label">Command</div>
                                 <div class="value"><code>{{ method.command }}</code></div>
                             </div>
-                            
+                    
                             {% if method.script_path %}
                             <div class="info-row">
                                 <div class="label">Script Path</div>
@@ -202,9 +202,9 @@
     <div class="mb-4">
         <h5 class="mb-3"><i class="bi bi-x-circle text-secondary"></i> Inactive Methods</h5>
         <div class="accordion accordion-modern" id="inactiveMethodsAccordion">
-            {% for method in inactive_methods %}
+    {% for method in inactive_methods %}
             <div class="accordion-item" style="opacity: 0.7;">
-                <h2 class="accordion-header">
+        <h2 class="accordion-header">
                     <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#inactive{{ forloop.counter }}">
                         <div class="d-flex w-100 justify-content-between align-items-center pe-3">
                         <div class="d-flex align-items-center gap-3 flex-grow-1">
@@ -220,10 +220,10 @@
                                 <span class="badge bg-dark">Inactive</span>
                             </div>
                         </div>
-                    </button>
-                </h2>
-                <div id="inactive{{ forloop.counter }}" class="accordion-collapse collapse" data-bs-parent="#inactiveMethodsAccordion">
-                    <div class="accordion-body bg-light">
+            </button>
+        </h2>
+        <div id="inactive{{ forloop.counter }}" class="accordion-collapse collapse" data-bs-parent="#inactiveMethodsAccordion">
+            <div class="accordion-body bg-light">
                         <div class="row">
                             <div class="col-md-6">
                                 <h6 class="mb-3"><i class="bi bi-info-circle"></i> Method Information</h6>
