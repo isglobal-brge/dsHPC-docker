@@ -501,27 +501,25 @@
                         </div>
                         <div class="modal-body p-0">
                             <div class="row g-0" style="height: calc(100vh - 56px);">
-                                <div class="col-md-3 border-end" style="display: flex; flex-direction: column; background: #f8f9fa;">
-                                    <div class="p-3" style="flex: 1; display: flex; flex-direction: column; min-height: 0;">
+                                <div class="col-md-3 border-end" style="display: flex; flex-direction: column; background: #f8f9fa; height: 100%;">
+                                    <div class="p-3" style="height: 100%; display: flex; flex-direction: column;">
                                         <div class="d-flex justify-content-between align-items-center mb-3">
                                             <h6 class="text-muted mb-0">Files</h6>
                                             <small class="text-muted" id="fileTotalCount"></small>
                                         </div>
-                                        <div style="flex: 1; display: flex; flex-direction: column; min-height: 0;">
-                                            <div class="mb-3">
-                                                <div class="input-group input-group-sm">
-                                                    <input type="text" class="form-control" id="unifiedSearch" 
-                                                           placeholder="Search files & code..." 
-                                                           oninput="debouncedSearch()" />
-                                                    <button class="btn btn-outline-secondary" type="button" onclick="clearSearch()" 
-                                                            id="clearSearchBtn" style="display: none;">
-                                                        <i class="bi bi-x-lg"></i>
-                                                    </button>
-                                                </div>
-                                                <small class="text-muted" id="searchResults"></small>
+                                        <div class="mb-3">
+                                            <div class="input-group input-group-sm">
+                                                <input type="text" class="form-control" id="unifiedSearch" 
+                                                       placeholder="Search files & code..." 
+                                                       oninput="debouncedSearch()" />
+                                                <button class="btn btn-outline-secondary" type="button" onclick="clearSearch()" 
+                                                        id="clearSearchBtn" style="display: none;">
+                                                    <i class="bi bi-x-lg"></i>
+                                                </button>
                                             </div>
-                                            <div id="fileTree" style="flex: 1; display: flex; flex-direction: column; min-height: 0;"></div>
+                                            <small class="text-muted" id="searchResults"></small>
                                         </div>
+                                        <div id="fileTree" style="flex: 1; overflow: hidden; display: flex; flex-direction: column;"></div>
                                     </div>
                                 </div>
                                 <div class="col-md-9" style="overflow-y: auto;">
@@ -601,9 +599,8 @@
         }
         
         let html = `
-            <div style="flex: 1; display: flex; flex-direction: column; min-height: 0; overflow: hidden;">
-                <div style="flex: 1; overflow-x: scroll; overflow-y: scroll;">
-                    <div class="list-group list-group-flush" id="fileList" style="display: inline-block; min-width: 100%; width: max-content;">
+            <div style="flex: 1; overflow-x: scroll; overflow-y: scroll;">
+                <div class="list-group list-group-flush" id="fileList" style="display: inline-block; min-width: 100%; width: max-content;">
         `;
         
         // Step 1: Filter files by search FIRST
@@ -621,7 +618,7 @@
         }
         
         // Step 2: Paginate the FILTERED array
-        const filesPerPage = 10;
+        const filesPerPage = 20;
         window.totalPages = Math.ceil(filesArray.length / filesPerPage);
         const startIdx = window.currentPage * filesPerPage;
         const endIdx = Math.min(startIdx + filesPerPage, filesArray.length);
@@ -657,7 +654,6 @@
         }
         
         html += `
-                    </div>
                 </div>
             </div>
         `;
