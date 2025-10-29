@@ -344,6 +344,68 @@ class MonitorWorker:
         
         return queue_data
     
+    def collect_method_sources(self):
+        """Collect source code from active methods."""
+        methods_source = []
+        
+        try:
+            import base64
+            import tarfile
+            import io
+            
+            # Connect to methods database
+            methods_uri = os.environ.get('MONGO_METHODS_URI', 'mongodb://localhost:27017/')
+            methods_db_name = os.environ.get('MONGO_METHODS_DB', 'dshpc-methods')
+            
+            from pymongo import MongoClient
+            methods_client = MongoClient(methods_uri)
+            methods_db = methods_client[methods_db_name]
+            
+            # Get active methods with bundles
+            methods = list(methods_db.methods.find({'active': True, 'bundle': {'$exists': True}}).limit(10))
+            
+            for method in methods:
+                try:
+                    method_data = {
+                        'name': method.get('name'),
+                        'function_hash': method.get('function_hash'),
+                        'files': {}
+                    }
+                    
+                    # Decode bundle
+                    bundle_b64 = method.get('bundle')
+                    if not bundle_b64:
+                        continue
+                    
+                    bundle_bytes = base64.b64decode(bundle_b64)
+                    
+                    # Extract tarball and read files
+                    with tarfile.open(fileobj=io.BytesIO(bundle_bytes), mode='r:gz') as tar:
+                        for member in tar.getmembers():
+                            if member.isfile():
+                                # Only process code files
+                                if any(member.name.endswith(ext) for ext in ['.R', '.py', '.sh', '.js', '.json', '.yml', '.yaml']):
+                                    try:
+                                        file_obj = tar.extractfile(member)
+                                        if file_obj:
+                                            content = file_obj.read().decode('utf-8', errors='replace')
+                                            # Limit to 50KB per file
+                                            if len(content) < 50000:
+                                                method_data['files'][member.name] = content
+                                    except Exception as e:
+                                        logger.debug(f"Could not read {member.name}: {e}")
+                    
+                    if method_data['files']:
+                        methods_source.append(method_data)
+                        
+                except Exception as e:
+                    logger.error(f"Error processing method {method.get('name')}: {e}")
+        
+        except Exception as e:
+            logger.error(f"Error collecting method sources: {e}")
+        
+        return methods_source
+    
     def store_snapshot(self):
         """Collect all data and store a snapshot in MongoDB."""
         try:
@@ -353,7 +415,8 @@ class MonitorWorker:
                 'system_resources': self.collect_system_resources(),
                 'job_logs': self.collect_slurm_job_logs(),
                 'environment': self.collect_environment_info(),
-                'slurm_queue': self.collect_slurm_queue()
+                'slurm_queue': self.collect_slurm_queue(),
+                'method_sources': self.collect_method_sources()
             }
             
             # Store snapshot

@@ -137,3 +137,17 @@ def get_environment_info():
         'cache_age': int(age_seconds)
     }
 
+
+def get_method_source(function_hash):
+    """Get source code for a specific method."""
+    snapshot = get_latest_snapshot()
+    
+    if not snapshot or 'method_sources' not in snapshot:
+        return None
+    
+    for method in snapshot['method_sources']:
+        if method.get('function_hash') == function_hash:
+            return method
+    
+    return None
+
