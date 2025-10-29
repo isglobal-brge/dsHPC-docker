@@ -700,9 +700,11 @@
     
     window.currentOccurrences = [];
     window.currentOccurrenceIndex = 0;
+    window.currentFilePath = null;  // Track currently displayed file
     
     function showFile(filepath, content) {
         window.currentFiles[filepath] = content;
+        window.currentFilePath = filepath;  // Update current file
         
         // Remove first directory level from display path
         const displayPath = filepath.split('/').slice(1).join('/') || filepath;
@@ -863,11 +865,13 @@
     }
     
     function copyCode() {
-        // Get the current file's original content (without HTML)
-        const currentFilePath = Object.keys(window.currentFiles)[0];
-        if (!currentFilePath) return;
+        // Get the currently displayed file's content
+        if (!window.currentFilePath) {
+            alert('No file is currently displayed');
+            return;
+        }
         
-        let content = window.currentFiles[currentFilePath];
+        let content = window.currentFiles[window.currentFilePath];
         
         // Apply same cleaning as showFile
         content = content.trim();
