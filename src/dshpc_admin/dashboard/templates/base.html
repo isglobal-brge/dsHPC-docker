@@ -330,6 +330,27 @@
             transition: all 0.2s ease;
         }
         
+        /* Flat accordion (no borders, no radius) */
+        #authorsAccordion .accordion-item {
+            border: none;
+            border-radius: 0;
+            border-top: 1px solid #e2e8f0;
+            margin-bottom: 0;
+        }
+        
+        #authorsAccordion .accordion-item:first-child {
+            border-top: none;
+        }
+        
+        #authorsAccordion .accordion-button {
+            border-radius: 0;
+        }
+        
+        #authorsAccordion .accordion-button:not(.collapsed) {
+            background: white;
+            color: #1e293b;
+        }
+        
         .accordion-modern .accordion-item:hover {
             border-color: #cbd5e1;
             box-shadow: 0 2px 8px rgba(0,0,0,0.05);
@@ -367,6 +388,12 @@
         
         .accordion-modern .accordion-button:not(.collapsed)::after {
             filter: brightness(0) invert(1);
+        }
+        
+        /* Centered accordion button */
+        .accordion-button.justify-content-center::after {
+            position: absolute;
+            right: 1.25rem;
         }
         
         .accordion-modern .accordion-body {
@@ -594,7 +621,7 @@
     <!-- Sidebar -->
     <div class="sidebar">
         <div class="sidebar-header">
-            <h4>dsHPC Admin</h4>
+            <h4>dsHPCAdmin</h4>
             {% load dashboard_filters %}
             <small class="text-white-50" title="{{ env_config.environment_name }}">
                 {% if env_config.environment_name %}
