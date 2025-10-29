@@ -225,3 +225,31 @@ def lookup(dictionary, key):
     except (AttributeError, TypeError):
         return None
 
+
+@register.filter(name='format_timestamp')
+def format_timestamp(value):
+    """
+    Format a timestamp to YYYY-MM-DD HH:MM:SS format.
+    
+    Usage in template:
+        {{ method.updated_at|format_timestamp }}
+    """
+    if value is None:
+        return 'N/A'
+    
+    from datetime import datetime
+    
+    try:
+        # Handle string timestamps
+        if isinstance(value, str):
+            # Try parsing ISO format
+            dt = datetime.fromisoformat(value.replace('Z', '+00:00'))
+        elif isinstance(value, datetime):
+            dt = value
+        else:
+            return str(value)
+        
+        return dt.strftime('%Y-%m-%d %H:%M:%S')
+    except Exception:
+        return str(value)
+

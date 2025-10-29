@@ -127,6 +127,13 @@
                                 </div>
                             </div>
                             
+                            {% if method.updated_at %}
+                            <div class="info-row">
+                                <div class="label">Registered</div>
+                                <div class="value"><small class="text-muted">{{ method.updated_at|format_timestamp }}</small></div>
+                            </div>
+                            {% endif %}
+                            
                             <div class="info-row">
                                 <div class="label">Source Code</div>
                                 <div class="value">
@@ -484,7 +491,7 @@
         // Create modal
         const modalHtml = `
             <div class="modal fade" id="sourceModal" tabindex="-1">
-                <div class="modal-dialog modal-xl modal-fullscreen-lg-down">
+                <div class="modal-dialog modal-fullscreen">
                     <div class="modal-content">
                         <div class="modal-header bg-dark text-white">
                             <h5 class="modal-title">
@@ -493,11 +500,25 @@
                             <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
                         </div>
                         <div class="modal-body p-0">
-                            <div class="row g-0" style="height: 70vh;">
-                                <div class="col-md-3 border-end" style="overflow-y: auto; background: #f8f9fa;">
-                                    <div class="p-3">
+                            <div class="row g-0" style="height: calc(100vh - 56px);">
+                                <div class="col-md-3 border-end" style="display: flex; flex-direction: column; background: #f8f9fa;">
+                                    <div class="p-3" style="flex: 1; display: flex; flex-direction: column; min-height: 0;">
                                         <h6 class="text-muted mb-3">Files</h6>
-                                        <div id="fileTree"></div>
+                                        <div style="flex: 1; display: flex; flex-direction: column; min-height: 0;">
+                                            <div class="mb-3">
+                                                <div class="input-group input-group-sm">
+                                                    <input type="text" class="form-control" id="unifiedSearch" 
+                                                           placeholder="Search files & code..." 
+                                                           oninput="debouncedSearch()" />
+                                                    <button class="btn btn-outline-secondary" type="button" onclick="clearSearch()" 
+                                                            id="clearSearchBtn" style="display: none;">
+                                                        <i class="bi bi-x-lg"></i>
+                                                    </button>
+                                                </div>
+                                                <small class="text-muted" id="searchResults"></small>
+                                            </div>
+                                            <div id="fileTree" style="flex: 1; display: flex; flex-direction: column; min-height: 0;"></div>
+                                        </div>
                                     </div>
                                 </div>
                                 <div class="col-md-9" style="overflow-y: auto;">
@@ -555,143 +576,213 @@
     
     window.allFiles = {};
     window.currentSearch = '';
+    window.currentPage = 0;
+    window.totalPages = 0;
+    window.searchTimeout = null;
     
     function buildFileTree(files) {
-        // Store all files globally
+        // Store all files globally (only once)
+        if (!window.originalFiles) {
+            window.originalFiles = files;
+        }
+        
         window.allFiles = {};
-        window.currentFiles = {};  // Reset current files
+        window.currentFiles = {};
         
         // Remove first directory level from paths and store content
         for (const [filepath, content] of Object.entries(files)) {
             const parts = filepath.split('/');
             const newPath = parts.length > 1 ? parts.slice(1).join('/') : parts[0];
             window.allFiles[newPath] = {originalPath: filepath, content};
-            window.currentFiles[filepath] = content;  // Store for easy access
+            window.currentFiles[filepath] = content;
         }
         
         let html = `
-            <div class="mb-3">
-                <div class="input-group input-group-sm">
-                    <input type="text" class="form-control" id="unifiedSearch" 
-                           placeholder="Search files & code..." 
-                           onkeyup="unifiedSearch()" />
-                    <button class="btn btn-outline-secondary" type="button" onclick="clearSearch()" 
-                            id="clearSearchBtn" style="display: none;">
-                        <i class="bi bi-x-lg"></i>
-                    </button>
-                </div>
-                <small class="text-muted" id="searchResults"></small>
-            </div>
-            <div class="list-group list-group-flush" id="fileList" style="max-height: 60vh; overflow-y: auto;">
+            <div style="flex: 1; display: flex; flex-direction: column; min-height: 0; overflow: hidden;">
+                <div style="flex: 1; overflow-x: scroll; overflow-y: scroll;">
+                    <div class="list-group list-group-flush" id="fileList" style="display: inline-block; min-width: 100%; width: max-content;">
         `;
         
+        // Step 1: Filter files by search FIRST
+        let filesArray = Object.entries(window.allFiles);
+        let totalMatches = filesArray.length;
+        
+        if (window.currentSearch) {
+            const search = window.currentSearch;
+            filesArray = filesArray.filter(([displayPath, data]) => {
+                const filenameMatch = displayPath.toLowerCase().includes(search);
+                const contentMatch = data.content.toLowerCase().includes(search);
+                return filenameMatch || contentMatch;
+            });
+            totalMatches = filesArray.length;
+        }
+        
+        // Step 2: Paginate the FILTERED array
+        const filesPerPage = 10;
+        window.totalPages = Math.ceil(filesArray.length / filesPerPage);
+        const startIdx = window.currentPage * filesPerPage;
+        const endIdx = Math.min(startIdx + filesPerPage, filesArray.length);
+        const pageFiles = filesArray.slice(startIdx, endIdx);
+        
+        // Step 3: Build list from pageFiles with badges
         let isFirst = true;
-        for (const [displayPath, data] of Object.entries(window.allFiles)) {
+        for (const [displayPath, data] of pageFiles) {
+            const isCurrentFile = window.currentFilePath === data.originalPath;
+            
+            // Calculate badge for this file if searching
+            let badgeHtml = '';
+            if (window.currentSearch && data.content.toLowerCase().includes(window.currentSearch)) {
+                const occurrences = (data.content.toLowerCase().match(new RegExp(escapeRegex(window.currentSearch), 'g')) || []).length;
+                badgeHtml = ` <span class="badge bg-warning text-dark ms-2">${occurrences}</span>`;
+            }
+            
             html += `
-                <a href="javascript:void(0)" class="list-group-item list-group-item-action file-item ${isFirst ? 'active' : ''}" 
+                <a href="javascript:void(0)" class="list-group-item list-group-item-action file-item ${isCurrentFile ? 'active' : (isFirst && !window.currentFilePath ? 'active' : '')}" 
                    onclick="showFileByPath('${data.originalPath}')" 
                    data-filename="${displayPath.toLowerCase()}"
                    data-filepath="${data.originalPath}"
-                   style="overflow-x: auto; white-space: nowrap;">
-                    ${displayPath}
+                   style="white-space: nowrap; display: block; width: 100%;">
+                    ${displayPath}${badgeHtml}
                 </a>
             `;
             
-            // Show first file by default
-            if (isFirst) {
+            // Show first file by default only if no file is selected
+            if (isFirst && !window.currentFilePath) {
                 setTimeout(() => showFileByPath(data.originalPath), 100);
-                isFirst = false;
             }
+            isFirst = false;
         }
         
-        html += '</div>';
+        html += `
+                    </div>
+                </div>
+            </div>
+        `;
+        
+        // Update search results
+        if (window.currentSearch) {
+            document.getElementById('searchResults').textContent = 
+                totalMatches > 0 ? `${totalMatches} file(s) match` : 'No matches';
+        }
+        
+        // Add pagination controls if needed
+        if (window.totalPages > 1) {
+            html += `
+                <div class="d-flex justify-content-between align-items-center mt-2 px-2 py-2 border-top">
+                    <button class="btn btn-sm btn-outline-secondary" onclick="changePage(-1)" ${window.currentPage === 0 ? 'disabled' : ''}>
+                        <i class="bi bi-chevron-left"></i>
+                    </button>
+                    <small class="text-muted">Page ${window.currentPage + 1} / ${window.totalPages}</small>
+                    <button class="btn btn-sm btn-outline-secondary" onclick="changePage(1)" ${window.currentPage >= window.totalPages - 1 ? 'disabled' : ''}>
+                        <i class="bi bi-chevron-right"></i>
+                    </button>
+                </div>
+            `;
+        }
+        
         return html;
+    }
+    
+    function changePage(direction) {
+        window.currentPage = Math.max(0, Math.min(window.totalPages - 1, window.currentPage + direction));
+        // Rebuild file tree with new page
+        const fileTree = buildFileTree(window.originalFiles);
+        document.getElementById('fileTree').innerHTML = fileTree;
     }
     
     function clearSearch() {
         document.getElementById('unifiedSearch').value = '';
-        unifiedSearch();
+        window.currentSearch = '';
+        window.currentPage = 0;
+        
+        // Rebuild tree
+        const fileTree = buildFileTree(window.originalFiles);
+        document.getElementById('fileTree').innerHTML = fileTree;
+        document.getElementById('searchResults').textContent = '';
+        document.getElementById('clearSearchBtn').style.display = 'none';
+        
+        // Preserve selection
+        if (window.currentFilePath && window.currentFiles[window.currentFilePath]) {
+            const selectedItem = document.querySelector(`.file-item[data-filepath="${window.currentFilePath}"]`);
+            if (selectedItem) {
+                selectedItem.classList.add('active');
+            }
+            showFile(window.currentFilePath, window.currentFiles[window.currentFilePath]);
+        }
     }
     
-    function unifiedSearch() {
-        const search = document.getElementById('unifiedSearch').value.toLowerCase();
+    function debouncedSearch() {
+        const searchInput = document.getElementById('unifiedSearch');
         const clearBtn = document.getElementById('clearSearchBtn');
         
-        // Show/hide clear button
-        if (search && search.trim() !== '') {
+        // Show/hide clear button immediately
+        if (searchInput.value.trim()) {
             clearBtn.style.display = '';
         } else {
             clearBtn.style.display = 'none';
         }
         
-        // Ignore empty or whitespace-only searches
-        if (!search || search.trim() === '') {
-            window.currentSearch = '';
-            window.currentOccurrenceIndex = 0;
-            const items = document.querySelectorAll('.file-item');
-            
-            items.forEach(item => {
-                item.style.display = '';
-                const badge = item.querySelector('.badge');
-                if (badge) badge.remove();
-            });
-            document.getElementById('searchResults').textContent = '';
-            
-            // Refresh current file view if one is open
-            const currentFilePath = Object.keys(window.currentFiles)[0];
-            if (currentFilePath) {
-                showFile(currentFilePath, window.currentFiles[currentFilePath]);
+        // Clear existing timeout
+        if (window.searchTimeout) {
+            clearTimeout(window.searchTimeout);
+        }
+        
+        // Set new timeout for actual search
+        window.searchTimeout = setTimeout(() => {
+            unifiedSearch();
+        }, 300); // Wait 300ms after user stops typing
+    }
+    
+    function unifiedSearch() {
+        const searchInput = document.getElementById('unifiedSearch');
+        if (!searchInput) return; // Guard clause
+        
+        const search = searchInput.value.toLowerCase().trim();
+        
+        // Ignore empty searches
+        if (!search) {
+            if (window.currentSearch) {
+                window.currentSearch = '';
+                window.currentOccurrenceIndex = 0;
+                window.currentPage = 0;
+                
+                // Use requestAnimationFrame to avoid blocking input
+                requestAnimationFrame(() => {
+                    const fileTree = buildFileTree(window.originalFiles);
+                    document.getElementById('fileTree').innerHTML = fileTree;
+                    document.getElementById('searchResults').textContent = '';
+                    
+                    if (window.currentFilePath && window.currentFiles[window.currentFilePath]) {
+                        const selectedItem = document.querySelector(`.file-item[data-filepath="${window.currentFilePath}"]`);
+                        if (selectedItem) {
+                            selectedItem.classList.add('active');
+                        }
+                        showFile(window.currentFilePath, window.currentFiles[window.currentFilePath]);
+                    }
+                });
             }
             return;
         }
         
-        window.currentSearch = search;
-        window.currentOccurrenceIndex = 0;
-        const items = document.querySelectorAll('.file-item');
-        let matchCount = 0;
-        
-        items.forEach(item => {
-            const filename = item.getAttribute('data-filename');
-            const filepath = item.getAttribute('data-filepath');
+        // Only rebuild if search changed
+        if (window.currentSearch !== search) {
+            window.currentSearch = search;
+            window.currentOccurrenceIndex = 0;
+            window.currentPage = 0;
             
-            // Find content
-            let content = '';
-            for (const [path, data] of Object.entries(window.allFiles)) {
-                if (data.originalPath === filepath) {
-                    content = data.content;
-                    break;
-                }
-            }
-            
-            // Match in filename OR content
-            const filenameMatch = filename.includes(search);
-            const contentMatch = content.toLowerCase().includes(search);
-            
-            if (filenameMatch || contentMatch) {
-                item.style.display = '';
-                matchCount++;
+            // Use requestAnimationFrame to avoid blocking input
+            requestAnimationFrame(() => {
+                const fileTree = buildFileTree(window.originalFiles);
+                document.getElementById('fileTree').innerHTML = fileTree;
                 
-                // Remove old badge
-                const oldBadge = item.querySelector('.badge');
-                if (oldBadge) oldBadge.remove();
-                
-                // Add badge if content match
-                if (contentMatch) {
-                    const occurrences = (content.toLowerCase().match(new RegExp(escapeRegex(search), 'g')) || []).length;
-                    // Insert badge at the end of the item
-                    item.insertAdjacentHTML('beforeend', ` <span class="badge bg-warning text-dark ms-2">${occurrences}</span>`);
+                if (window.currentFilePath && window.currentFiles[window.currentFilePath]) {
+                    const selectedItem = document.querySelector(`.file-item[data-filepath="${window.currentFilePath}"]`);
+                    if (selectedItem) {
+                        selectedItem.classList.add('active');
+                    }
+                    showFile(window.currentFilePath, window.currentFiles[window.currentFilePath]);
                 }
-            } else {
-                item.style.display = 'none';
-            }
-        });
-        
-        document.getElementById('searchResults').textContent = matchCount ? `${matchCount} file(s) match` : 'No matches';
-        
-        // Update current file view if one is open
-        const currentFilePath = Object.keys(window.currentFiles)[0];
-        if (currentFilePath) {
-            showFile(currentFilePath, window.currentFiles[currentFilePath]);
+            });
         }
     }
     
@@ -785,9 +876,14 @@
         // If search is active, mark occurrences BEFORE syntax highlighting
         let processedContent = content;
         if (window.currentSearch) {
-            // Use unique placeholders that won't be affected by highlight.js
+            // Use unique placeholders with index that won't be affected by highlight.js
             const searchRegex = new RegExp(`(${escapeRegex(window.currentSearch)})`, 'gi');
-            processedContent = processedContent.replace(searchRegex, '⟪MARK_START⟫$1⟪MARK_END⟫');
+            let matchIndex = 0;
+            processedContent = processedContent.replace(searchRegex, (match) => {
+                const placeholder = `⟪MARK${matchIndex}START⟫${match}⟪MARK${matchIndex}END⟫`;
+                matchIndex++;
+                return placeholder;
+            });
         }
         
         // Apply syntax highlighting with highlight.js
@@ -799,11 +895,16 @@
             highlightedCode = processedContent.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
         }
         
-        // Replace placeholders with actual mark tags
+        // Replace placeholders with actual mark tags (with different classes)
         let displayContent = highlightedCode;
         if (window.currentSearch) {
-            displayContent = displayContent.replace(/⟪MARK_START⟫/g, '<mark style="background: #ffeb3b; color: #000; font-weight: bold;">');
-            displayContent = displayContent.replace(/⟪MARK_END⟫/g, '</mark>');
+            // Replace each placeholder with appropriate class
+            let idx = 0;
+            displayContent = displayContent.replace(/⟪MARK(\d+)START⟫/g, (match, num) => {
+                const cls = parseInt(num) === window.currentOccurrenceIndex ? 'mark-current' : 'mark-normal';
+                return `<mark class="${cls}">`;
+            });
+            displayContent = displayContent.replace(/⟪MARK\d+END⟫/g, '</mark>');
         }
         
         // Final aggressive trim of the HTML string itself
@@ -827,7 +928,7 @@
                         <i class="bi bi-chevron-down"></i>
                     </button>
                 </div>
-                <small class="text-muted me-2" id="occurrenceCounter">1 / ${occurrenceCount}</small>
+                <small class="text-muted me-2" id="occurrenceCounter">${window.currentOccurrenceIndex + 1} / ${occurrenceCount}</small>
             `;
         }
         
@@ -841,18 +942,29 @@
                     </button>
                 </div>
             </div>
-            <div class="code-display terminal" id="codeContent" style="max-height: calc(70vh - 100px); white-space: pre; font-family: 'Courier New', monospace; font-size: 13px; line-height: 1.5; overflow-x: auto;">${displayContent}</div>
+            <div class="code-display terminal" id="codeContent" style="max-height: calc(100vh - 200px); white-space: pre; font-family: 'Courier New', monospace; font-size: 13px; line-height: 1.5; overflow-x: auto;">${displayContent}</div>
         `;
         
-        // Scroll to first occurrence if search is active
+        // Scroll to current occurrence if search is active
         if (window.currentSearch && occurrenceCount > 0) {
-            setTimeout(() => {
-                const marks = document.querySelectorAll('#codeContent mark');
-                if (marks.length > 0) {
-                    window.currentOccurrenceIndex = 0;
-                    marks[0].scrollIntoView({behavior: 'smooth', block: 'center'});
-                }
-            }, 100);
+            // Use requestAnimationFrame for better timing
+            requestAnimationFrame(() => {
+                setTimeout(() => {
+                    // Force update classes after render
+                    const marks = document.querySelectorAll('#codeContent mark');
+                    marks.forEach((mark, idx) => {
+                        // Force remove both classes first
+                        mark.classList.remove('mark-normal', 'mark-current');
+                        // Then add the correct one
+                        mark.classList.add(idx === window.currentOccurrenceIndex ? 'mark-current' : 'mark-normal');
+                    });
+                    
+                    const currentMark = marks[window.currentOccurrenceIndex];
+                    if (currentMark) {
+                        currentMark.scrollIntoView({behavior: 'smooth', block: 'center'});
+                    }
+                }, 150);
+            });
         }
     }
     
@@ -861,25 +973,42 @@
     }
     
     function nextOccurrence() {
-        const marks = document.querySelectorAll('#codeContent mark');
-        if (marks.length > 0) {
-            window.currentOccurrenceIndex = (window.currentOccurrenceIndex + 1) % marks.length;
-            marks[window.currentOccurrenceIndex].scrollIntoView({behavior: 'smooth', block: 'center'});
-            
-            // Update counter
-            document.getElementById('occurrenceCounter').textContent = `${window.currentOccurrenceIndex + 1} / ${marks.length}`;
-        }
+        window.currentOccurrenceIndex = (window.currentOccurrenceIndex + 1) % document.querySelectorAll('#codeContent mark').length;
+        updateOccurrenceHighlight();
     }
     
     function prevOccurrence() {
-        const marks = document.querySelectorAll('#codeContent mark');
-        if (marks.length > 0) {
-            window.currentOccurrenceIndex = (window.currentOccurrenceIndex - 1 + marks.length) % marks.length;
-            marks[window.currentOccurrenceIndex].scrollIntoView({behavior: 'smooth', block: 'center'});
+        const totalMarks = document.querySelectorAll('#codeContent mark').length;
+        window.currentOccurrenceIndex = (window.currentOccurrenceIndex - 1 + totalMarks) % totalMarks;
+        updateOccurrenceHighlight();
+    }
+    
+    function updateOccurrenceHighlight() {
+        // Use requestAnimationFrame for better timing
+        requestAnimationFrame(() => {
+            const marks = document.querySelectorAll('#codeContent mark');
+            if (marks.length === 0) return;
+            
+            // Force update all marks with correct class
+            marks.forEach((mark, idx) => {
+                // Remove both classes first to ensure clean state
+                mark.classList.remove('mark-normal', 'mark-current');
+                // Add correct class
+                mark.classList.add(idx === window.currentOccurrenceIndex ? 'mark-current' : 'mark-normal');
+            });
+            
+            // Scroll to current mark
+            const currentMark = marks[window.currentOccurrenceIndex];
+            if (currentMark) {
+                currentMark.scrollIntoView({behavior: 'smooth', block: 'center'});
+            }
             
             // Update counter
-            document.getElementById('occurrenceCounter').textContent = `${window.currentOccurrenceIndex + 1} / ${marks.length}`;
-        }
+            const counter = document.getElementById('occurrenceCounter');
+            if (counter) {
+                counter.textContent = `${window.currentOccurrenceIndex + 1} / ${marks.length}`;
+            }
+        });
     }
     
     function copyCode() {

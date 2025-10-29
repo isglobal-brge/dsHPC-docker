@@ -623,6 +623,20 @@
             transform: scale(1.2);
             opacity: 0.8;
         }
+        
+        /* Search highlighting - dual colors */
+        mark.mark-normal {
+            background: #ffeb3b;
+            color: #000;
+            font-weight: bold;
+        }
+        
+        mark.mark-current {
+            background: #ff9800;
+            color: #000;
+            font-weight: bold;
+            box-shadow: 0 0 0 2px rgba(255, 152, 0, 0.3);
+        }
     </style>
     
     {% block extra_css %}{% endblock %}

@@ -197,7 +197,7 @@ echo -e "${GREEN}>> Configuration monitor started (checks /config/slurm.conf eve
     while true; do
         sleep 30
         echo -e "${CYAN}>> Checking for method changes...${NC}"
-        bash /load-methods.sh 2>&1 | grep -v "marked.*methods as inactive" || true
+        bash /load-methods.sh 2>&1 | grep -v "Updating method status\|marked.*methods as inactive" || true
     done
 ) &
 echo -e "${GREEN}>> Methods monitor started (checks /environment/methods every 30s)${NC}"
