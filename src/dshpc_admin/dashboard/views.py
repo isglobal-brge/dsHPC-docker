@@ -648,12 +648,28 @@ def meta_jobs_list(request):
                                     grid_id = ObjectId(grid_id)
                                 
                                 grid_out = fs.get(grid_id)
-                                output_bytes = grid_out.read(10000)  # Read first 10KB
-                                job['output'] = output_bytes.decode('utf-8', errors='replace')
-                                job['output_truncated'] = True
+                                output_bytes = grid_out.read(10000)
                                 grid_out.close()
+                                
+                                # Try to decode as text, fallback to hex
+                                try:
+                                    job['output'] = output_bytes.decode('utf-8', errors='strict')
+                                    job['output_type'] = 'text'
+                                except UnicodeDecodeError:
+                                    # Binary - show hex dump
+                                    hex_lines = []
+                                    for i in range(0, min(512, len(output_bytes)), 16):
+                                        chunk = output_bytes[i:i+16]
+                                        hex_part = ' '.join(f'{b:02x}' for b in chunk)
+                                        ascii_part = ''.join(chr(b) if 32 <= b < 127 else '.' for b in chunk)
+                                        hex_lines.append(f'{i:08x}  {hex_part:<48}  {ascii_part}')
+                                    job['output'] = '\n'.join(hex_lines)
+                                    job['output_type'] = 'hex'
+                                
+                                job['output_truncated'] = True
                             except Exception as e:
                                 job['output'] = f"[Error retrieving output from GridFS: {str(e)}]"
+                                job['output_type'] = 'error'
                         
                         # Retrieve error from GridFS if stored there
                         if job.get('error_storage') == 'gridfs' and job.get('error_gridfs_id'):
@@ -668,11 +684,27 @@ def meta_jobs_list(request):
                                 
                                 grid_out = fs.get(grid_id)
                                 error_bytes = grid_out.read(10000)
-                                job['error'] = error_bytes.decode('utf-8', errors='replace')
-                                job['error_truncated'] = True
                                 grid_out.close()
+                                
+                                # Try to decode as text
+                                try:
+                                    job['error'] = error_bytes.decode('utf-8', errors='strict')
+                                    job['error_type'] = 'text'
+                                except UnicodeDecodeError:
+                                    # Binary - show hex dump
+                                    hex_lines = []
+                                    for i in range(0, min(512, len(error_bytes)), 16):
+                                        chunk = error_bytes[i:i+16]
+                                        hex_part = ' '.join(f'{b:02x}' for b in chunk)
+                                        ascii_part = ''.join(chr(b) if 32 <= b < 127 else '.' for b in chunk)
+                                        hex_lines.append(f'{i:08x}  {hex_part:<48}  {ascii_part}')
+                                    job['error'] = '\n'.join(hex_lines)
+                                    job['error_type'] = 'hex'
+                                
+                                job['error_truncated'] = True
                             except Exception as e:
                                 job['error'] = f"[Error retrieving error from GridFS: {str(e)}]"
+                                job['error_type'] = 'error'
                         
                         step['job_data'] = job
                         # Get method name
