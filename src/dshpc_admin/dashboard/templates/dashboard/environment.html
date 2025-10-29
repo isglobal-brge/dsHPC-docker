@@ -2,9 +2,14 @@
 {% load dashboard_filters %}
 
 {% block page_actions %}
-<small class="text-muted" id="cacheStatus" style="display: none;">
-    <i class="bi bi-clock-history"></i> <span id="cacheAge"></span>
-</small>
+<div class="d-flex align-items-center gap-2">
+    <small class="text-muted" id="cacheStatus" style="display: none;">
+        <i class="bi bi-clock-history"></i> <span id="cacheAge"></span>
+    </small>
+    <button onclick="loadEnvironmentData()" class="btn btn-sm btn-outline-secondary" id="refreshBtn">
+        <i class="bi bi-arrow-clockwise"></i>
+    </button>
+</div>
 {% endblock %}
 
 {% block content %}
@@ -32,6 +37,9 @@
 <script>
 // Fetch environment data
 function loadEnvironmentData() {
+    const refreshBtn = document.getElementById('refreshBtn');
+    if (refreshBtn) refreshBtn.disabled = true;
+    
     fetch('/environment/?ajax=1')
         .then(r => r.json())
         .then(data => {
@@ -42,7 +50,25 @@ function loadEnvironmentData() {
             // Show cache status if applicable
             if (data.cached) {
                 document.getElementById('cacheStatus').style.display = 'inline';
-                document.getElementById('cacheAge').textContent = `Cached ${data.cache_age}s ago`;
+                document.getElementById('cacheAge').textContent = `Updated ${data.cache_age}s ago`;
+                
+                // Disable refresh button for remaining time
+                if (data.next_refresh && refreshBtn) {
+                    refreshBtn.title = `Please wait ${data.next_refresh}s before refreshing`;
+                    setTimeout(() => {
+                        refreshBtn.disabled = false;
+                        refreshBtn.title = 'Refresh environment information';
+                    }, data.next_refresh * 1000);
+                }
+            } else {
+                // Fresh data loaded, enable button after 10 seconds
+                if (refreshBtn) {
+                    refreshBtn.title = 'Please wait 10s before refreshing';
+                    setTimeout(() => {
+                        refreshBtn.disabled = false;
+                        refreshBtn.title = 'Refresh environment information';
+                    }, 10000);
+                }
             }
             
             // Check for errors

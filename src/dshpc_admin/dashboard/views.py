@@ -72,6 +72,69 @@ def dashboard_home(request):
     return render(request, 'dashboard/dashboard.html', context)
 
 
+def container_status(request):
+    """Get container status via Docker API."""
+    import docker
+    import json
+    import os
+    
+    # Get docker prefix
+    docker_prefix = 'dshpc'
+    try:
+        config_path = '/app/environment-config.json'
+        if os.path.exists(config_path):
+            with open(config_path, 'r') as f:
+                config = json.load(f)
+                docker_prefix = config.get('docker_stack_prefix', 'dshpc')
+    except:
+        pass
+    
+    containers = [
+        {'name': f'{docker_prefix}-slurm', 'displayName': 'Slurm Service', 'icon': 'cpu', 'type': 'service'},
+        {'name': f'{docker_prefix}-api', 'displayName': 'API Server', 'icon': 'server', 'type': 'service'},
+        {'name': f'{docker_prefix}-admin', 'displayName': 'Admin Panel', 'icon': 'speedometer2', 'type': 'service'},
+        {'name': f'{docker_prefix}-jobs', 'displayName': 'Jobs Database', 'icon': 'database', 'type': 'database'},
+        {'name': f'{docker_prefix}-files', 'displayName': 'Files Database', 'icon': 'database', 'type': 'database'},
+        {'name': f'{docker_prefix}-methods', 'displayName': 'Methods Database', 'icon': 'database', 'type': 'database'}
+    ]
+    
+    results = []
+    
+    try:
+        client = docker.from_env()
+        
+        for container_info in containers:
+            try:
+                container = client.containers.get(container_info['name'])
+                status = container.status  # running, paused, restarting, exited, etc.
+                
+                results.append({
+                    **container_info,
+                    'status': 'running' if status == 'running' else 'stopped',
+                    'docker_status': status,
+                    'error': None
+                })
+            except docker.errors.NotFound:
+                results.append({
+                    **container_info,
+                    'status': 'stopped',
+                    'docker_status': 'not found',
+                    'error': 'Container not found'
+                })
+            except Exception as e:
+                results.append({
+                    **container_info,
+                    'status': 'unknown',
+                    'docker_status': 'error',
+                    'error': str(e)
+                })
+    except Exception as e:
+        # Return error if can't connect to Docker
+        return JsonResponse({'error': f'Cannot connect to Docker: {str(e)}'}, status=500)
+    
+    return JsonResponse({'containers': results})
+
+
 @login_required_simple
 def files_list(request):
     """List all files with advanced filtering."""
@@ -679,13 +742,14 @@ def environment_info(request):
     cached_data = cache.get(cache_key)
     last_update = cache.get(f'{cache_key}_timestamp')
     
-    # If we have cached data and it's less than 5 seconds old, use it
+    # If we have cached data and it's less than 10 seconds old, use it
+    cache_timeout_display = 10  # Show for 10 seconds
     if cached_data and last_update:
         time_since_update = (timezone.now() - last_update).total_seconds()
-        if time_since_update < cache_timeout:
+        if time_since_update < cache_timeout_display:
             cached_data['cached'] = True
             cached_data['cache_age'] = int(time_since_update)
-            cached_data['next_refresh'] = int(cache_timeout - time_since_update)
+            cached_data['next_refresh'] = int(cache_timeout_display - time_since_update)
             return JsonResponse(cached_data)
     
     # Otherwise, fetch fresh data
@@ -805,9 +869,9 @@ def environment_info(request):
     except Exception as e:
         env_data['error'] = f"Error accessing container: {str(e)}"
     
-    # Cache the data for 5 seconds
-    cache.set(cache_key, env_data, timeout=cache_timeout)
-    cache.set(f'{cache_key}_timestamp', timezone.now(), timeout=cache_timeout)
+    # Cache the data for 10 seconds
+    cache.set(cache_key, env_data, timeout=10)
+    cache.set(f'{cache_key}_timestamp', timezone.now(), timeout=10)
     
     # Return JSON for AJAX request
     return JsonResponse(env_data)

@@ -240,7 +240,7 @@
         /* Logs terminal */
         .terminal {
             background: #0d1117;
-            border-radius: 8px;
+            border-radius: 0;
             padding: 1.5rem;
             color: #c9d1d9;
             font-family: 'SF Mono', 'Consolas', 'Monaco', monospace;
@@ -554,6 +554,16 @@
             font-size: 0.75rem;
             margin-top: 0.25rem;
             opacity: 0.8;
+        }
+        
+        /* Clickable container cards in dashboard */
+        .container-card-clickable {
+            transition: all 0.2s ease;
+        }
+        
+        .container-card-clickable:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(0,0,0,0.15);
         }
     </style>
     
