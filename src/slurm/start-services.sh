@@ -23,12 +23,34 @@ echo -e "${BOLD}Welcome to ${YELLOW}High-Performance Computing for DataSHIELD${N
 echo -e ""
 echo -e "${BOLD}${CYAN}>> Starting services...${NC}"
 
+# Function to reload slurm configuration
+reload_slurm_config() {
+    if [ -f /config/slurm.conf ]; then
+        # Check if config has changed
+        if ! cmp -s /config/slurm.conf /etc/slurm/slurm.conf; then
+            echo -e "${YELLOW}>> Detected slurm.conf changes, reloading configuration...${NC}"
+            cp /config/slurm.conf /etc/slurm/slurm.conf
+            # Reconfigure slurm without restarting (preserves running jobs)
+            scontrol reconfigure 2>/dev/null && echo -e "${GREEN}>> Slurm configuration reloaded successfully${NC}" || true
+        fi
+    fi
+}
+
 # Handle slurm.conf - check if custom config exists, otherwise create default
 if [ -f /config/slurm.conf ]; then
     echo -e "${GREEN}>> Using custom slurm.conf from /config${NC}"
     cp /config/slurm.conf /etc/slurm/slurm.conf
 else
     echo -e "${YELLOW}>> No custom slurm.conf found, creating default configuration${NC}"
+    # Detect system resources
+    DETECTED_CPUS=$(nproc 2>/dev/null || echo 8)
+    DETECTED_MEMORY_KB=$(grep MemTotal /proc/meminfo 2>/dev/null | awk '{print $2}' || echo 16777216)
+    DETECTED_MEMORY=$((DETECTED_MEMORY_KB / 1024 * 90 / 100))  # 90% of available memory in MB
+    MEMORY_PER_CPU=$((DETECTED_MEMORY / DETECTED_CPUS))
+    MAX_MEMORY_PER_CPU=$((MEMORY_PER_CPU * 2))
+    
+    echo -e "${CYAN}>> Detected resources: ${DETECTED_CPUS} CPUs, ${DETECTED_MEMORY} MB RAM${NC}"
+    
     cat > /etc/slurm/slurm.conf << EOF
 ClusterName=${CLUSTER_NAME:-dshpc-slurm}
 SlurmctldHost=localhost
@@ -39,9 +61,14 @@ SlurmdLogFile=/var/log/slurm/slurmd.log
 SlurmdDebug=debug5
 SlurmctldDebug=debug5
 
-# COMPUTE NODES
-NodeName=localhost CPUs=8 Boards=1 SocketsPerBoard=1 CoresPerSocket=8 ThreadsPerCore=1 State=UNKNOWN
-PartitionName=debug Nodes=localhost Default=YES MaxTime=INFINITE State=UP
+# SCHEDULER - Allow multiple jobs to run simultaneously
+SelectType=select/cons_tres
+SelectTypeParameters=CR_Core
+
+# COMPUTE NODES - Auto-configured based on system resources
+# Detected: ${DETECTED_CPUS} CPUs, ${DETECTED_MEMORY} MB RAM
+NodeName=localhost CPUs=${DETECTED_CPUS} RealMemory=${DETECTED_MEMORY} TmpDisk=100000 State=UNKNOWN
+PartitionName=debug Nodes=localhost Default=YES MaxTime=INFINITE State=UP DefMemPerCPU=${MEMORY_PER_CPU} MaxMemPerCPU=${MAX_MEMORY_PER_CPU}
 
 # PROCESS TRACKING
 ProctrackType=proctrack/linuxproc
@@ -155,6 +182,15 @@ if [ $LOAD_METHODS_EXIT_CODE -ne 0 ]; then
     echo -e "\033[1;31mERROR: Method loading failed with exit code $LOAD_METHODS_EXIT_CODE. Aborting system startup.\033[0m"
     exit 1
 fi
+
+# Start configuration monitor in background (checks for slurm.conf changes every 30s)
+(
+    while true; do
+        sleep 30
+        reload_slurm_config
+    done
+) &
+echo -e "${GREEN}>> Configuration monitor started (checks /config/slurm.conf every 30s)${NC}"
 
 # Start FastAPI application using API_PYTHON environment
 cd /app
