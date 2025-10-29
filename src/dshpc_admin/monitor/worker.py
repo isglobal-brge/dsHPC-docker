@@ -167,6 +167,10 @@ class MonitorWorker:
                     if result.exit_code == 0:
                         output = result.output.decode('utf-8', errors='replace').strip()
                         if output:
+                            # Additional safeguard: limit to 50k characters max
+                            if len(output) > 50000:
+                                output = output[-50000:]  # Keep last 50k chars
+                                log_entry['slurm_output_truncated'] = True
                             log_entry['slurm_output'] = output
                             log_entry['slurm_output_lines'] = len(output.split('\n'))
                 except Exception as e:
@@ -178,6 +182,10 @@ class MonitorWorker:
                     if result.exit_code == 0:
                         output = result.output.decode('utf-8', errors='replace').strip()
                         if output:
+                            # Additional safeguard: limit to 50k characters max
+                            if len(output) > 50000:
+                                output = output[-50000:]
+                                log_entry['system_output_truncated'] = True
                             log_entry['system_output'] = output
                             log_entry['system_output_lines'] = len(output.split('\n'))
                 except Exception as e:
@@ -189,6 +197,10 @@ class MonitorWorker:
                     if result.exit_code == 0:
                         output = result.output.decode('utf-8', errors='replace').strip()
                         if output:
+                            # Additional safeguard: limit to 50k characters max
+                            if len(output) > 50000:
+                                output = output[-50000:]
+                                log_entry['system_error_truncated'] = True
                             log_entry['system_error'] = output
                             log_entry['system_error_lines'] = len(output.split('\n'))
                 except Exception as e:
