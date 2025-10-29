@@ -2,248 +2,186 @@
 {% load dashboard_filters %}
 
 {% block content %}
-<!-- Environment Configuration -->
+<!-- Unit Information -->
 {% if env_config %}
 <div class="card shadow-sm mb-4">
-    <div class="card-header bg-dark text-white">
-        <i class="bi bi-info-circle-fill"></i> Environment Information
-    </div>
-    <div class="card-body">
-        <div class="row">
-            <div class="col-md-6">
-                <div class="info-row">
-                    <div class="label">Environment Name</div>
-                    <div class="value"><strong>{{ env_config.environment_name }}</strong></div>
+    <div class="card-body p-4">
+        <div class="text-center mb-4">
+            <i class="bi bi-hdd-network-fill fs-1 text-primary mb-3 d-block"></i>
+            <h2 class="mb-2">{{ env_config.display_name }}</h2>
+            <p class="text-muted">{{ env_config.description }}</p>
+        </div>
+        
+        {% if env_config.authors %}
+        <div class="text-center mb-3">
+            <small class="text-muted d-block mb-2">Developed by</small>
+            <div class="d-flex justify-content-center gap-3 flex-wrap">
+                {% for author in env_config.authors %}
+                <div class="d-flex align-items-center gap-2">
+                    <i class="bi bi-person-circle text-primary"></i>
+                    <span>{{ author }}</span>
                 </div>
-                
-                <div class="info-row">
-                    <div class="label">Display Name</div>
-                    <div class="value">{{ env_config.display_name }}</div>
-                </div>
-                
-                <div class="info-row">
-                    <div class="label">Description</div>
-                    <div class="value">{{ env_config.description }}</div>
-                </div>
-                
-                {% if env_config.authors %}
-                <div class="info-row">
-                    <div class="label">Authors</div>
-                    <div class="value">
-                        {% for author in env_config.authors %}
-                            <span class="badge bg-primary me-1">{{ author }}</span>
-                        {% endfor %}
-                    </div>
-                </div>
-                {% endif %}
+                {% endfor %}
             </div>
-            
-            <div class="col-md-6">
-                <div class="info-row">
-                    <div class="label">Docker Stack Prefix</div>
-                    <div class="value"><code>{{ env_config.docker_stack_prefix }}</code></div>
-                </div>
-                
-                <div class="info-row">
-                    <div class="label">API Port</div>
-                    <div class="value"><code>{{ env_config.default_api_port }}</code></div>
-                </div>
-                
-                <div class="info-row">
-                    <div class="label">Admin Port</div>
-                    <div class="value"><code>{{ env_config.default_admin_port }}</code></div>
-                </div>
-                
-                {% if env_config.base_repository %}
-                <div class="info-row">
-                    <div class="label">Base Repository</div>
-                    <div class="value">
-                        <a href="{{ env_config.base_repository }}" target="_blank" class="text-decoration-none">
-                            <i class="bi bi-github"></i> {{ env_config.base_repository }}
-                        </a>
-                    </div>
-                </div>
-                {% endif %}
+        </div>
+        {% endif %}
+        
+        <hr class="my-4">
+        
+        <div class="row text-center">
+            <div class="col-md-4">
+                <small class="text-muted d-block mb-1">Stack Prefix</small>
+                <code>{{ env_config.docker_stack_prefix }}</code>
+            </div>
+            <div class="col-md-4">
+                <small class="text-muted d-block mb-1">API Port</small>
+                <code>{{ env_config.default_api_port }}</code>
+            </div>
+            <div class="col-md-4">
+                <small class="text-muted d-block mb-1">Admin Port</small>
+                <code>{{ env_config.default_admin_port }}</code>
             </div>
         </div>
     </div>
 </div>
 {% endif %}
 
-<!-- Stats Cards -->
-<div class="row g-4 mb-4">
-    <div class="col-md-3">
-        <div class="card h-100 border-0 shadow-sm" style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);">
-            <div class="card-body text-white">
-                <div class="d-flex justify-content-between align-items-start mb-3">
-                    <div>
-                        <div class="small opacity-75">Total Jobs</div>
-                        <h2 class="mb-0 fw-bold">{{ stats.total_jobs }}</h2>
-            </div>
-                    <i class="bi bi-play-circle fs-1 opacity-50"></i>
-                </div>
-                <div class="d-flex justify-content-between small">
-                    <span>Active: {{ stats.active_jobs }}</span>
-                    <span>Done: {{ stats.completed_jobs }}</span>
-                </div>
-            </div>
-            <div class="card-footer bg-white bg-opacity-10 border-0">
-                <a href="{% url 'jobs_list' %}" class="text-white text-decoration-none">
-                    View All <i class="bi bi-arrow-right"></i>
-                </a>
-            </div>
-        </div>
-    </div>
-    
-    <div class="col-md-3">
-        <div class="card h-100 border-0 shadow-sm" style="background: linear-gradient(135deg, #11998e 0%, #38ef7d 100%);">
-            <div class="card-body text-white">
-                <div class="d-flex justify-content-between align-items-start mb-3">
-                    <div>
-                        <div class="small opacity-75">Meta-Jobs</div>
-                        <h2 class="mb-0 fw-bold">{{ stats.total_meta_jobs }}</h2>
-                    </div>
-                    <i class="bi bi-diagram-3 fs-1 opacity-50"></i>
-            </div>
-                <div class="small">
-                    Running: {{ stats.running_meta_jobs }}
-                </div>
-            </div>
-            <div class="card-footer bg-white bg-opacity-10 border-0">
-                <a href="{% url 'meta_jobs_list' %}" class="text-white text-decoration-none">
-                    View Chains <i class="bi bi-arrow-right"></i>
-                </a>
-            </div>
-        </div>
-    </div>
-    
-    <div class="col-md-3">
-        <div class="card h-100 border-0 shadow-sm" style="background: linear-gradient(135deg, #2193b0 0%, #6dd5ed 100%);">
-            <div class="card-body text-white">
-                <div class="d-flex justify-content-between align-items-start mb-3">
-                    <div>
-                        <div class="small opacity-75">Total Files</div>
-                        <h2 class="mb-0 fw-bold">{{ stats.total_files }}</h2>
-                    </div>
-                    <i class="bi bi-folder2-open fs-1 opacity-50"></i>
-            </div>
-                <div class="small">
-                    Completed: {{ stats.completed_files }}
-                </div>
-            </div>
-            <div class="card-footer bg-white bg-opacity-10 border-0">
-                <a href="{% url 'files_list' %}" class="text-white text-decoration-none">
-                    Browse Files <i class="bi bi-arrow-right"></i>
-                </a>
-            </div>
-        </div>
-    </div>
-    
-    <div class="col-md-3">
-        <div class="card h-100 border-0 shadow-sm" style="background: linear-gradient(135deg, #ee0979 0%, #ff6a00 100%);">
-            <div class="card-body text-white">
-                <div class="d-flex justify-content-between align-items-start mb-3">
-                    <div>
-                        <div class="small opacity-75">Methods</div>
-                        <h2 class="mb-0 fw-bold">{{ stats.active_methods }}</h2>
-                    </div>
-                    <i class="bi bi-code-slash fs-1 opacity-50"></i>
-            </div>
-                <div class="small">
-                    Total: {{ stats.total_methods }}
-                </div>
-            </div>
-            <div class="card-footer bg-white bg-opacity-10 border-0">
-                <a href="{% url 'methods_list' %}" class="text-white text-decoration-none">
-                    View Registry <i class="bi bi-arrow-right"></i>
-                </a>
-            </div>
-        </div>
-    </div>
-</div>
-
 <!-- Container Status -->
-<div class="row g-4">
-    <div class="col-lg-12">
-        <div class="card shadow-sm">
-            <div class="card-header bg-dark text-white">
-                <i class="bi bi-hdd-network"></i> Container Status
+<div class="card shadow-sm">
+    <div class="card-header bg-dark text-white d-flex justify-content-between align-items-center">
+        <span><i class="bi bi-hdd-network"></i> System Status</span>
+        <button onclick="refreshContainerStatus()" class="btn btn-sm btn-light" id="refreshStatusBtn">
+            <i class="bi bi-arrow-clockwise"></i>
+        </button>
+    </div>
+    <div class="card-body" id="containerStatusContent">
+        <div class="text-center py-4">
+            <div class="spinner-border text-primary" role="status">
+                <span class="visually-hidden">Loading...</span>
             </div>
-            <div class="card-body" id="containerStatus">
-                <div class="text-center py-4">
-                    <div class="spinner-border text-primary" role="status">
-                        <span class="visually-hidden">Loading...</span>
-                    </div>
-                    <p class="text-muted mt-2">Checking container status...</p>
-                </div>
-            </div>
+            <p class="text-muted mt-2">Checking container status...</p>
         </div>
+    </div>
+    <div class="card-footer text-muted small">
+        <i class="bi bi-info-circle"></i> Auto-refreshing every 10 seconds
     </div>
 </div>
 {% endblock %}
 
 {% block extra_js %}
 <script>
-// Check container status using Docker API (via logs endpoint as proxy)
-function checkContainerStatus() {
-    const containers = [
-        { name: 'dshpc-epiflare-slurm', displayName: 'Slurm Service', icon: 'cpu' },
-        { name: 'dshpc-epiflare-api', displayName: 'API Server', icon: 'server' },
-        { name: 'dshpc-epiflare-admin', displayName: 'Admin Panel', icon: 'speedometer2' }
-    ];
+let statusRefreshInterval;
+
+function refreshContainerStatus() {
+    const btn = document.getElementById('refreshStatusBtn');
+    if (btn) btn.disabled = true;
     
-    let statusHTML = '<div class="row g-3">';
+    const prefix = '{{ docker_prefix }}';
+    const containers = [
+        { name: `${prefix}-api`, displayName: 'API Server', icon: 'server', type: 'service' },
+        { name: `${prefix}-slurm`, displayName: 'Slurm Service', icon: 'cpu', type: 'service' },
+        { name: `${prefix}-admin`, displayName: 'Admin Panel', icon: 'speedometer2', type: 'service' },
+        { name: `${prefix}-jobs`, displayName: 'Jobs Database', icon: 'database', type: 'database' },
+        { name: `${prefix}-files`, displayName: 'Files Database', icon: 'database', type: 'database' },
+        { name: `${prefix}-methods`, displayName: 'Methods Database', icon: 'database', type: 'database' }
+    ];
     
     Promise.all(containers.map(container => 
         fetch(`/logs/?container=${container.name}&lines=1&ajax=1`)
             .then(r => r.json())
             .then(data => ({
-                name: container.displayName,
-                icon: container.icon,
+                ...container,
                 status: data.error ? 'stopped' : 'running',
                 error: data.error
             }))
             .catch(() => ({
-                name: container.displayName,
-                icon: container.icon,
+                ...container,
                 status: 'unknown',
                 error: 'Cannot connect'
             }))
     )).then(results => {
+        let html = '<div class="row g-3">';
+        
         results.forEach(result => {
-            let badgeClass = result.status === 'running' ? 'bg-success' : 'bg-danger';
-            let iconClass = result.status === 'running' ? 'bi-check-circle-fill' : 'bi-x-circle-fill';
+            let statusClass = result.status === 'running' ? 'success' : result.status === 'stopped' ? 'danger' : 'secondary';
+            let statusIcon = result.status === 'running' ? 'check-circle-fill' : result.status === 'stopped' ? 'x-circle-fill' : 'question-circle';
+            let statusText = result.status.toUpperCase();
+            let cardBorder = result.status === 'running' ? 'border-success' : result.status === 'stopped' ? 'border-danger' : 'border-secondary';
             
-            statusHTML += `
-                <div class="col-md-4">
-                    <div class="card h-100 border-0" style="background: #f8f9fa;">
+            html += `
+                <div class="col-md-6 col-lg-4">
+                    <div class="card h-100 ${cardBorder}" style="border-width: 2px;">
                         <div class="card-body">
-                            <div class="d-flex align-items-center gap-3">
-                                <div class="fs-2 text-primary">
-                                    <i class="bi bi-${result.icon}"></i>
-                                </div>
+                            <div class="d-flex justify-content-between align-items-start mb-3">
                                 <div class="flex-grow-1">
-                                    <h6 class="mb-1">${result.name}</h6>
-                                    <span class="badge ${badgeClass}">
-                                        <i class="bi ${iconClass}"></i> ${result.status.toUpperCase()}
-                                    </span>
+                                    <div class="d-flex align-items-center gap-2 mb-2">
+                                        <i class="bi bi-${result.icon} fs-4 text-${statusClass}"></i>
+                                        <h6 class="mb-0">${result.displayName}</h6>
+                                    </div>
+                                    <small class="text-muted d-block">${result.name}</small>
                                 </div>
-            </div>
-        </div>
-    </div>
-</div>
+                                <span class="badge bg-${statusClass}">
+                                    <i class="bi bi-${statusIcon}"></i> ${statusText}
+                                </span>
+                            </div>
+                            
+                            <div class="mt-2">
+                                <small class="text-muted">Type:</small>
+                                <span class="badge bg-secondary ms-1">${result.type}</span>
+                            </div>
+                            
+                            ${result.error ? `
+                            <div class="mt-2">
+                                <small class="text-danger"><i class="bi bi-exclamation-triangle"></i> ${result.error}</small>
+                            </div>
+                            ` : ''}
+                        </div>
+                    </div>
+                </div>
             `;
         });
         
-        statusHTML += '</div>';
-        document.getElementById('containerStatus').innerHTML = statusHTML;
+        html += '</div>';
+        
+        // Add summary
+        const runningCount = results.filter(r => r.status === 'running').length;
+        const totalCount = results.length;
+        
+        html += `
+        <div class="mt-4 text-center">
+            <h5 class="mb-2">
+                <span class="badge bg-${runningCount === totalCount ? 'success' : runningCount > 0 ? 'warning' : 'danger'} fs-6">
+                    ${runningCount} / ${totalCount} containers running
+                </span>
+            </h5>
+            ${runningCount === totalCount ? 
+                '<p class="text-success mb-0"><i class="bi bi-check-circle-fill"></i> All systems operational</p>' : 
+                '<p class="text-warning mb-0"><i class="bi bi-exclamation-triangle-fill"></i> Some containers are not running</p>'
+            }
+        </div>
+        `;
+        
+        document.getElementById('containerStatusContent').innerHTML = html;
+        if (btn) btn.disabled = false;
+    }).catch(error => {
+        document.getElementById('containerStatusContent').innerHTML = `
+            <div class="alert alert-danger">
+                <i class="bi bi-exclamation-triangle-fill"></i> Error checking container status: ${error.message}
+            </div>
+        `;
+        if (btn) btn.disabled = false;
     });
 }
 
-// Check on load
-checkContainerStatus();
+// Initial load
+refreshContainerStatus();
 
-// Refresh every 30 seconds
-setInterval(checkContainerStatus, 30000);
+// Auto-refresh every 10 seconds
+statusRefreshInterval = setInterval(refreshContainerStatus, 10000);
+
+// Cleanup
+window.addEventListener('beforeunload', () => {
+    if (statusRefreshInterval) clearInterval(statusRefreshInterval);
+});
 </script>
 {% endblock %}

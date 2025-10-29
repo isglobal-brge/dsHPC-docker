@@ -59,9 +59,13 @@ def dashboard_home(request):
         # If config doesn't exist or can't be read, just continue without it
         pass
     
+    # Get docker prefix for container names
+    docker_prefix = env_config.get('docker_stack_prefix', 'dshpc') if env_config else 'dshpc'
+    
     context = {
         'stats': stats,
         'env_config': env_config,
+        'docker_prefix': docker_prefix,
         'page_title': 'Dashboard'
     }
     
@@ -654,7 +658,20 @@ def environment_info(request):
         return render(request, 'dashboard/environment.html', context)
     
     # AJAX request - fetch actual data
-    container_name = 'dshpc-epiflare-slurm'
+    # Get docker prefix from environment config
+    import json
+    import os
+    docker_prefix = 'dshpc'
+    try:
+        config_path = '/app/environment-config.json'
+        if os.path.exists(config_path):
+            with open(config_path, 'r') as f:
+                config = json.load(f)
+                docker_prefix = config.get('docker_stack_prefix', 'dshpc')
+    except:
+        pass
+    
+    container_name = f'{docker_prefix}-slurm'
     cache_key = 'environment_info_data'
     cache_timeout = 5  # seconds
     
@@ -801,17 +818,30 @@ def logs_viewer(request):
     """View container and job logs."""
     import docker
     
-    container_name = request.GET.get('container', 'dshpc-epiflare-slurm')
-    lines = int(request.GET.get('lines', 100))
-    is_ajax = request.GET.get('ajax', '0') == '1'
+    # Get docker prefix from environment config
+    import json
+    import os
+    docker_prefix = 'dshpc'
+    try:
+        config_path = '/app/environment-config.json'
+        if os.path.exists(config_path):
+            with open(config_path, 'r') as f:
+                config = json.load(f)
+                docker_prefix = config.get('docker_stack_prefix', 'dshpc')
+    except:
+        pass
     
-    # Use OrderedDict to maintain order
+    # Build container names dynamically
     from collections import OrderedDict
     containers = OrderedDict([
-        ('dshpc-epiflare-slurm', 'Slurm Service'),
-        ('dshpc-epiflare-api', 'API Server'),
-        ('dshpc-epiflare-admin', 'Admin Panel')
+        (f'{docker_prefix}-slurm', 'Slurm Service'),
+        (f'{docker_prefix}-api', 'API Server'),
+        (f'{docker_prefix}-admin', 'Admin Panel')
     ])
+    
+    container_name = request.GET.get('container', f'{docker_prefix}-slurm')
+    lines = int(request.GET.get('lines', 100))
+    is_ajax = request.GET.get('ajax', '0') == '1'
     
     # Get logs using Docker SDK
     logs = ""
