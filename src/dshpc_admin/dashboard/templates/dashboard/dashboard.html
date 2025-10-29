@@ -2,6 +2,74 @@
 {% load dashboard_filters %}
 
 {% block content %}
+<!-- Environment Configuration -->
+{% if env_config %}
+<div class="card shadow-sm mb-4">
+    <div class="card-header bg-dark text-white">
+        <i class="bi bi-info-circle-fill"></i> Environment Information
+    </div>
+    <div class="card-body">
+        <div class="row">
+            <div class="col-md-6">
+                <div class="info-row">
+                    <div class="label">Environment Name</div>
+                    <div class="value"><strong>{{ env_config.environment_name }}</strong></div>
+                </div>
+                
+                <div class="info-row">
+                    <div class="label">Display Name</div>
+                    <div class="value">{{ env_config.display_name }}</div>
+                </div>
+                
+                <div class="info-row">
+                    <div class="label">Description</div>
+                    <div class="value">{{ env_config.description }}</div>
+                </div>
+                
+                {% if env_config.authors %}
+                <div class="info-row">
+                    <div class="label">Authors</div>
+                    <div class="value">
+                        {% for author in env_config.authors %}
+                            <span class="badge bg-primary me-1">{{ author }}</span>
+                        {% endfor %}
+                    </div>
+                </div>
+                {% endif %}
+            </div>
+            
+            <div class="col-md-6">
+                <div class="info-row">
+                    <div class="label">Docker Stack Prefix</div>
+                    <div class="value"><code>{{ env_config.docker_stack_prefix }}</code></div>
+                </div>
+                
+                <div class="info-row">
+                    <div class="label">API Port</div>
+                    <div class="value"><code>{{ env_config.default_api_port }}</code></div>
+                </div>
+                
+                <div class="info-row">
+                    <div class="label">Admin Port</div>
+                    <div class="value"><code>{{ env_config.default_admin_port }}</code></div>
+                </div>
+                
+                {% if env_config.base_repository %}
+                <div class="info-row">
+                    <div class="label">Base Repository</div>
+                    <div class="value">
+                        <a href="{{ env_config.base_repository }}" target="_blank" class="text-decoration-none">
+                            <i class="bi bi-github"></i> {{ env_config.base_repository }}
+                        </a>
+                    </div>
+                </div>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+</div>
+{% endif %}
+
 <!-- Stats Cards -->
 <div class="row g-4 mb-4">
     <div class="col-md-3">

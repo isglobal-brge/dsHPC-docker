@@ -36,7 +36,6 @@ def login_view(request):
 def logout_view(request):
     """Logout view."""
     request.session.flush()
-    messages.success(request, 'You have been logged out successfully.')
     return redirect('login')
 
 
@@ -45,8 +44,24 @@ def dashboard_home(request):
     """Main dashboard view."""
     stats = get_stats()
     
+    # Try to load environment-config.json
+    env_config = None
+    try:
+        import json
+        import os
+        # Config is mounted at /app/environment-config.json in container
+        config_path = '/app/environment-config.json'
+        
+        if os.path.exists(config_path):
+            with open(config_path, 'r') as f:
+                env_config = json.load(f)
+    except Exception as e:
+        # If config doesn't exist or can't be read, just continue without it
+        pass
+    
     context = {
         'stats': stats,
+        'env_config': env_config,
         'page_title': 'Dashboard'
     }
     

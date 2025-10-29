@@ -36,8 +36,6 @@
             padding: 0;
             z-index: 1000;
             box-shadow: 2px 0 10px rgba(0,0,0,0.1);
-            display: flex;
-            flex-direction: column;
         }
         
         .sidebar-header {
@@ -76,6 +74,11 @@
             background: rgba(102, 126, 234, 0.2);
             border-left-color: #667eea;
             font-weight: 500;
+        }
+        
+        .sidebar-nav .nav-link.text-danger:hover {
+            background: rgba(220, 53, 69, 0.1);
+            border-left-color: #dc3545;
         }
         
         .sidebar-nav .nav-link i {
@@ -562,13 +565,6 @@
         <div class="sidebar-header">
             <h4><i class="bi bi-hdd-network-fill"></i> dsHPC Admin</h4>
             <small class="text-white-50">High-Performance Computing</small>
-            {% if request.session.authenticated %}
-            <div class="mt-2">
-                <small class="text-white-50 d-block">
-                    <i class="bi bi-person-circle"></i> {{ request.session.username }}
-                </small>
-            </div>
-            {% endif %}
         </div>
         
         <nav class="sidebar-nav">
@@ -613,15 +609,14 @@
                         <i class="bi bi-terminal"></i> Logs
                     </a>
                 </li>
+                {% if request.session.authenticated %}
+                <li class="nav-item">
+                    <a class="nav-link text-danger" href="{% url 'logout' %}">
+                        <i class="bi bi-box-arrow-left"></i> Logout
+                    </a>
+                </li>
+                {% endif %}
             </ul>
-            
-            {% if request.session.authenticated %}
-            <div class="mt-auto p-3 border-top border-secondary">
-                <a href="{% url 'logout' %}" class="nav-link text-danger">
-                    <i class="bi bi-box-arrow-left"></i> Logout
-                </a>
-            </div>
-            {% endif %}
         </nav>
     </div>
 

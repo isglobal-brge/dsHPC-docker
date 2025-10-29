@@ -138,6 +138,7 @@ services:
       - ADMIN_PASSWORD=${ADMIN_PASSWORD:-admin}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./environment-config.json:/app/environment-config.json:ro
     networks:
       - __DOCKER_PREFIX__-internal-network
       - __DOCKER_PREFIX__-public-network
