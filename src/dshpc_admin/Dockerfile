@@ -9,12 +9,20 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy application
 COPY src/dshpc_admin/ .
 
-# Collect static files
-RUN python manage.py collectstatic --noinput || true
-
 # Expose port
 EXPOSE 8000
 
-# Run Django development server
-CMD ["python", "manage.py", "runserver", "0.0.0.0:8000"]
+# Create entrypoint script
+RUN echo '#!/bin/bash\n\
+set -e\n\
+echo "Running Django migrations..."\n\
+python manage.py migrate --noinput\n\
+echo "Collecting static files..."\n\
+python manage.py collectstatic --noinput || true\n\
+echo "Starting Django server..."\n\
+exec python manage.py runserver 0.0.0.0:8000\n\
+' > /entrypoint.sh && chmod +x /entrypoint.sh
+
+# Run entrypoint
+CMD ["/entrypoint.sh"]
 
