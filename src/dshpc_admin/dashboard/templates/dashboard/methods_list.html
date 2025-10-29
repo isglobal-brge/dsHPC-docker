@@ -1,6 +1,18 @@
 {% extends "base.html" %}
 {% load dashboard_filters %}
 
+{% block extra_css %}
+<!-- Highlight.js for syntax highlighting -->
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/vs2015.min.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/r.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/python.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/bash.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/javascript.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/json.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/yaml.min.js"></script>
+{% endblock %}
+
 {% block page_actions %}
 <div class="d-flex gap-2 align-items-center">
     <button class="btn btn-sm btn-outline-secondary" type="button" data-bs-toggle="collapse" data-bs-target="#filterPanel">
@@ -557,9 +569,15 @@
         
         let html = `
             <div class="mb-3">
-                <input type="text" class="form-control form-control-sm" id="unifiedSearch" 
-                       placeholder="Search files & code..." 
-                       onkeyup="unifiedSearch()" />
+                <div class="input-group input-group-sm">
+                    <input type="text" class="form-control" id="unifiedSearch" 
+                           placeholder="Search files & code..." 
+                           onkeyup="unifiedSearch()" />
+                    <button class="btn btn-outline-secondary" type="button" onclick="clearSearch()" 
+                            id="clearSearchBtn" style="display: none;">
+                        <i class="bi bi-x-lg"></i>
+                    </button>
+                </div>
                 <small class="text-muted" id="searchResults"></small>
             </div>
             <div class="list-group list-group-flush" id="fileList">
@@ -582,8 +600,21 @@
         return html;
     }
     
+    function clearSearch() {
+        document.getElementById('unifiedSearch').value = '';
+        unifiedSearch();
+    }
+    
     function unifiedSearch() {
         const search = document.getElementById('unifiedSearch').value.toLowerCase();
+        const clearBtn = document.getElementById('clearSearchBtn');
+        
+        // Show/hide clear button
+        if (search && search.trim() !== '') {
+            clearBtn.style.display = '';
+        } else {
+            clearBtn.style.display = 'none';
+        }
         
         // Ignore empty or whitespace-only searches
         if (!search || search.trim() === '') {
@@ -677,47 +708,86 @@
         const displayPath = filepath.split('/').slice(1).join('/') || filepath;
         const ext = filepath.includes('.') ? filepath.split('.').pop().toLowerCase() : '';
         
-        // Trim leading and trailing whitespace/newlines
+        // Aggressive trimming: handle JSON-encoded strings
         content = content.trim();
         
-        // Split by lines for processing
-        const lines = content.split('\n');
-        let processedLines = [];
-        
-        for (let line of lines) {
-            // Escape HTML entities in the line first
-            let processedLine = line.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-            
-            // Apply syntax highlighting for R
-            if (ext === 'r') {
-                // Check if it's a comment line
-                if (/^\s*#/.test(line)) {
-                    processedLine = `<span class="code-comment">${processedLine}</span>`;
-                } else {
-                    // Strings
-                    processedLine = processedLine.replace(/"([^"]*)"/g, '<span class="code-string">"$1"</span>');
-                    processedLine = processedLine.replace(/'([^']*)'/g, '<span class="code-string">\'$1\'</span>');
-                    // Numbers
-                    processedLine = processedLine.replace(/\b(\d+\.?\d*)\b/g, '<span class="code-number">$1</span>');
-                    // Keywords
-                    const keywords = ['function', 'if', 'else', 'for', 'while', 'return', 'library', 'require', 'TRUE', 'FALSE', 'NULL', 'NA', 'in', 'break', 'next'];
-                    keywords.forEach(kw => {
-                        const regex = new RegExp(`\\b${kw}\\b`, 'g');
-                        processedLine = processedLine.replace(regex, `<span class="code-keyword">${kw}</span>`);
-                    });
+        // Try to parse as JSON string if it looks like one
+        if ((content.startsWith('"') && content.endsWith('"')) || 
+            (content.startsWith("'") && content.endsWith("'"))) {
+            try {
+                // Try to parse as JSON (handles escaped characters)
+                const parsed = JSON.parse(content);
+                if (typeof parsed === 'string') {
+                    content = parsed;
                 }
+            } catch (e) {
+                // If JSON parse fails, just remove outer quotes
+                content = content.slice(1, -1);
             }
-            
-            // Apply search highlighting if active
-            if (window.currentSearch) {
-                const searchRegex = new RegExp(`(${escapeRegex(window.currentSearch)})`, 'gi');
-                processedLine = processedLine.replace(searchRegex, '<mark style="background: #ffeb3b; color: #000; font-weight: bold;">$1</mark>');
-            }
-            
-            processedLines.push(processedLine);
         }
         
-        const displayContent = processedLines.join('\n');
+        // Trim again after processing
+        content = content.trim();
+        
+        // Aggressive line-by-line trimming: remove multiple consecutive blank lines
+        // Keep single blank lines but remove doubles/triples
+        let lines = content.split('\n');
+        let cleanedLines = [];
+        let lastWasBlank = false;
+        
+        for (let line of lines) {
+            const isBlank = line.trim() === '';
+            
+            if (isBlank && lastWasBlank) {
+                // Skip consecutive blank lines
+                continue;
+            }
+            
+            cleanedLines.push(line);
+            lastWasBlank = isBlank;
+        }
+        
+        content = cleanedLines.join('\n').trim();
+        
+        // Map file extensions to highlight.js language names
+        const langMap = {
+            'r': 'r',
+            'py': 'python',
+            'sh': 'bash',
+            'js': 'javascript',
+            'json': 'json',
+            'yml': 'yaml',
+            'yaml': 'yaml'
+        };
+        
+        const language = langMap[ext] || 'plaintext';
+        
+        // If search is active, mark occurrences BEFORE syntax highlighting
+        let processedContent = content;
+        if (window.currentSearch) {
+            // Use unique placeholders that won't be affected by highlight.js
+            const searchRegex = new RegExp(`(${escapeRegex(window.currentSearch)})`, 'gi');
+            processedContent = processedContent.replace(searchRegex, '⟪MARK_START⟫$1⟪MARK_END⟫');
+        }
+        
+        // Apply syntax highlighting with highlight.js
+        let highlightedCode;
+        try {
+            highlightedCode = hljs.highlight(processedContent, { language: language }).value;
+        } catch (e) {
+            // Fallback to escaped HTML if highlighting fails
+            highlightedCode = processedContent.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        }
+        
+        // Replace placeholders with actual mark tags
+        let displayContent = highlightedCode;
+        if (window.currentSearch) {
+            displayContent = displayContent.replace(/⟪MARK_START⟫/g, '<mark style="background: #ffeb3b; color: #000; font-weight: bold;">');
+            displayContent = displayContent.replace(/⟪MARK_END⟫/g, '</mark>');
+        }
+        
+        // Final aggressive trim of the HTML string itself
+        displayContent = displayContent.trim();
         
         // Count occurrences after rendering
         const tempDiv = document.createElement('div');
@@ -728,29 +798,30 @@
         let navButtons = '';
         if (window.currentSearch && occurrenceCount > 0) {
             navButtons = `
-                <div class="d-flex align-items-center gap-2">
-                    <small class="text-muted">${occurrenceCount} match(es)</small>
-                    <div class="btn-group btn-group-sm">
-                        <button class="btn btn-outline-secondary" onclick="prevOccurrence()" title="Previous">
-                            <i class="bi bi-chevron-up"></i>
-                        </button>
-                        <button class="btn btn-outline-secondary" onclick="nextOccurrence()" title="Next">
-                            <i class="bi bi-chevron-down"></i>
-                        </button>
-                    </div>
-                    <small class="text-muted" id="occurrenceCounter">1 / ${occurrenceCount}</small>
+                <small class="text-muted me-2">${occurrenceCount} match(es)</small>
+                <div class="btn-group btn-group-sm me-2">
+                    <button class="btn btn-outline-secondary" onclick="prevOccurrence()" title="Previous">
+                        <i class="bi bi-chevron-up"></i>
+                    </button>
+                    <button class="btn btn-outline-secondary" onclick="nextOccurrence()" title="Next">
+                        <i class="bi bi-chevron-down"></i>
+                    </button>
                 </div>
+                <small class="text-muted me-2" id="occurrenceCounter">1 / ${occurrenceCount}</small>
             `;
         }
         
         document.getElementById('codeViewer').innerHTML = `
             <div class="mb-3 d-flex justify-content-between align-items-center">
                 <h6><i class="bi bi-file-code"></i> ${displayPath}</h6>
-                ${navButtons}
+                <div class="d-flex align-items-center">
+                    ${navButtons}
+                    <button class="btn btn-sm btn-outline-secondary" onclick="copyCode()" title="Copy to clipboard">
+                        <i class="bi bi-clipboard"></i>
+                    </button>
+                </div>
             </div>
-            <div class="code-display terminal" id="codeContent" style="max-height: calc(70vh - 100px); white-space: pre; font-family: 'Courier New', monospace; font-size: 13px; line-height: 1.5; overflow-x: auto;">
-                ${displayContent}
-            </div>
+            <div class="code-display terminal" id="codeContent" style="max-height: calc(70vh - 100px); white-space: pre; font-family: 'Courier New', monospace; font-size: 13px; line-height: 1.5; overflow-x: auto;">${displayContent}</div>
         `;
         
         // Scroll to first occurrence if search is active
@@ -789,6 +860,53 @@
             // Update counter
             document.getElementById('occurrenceCounter').textContent = `${window.currentOccurrenceIndex + 1} / ${marks.length}`;
         }
+    }
+    
+    function copyCode() {
+        // Get the current file's original content (without HTML)
+        const currentFilePath = Object.keys(window.currentFiles)[0];
+        if (!currentFilePath) return;
+        
+        let content = window.currentFiles[currentFilePath];
+        
+        // Apply same cleaning as showFile
+        content = content.trim();
+        
+        // Remove JSON encoding if present
+        if ((content.startsWith('"') && content.endsWith('"')) || 
+            (content.startsWith("'") && content.endsWith("'"))) {
+            try {
+                const parsed = JSON.parse(content);
+                if (typeof parsed === 'string') {
+                    content = parsed;
+                }
+            } catch (e) {
+                content = content.slice(1, -1);
+            }
+        }
+        
+        content = content.trim();
+        
+        // Copy to clipboard
+        navigator.clipboard.writeText(content).then(() => {
+            // Visual feedback
+            const btn = event.target.closest('button');
+            const icon = btn.querySelector('i');
+            const originalClass = icon.className;
+            
+            icon.className = 'bi bi-check-lg';
+            btn.classList.add('btn-success');
+            btn.classList.remove('btn-outline-secondary');
+            
+            setTimeout(() => {
+                icon.className = originalClass;
+                btn.classList.remove('btn-success');
+                btn.classList.add('btn-outline-secondary');
+            }, 1500);
+        }).catch(err => {
+            console.error('Failed to copy:', err);
+            alert('Failed to copy to clipboard');
+        });
     }
     
     // Show/hide inactive toggle WITHOUT page reload
