@@ -73,6 +73,12 @@ MONGO_METHODS_DB = os.environ.get('MONGO_METHODS_DB', 'dshpc-methods')
 # Slurm API
 SLURM_API_URL = os.environ.get('SLURM_API_URL', 'http://localhost:8000')
 
+# Admin authentication
+ADMIN_PASSWORD = os.environ.get('ADMIN_PASSWORD', 'admin')  # Default for development
+ADMIN_USERNAME = 'admin'  # Fixed username
+LOGIN_URL = '/login/'
+LOGIN_REDIRECT_URL = '/'
+
 # Password validation
 AUTH_PASSWORD_VALIDATORS = [
     {

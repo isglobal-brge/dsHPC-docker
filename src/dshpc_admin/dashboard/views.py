@@ -1,13 +1,46 @@
 """
 Views for the dashboard app.
 """
-from django.shortcuts import render
+from django.shortcuts import render, redirect
 from django.http import JsonResponse
+from django.urls import reverse
+from django.contrib import messages
 from .db_connections import MongoDBConnections, get_stats
+from .auth import login_required_simple
 import requests
 from django.conf import settings
 
 
+def login_view(request):
+    """Login view - only requires password."""
+    if request.session.get('authenticated', False):
+        return redirect('dashboard')
+    
+    if request.method == 'POST':
+        password = request.POST.get('password', '')
+        
+        if password == settings.ADMIN_PASSWORD:
+            # Set session as authenticated
+            request.session['authenticated'] = True
+            request.session['username'] = settings.ADMIN_USERNAME
+            
+            # Redirect to next URL or dashboard
+            next_url = request.GET.get('next', reverse('dashboard'))
+            return redirect(next_url)
+        else:
+            messages.error(request, 'Invalid password. Please try again.')
+    
+    return render(request, 'dashboard/login.html', {'page_title': 'Login'})
+
+
+def logout_view(request):
+    """Logout view."""
+    request.session.flush()
+    messages.success(request, 'You have been logged out successfully.')
+    return redirect('login')
+
+
+@login_required_simple
 def dashboard_home(request):
     """Main dashboard view."""
     stats = get_stats()
@@ -20,6 +53,7 @@ def dashboard_home(request):
     return render(request, 'dashboard/dashboard.html', context)
 
 
+@login_required_simple
 def files_list(request):
     """List all files with advanced filtering."""
     from datetime import datetime
@@ -135,6 +169,7 @@ def files_list(request):
     return render(request, 'dashboard/files_list.html', context)
 
 
+@login_required_simple
 def jobs_list(request):
     """List all jobs with advanced filtering."""
     from datetime import datetime
@@ -303,6 +338,7 @@ def jobs_list(request):
     return render(request, 'dashboard/jobs_list.html', context)
 
 
+@login_required_simple
 def meta_jobs_list(request):
     """List all meta-jobs with advanced filtering."""
     from datetime import datetime
@@ -462,6 +498,7 @@ def meta_jobs_list(request):
     return render(request, 'dashboard/meta_jobs_list.html', context)
 
 
+@login_required_simple
 def methods_list(request):
     """List all methods with filtering and pagination."""
     methods_db = MongoDBConnections.get_methods_db()
@@ -553,6 +590,7 @@ def methods_list(request):
     return render(request, 'dashboard/methods_list.html', context)
 
 
+@login_required_simple
 def slurm_queue(request):
     """Show Slurm queue status."""
     try:
@@ -582,6 +620,7 @@ def slurm_queue(request):
     return render(request, 'dashboard/slurm_queue.html', context)
 
 
+@login_required_simple
 def environment_info(request):
     """Show environment information from Slurm container."""
     import docker
@@ -589,6 +628,17 @@ def environment_info(request):
     from django.utils import timezone
     from datetime import timedelta
     
+    # Check if this is an AJAX request for data
+    is_ajax = request.GET.get('ajax', '0') == '1'
+    
+    if not is_ajax:
+        # Return loading page immediately
+        context = {
+            'page_title': 'Environment'
+        }
+        return render(request, 'dashboard/environment.html', context)
+    
+    # AJAX request - fetch actual data
     container_name = 'dshpc-epiflare-slurm'
     cache_key = 'environment_info_data'
     cache_timeout = 5  # seconds
@@ -604,11 +654,7 @@ def environment_info(request):
             cached_data['cached'] = True
             cached_data['cache_age'] = int(time_since_update)
             cached_data['next_refresh'] = int(cache_timeout - time_since_update)
-            context = {
-                'env_data': cached_data,
-                'page_title': 'Environment'
-            }
-            return render(request, 'dashboard/environment.html', context)
+            return JsonResponse(cached_data)
     
     # Otherwise, fetch fresh data
     env_data = {
@@ -731,14 +777,11 @@ def environment_info(request):
     cache.set(cache_key, env_data, timeout=cache_timeout)
     cache.set(f'{cache_key}_timestamp', timezone.now(), timeout=cache_timeout)
     
-    context = {
-        'env_data': env_data,
-        'page_title': 'Environment'
-    }
-    
-    return render(request, 'dashboard/environment.html', context)
+    # Return JSON for AJAX request
+    return JsonResponse(env_data)
 
 
+@login_required_simple
 def logs_viewer(request):
     """View container and job logs."""
     import docker

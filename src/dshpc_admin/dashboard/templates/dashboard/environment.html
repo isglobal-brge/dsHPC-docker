@@ -2,129 +2,199 @@
 {% load dashboard_filters %}
 
 {% block page_actions %}
-{% if env_data.cached %}
-<small class="text-muted">
-    <i class="bi bi-clock-history"></i> Cached {{ env_data.cache_age }}s ago
+<small class="text-muted" id="cacheStatus" style="display: none;">
+    <i class="bi bi-clock-history"></i> <span id="cacheAge"></span>
 </small>
-{% endif %}
 {% endblock %}
 
 {% block content %}
-{% if env_data.error %}
-<div class="alert alert-danger">
-    <i class="bi bi-exclamation-triangle-fill"></i> <strong>Error:</strong> {{ env_data.error }}
-</div>
-{% else %}
-
-<!-- System Resources -->
-<div class="card shadow-sm mb-4">
-    <div class="card-header bg-dark text-white">
-        <i class="bi bi-hdd"></i> System Resources
+<!-- Loading State -->
+<div id="loadingState">
+    <div class="card shadow-sm">
+        <div class="card-body text-center py-5">
+            <div class="spinner-border text-primary mb-3" style="width: 3rem; height: 3rem;" role="status">
+                <span class="visually-hidden">Loading...</span>
+            </div>
+            <h5 class="text-muted">Loading Environment Information...</h5>
+            <p class="text-muted small">Gathering system data from containers</p>
+        </div>
     </div>
-    <div class="card-body">
-        {% if env_data.system.error %}
-        <div class="alert alert-danger small">{{ env_data.system.error }}</div>
-        {% else %}
-        <div class="row g-4">
-            <!-- CPUs -->
-            <div class="col-md-4">
-                <div class="card bg-light border-0 h-100">
-                    <div class="card-body text-center">
-                        <i class="bi bi-cpu fs-1 text-primary mb-3 d-block"></i>
-                        <h3 class="mb-1">{{ env_data.system.cpus }}</h3>
-                        <p class="text-muted mb-0">CPU Cores</p>
+</div>
+
+<!-- Content Container (hidden initially) -->
+<div id="contentContainer" style="display: none;">
+    <div id="errorContainer"></div>
+    <div id="envContent"></div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+// Fetch environment data
+function loadEnvironmentData() {
+    fetch('/environment/?ajax=1')
+        .then(r => r.json())
+        .then(data => {
+            // Hide loading, show content
+            document.getElementById('loadingState').style.display = 'none';
+            document.getElementById('contentContainer').style.display = 'block';
+            
+            // Show cache status if applicable
+            if (data.cached) {
+                document.getElementById('cacheStatus').style.display = 'inline';
+                document.getElementById('cacheAge').textContent = `Cached ${data.cache_age}s ago`;
+            }
+            
+            // Check for errors
+            if (data.error) {
+                document.getElementById('errorContainer').innerHTML = `
+                    <div class="alert alert-danger">
+                        <i class="bi bi-exclamation-triangle-fill"></i> <strong>Error:</strong> ${data.error}
+                    </div>
+                `;
+                return;
+            }
+            
+            // Build the content
+            let html = '';
+            
+            // System Resources Card
+            html += buildSystemResourcesCard(data.system);
+            
+            // Python Environment Card
+            html += buildPythonCard(data.python);
+            
+            // R Environment Card
+            html += buildRCard(data.r);
+            
+            // System Environment Card
+            html += buildSystemCard(data.system);
+            
+            // Slurm Configuration Card
+            html += buildSlurmCard(data.slurm);
+            
+            document.getElementById('envContent').innerHTML = html;
+            
+            // Apply syntax highlighting
+            applySyntaxHighlighting();
+        })
+        .catch(e => {
+            document.getElementById('loadingState').style.display = 'none';
+            document.getElementById('contentContainer').style.display = 'block';
+            document.getElementById('errorContainer').innerHTML = `
+                <div class="alert alert-danger">
+                    <i class="bi bi-exclamation-triangle-fill"></i> <strong>Error loading data:</strong> ${e.message}
+                </div>
+            `;
+        });
+}
+
+function buildSystemResourcesCard(system) {
+    if (system.error) return '';
+    
+    return `
+    <div class="card shadow-sm mb-4">
+        <div class="card-header bg-dark text-white">
+            <i class="bi bi-hdd"></i> System Resources
+        </div>
+        <div class="card-body">
+            <div class="row g-4">
+                <div class="col-md-4">
+                    <div class="card bg-light border-0 h-100">
+                        <div class="card-body text-center">
+                            <i class="bi bi-cpu fs-1 text-primary mb-3 d-block"></i>
+                            <h3 class="mb-1">${system.cpus || 'N/A'}</h3>
+                            <p class="text-muted mb-0">CPU Cores</p>
+                        </div>
                     </div>
                 </div>
-            </div>
-            
-            <!-- Memory -->
-            <div class="col-md-4">
-                <div class="card bg-light border-0 h-100">
-                    <div class="card-body">
-                        <div class="d-flex align-items-center mb-2">
-                            <i class="bi bi-memory fs-4 text-success me-2"></i>
-                            <h6 class="mb-0">Memory</h6>
-                        </div>
-                        {% if env_data.system.mem_total %}
-                        <div class="mb-2">
-                            <div class="d-flex justify-content-between small mb-1">
-                                <span>Used: {{ env_data.system.mem_used|pretty_bytes }}</span>
-                                <span>{{ env_data.system.mem_used_pct }}%</span>
+                
+                <div class="col-md-4">
+                    <div class="card bg-light border-0 h-100">
+                        <div class="card-body">
+                            <div class="d-flex align-items-center mb-2">
+                                <i class="bi bi-memory fs-4 text-success me-2"></i>
+                                <h6 class="mb-0">Memory</h6>
                             </div>
-                            <div class="progress" style="height: 20px;">
-                                <div class="progress-bar bg-success" style="width: {{ env_data.system.mem_used_pct }}%">
-                                    {{ env_data.system.mem_used_pct }}%
+                            ${system.mem_total ? `
+                            <div class="mb-2">
+                                <div class="d-flex justify-content-between small mb-1">
+                                    <span>Used: ${formatBytes(system.mem_used)}</span>
+                                    <span>${system.mem_used_pct}%</span>
+                                </div>
+                                <div class="progress" style="height: 20px;">
+                                    <div class="progress-bar bg-success" style="width: ${system.mem_used_pct}%">
+                                        ${system.mem_used_pct}%
+                                    </div>
+                                </div>
+                                <div class="d-flex justify-content-between small text-muted mt-1">
+                                    <span>Total: ${formatBytes(system.mem_total)}</span>
+                                    <span>Free: ${formatBytes(system.mem_available)}</span>
                                 </div>
                             </div>
-                            <div class="d-flex justify-content-between small text-muted mt-1">
-                                <span>Total: {{ env_data.system.mem_total|pretty_bytes }}</span>
-                                <span>Free: {{ env_data.system.mem_available|pretty_bytes }}</span>
-                            </div>
+                            ` : '<p class="text-muted small">No data</p>'}
                         </div>
-                        {% endif %}
                     </div>
                 </div>
-            </div>
-            
-            <!-- Disk -->
-            <div class="col-md-4">
-                <div class="card bg-light border-0 h-100">
-                    <div class="card-body">
-                        <div class="d-flex align-items-center mb-2">
-                            <i class="bi bi-hdd-fill fs-4 text-info me-2"></i>
-                            <h6 class="mb-0">Disk Usage</h6>
-                        </div>
-                        {% if env_data.system.disk_total %}
-                        <div class="mb-2">
-                            <div class="d-flex justify-content-between small mb-1">
-                                <span>Used: {{ env_data.system.disk_used|pretty_bytes }}</span>
-                                <span>{{ env_data.system.disk_used_pct }}%</span>
+                
+                <div class="col-md-4">
+                    <div class="card bg-light border-0 h-100">
+                        <div class="card-body">
+                            <div class="d-flex align-items-center mb-2">
+                                <i class="bi bi-hdd-fill fs-4 text-info me-2"></i>
+                                <h6 class="mb-0">Disk Usage</h6>
                             </div>
-                            <div class="progress" style="height: 20px;">
-                                <div class="progress-bar {% if env_data.system.disk_used_pct > 80 %}bg-danger{% elif env_data.system.disk_used_pct > 60 %}bg-warning{% else %}bg-info{% endif %}" 
-                                     style="width: {{ env_data.system.disk_used_pct }}%">
-                                    {{ env_data.system.disk_used_pct }}%
+                            ${system.disk_total ? `
+                            <div class="mb-2">
+                                <div class="d-flex justify-content-between small mb-1">
+                                    <span>Used: ${formatBytes(system.disk_used)}</span>
+                                    <span>${system.disk_used_pct}%</span>
+                                </div>
+                                <div class="progress" style="height: 20px;">
+                                    <div class="progress-bar ${system.disk_used_pct > 80 ? 'bg-danger' : system.disk_used_pct > 60 ? 'bg-warning' : 'bg-info'}" 
+                                         style="width: ${system.disk_used_pct}%">
+                                        ${system.disk_used_pct}%
+                                    </div>
+                                </div>
+                                <div class="d-flex justify-content-between small text-muted mt-1">
+                                    <span>Total: ${formatBytes(system.disk_total)}</span>
+                                    <span>Free: ${formatBytes(system.disk_available)}</span>
                                 </div>
                             </div>
-                            <div class="d-flex justify-content-between small text-muted mt-1">
-                                <span>Total: {{ env_data.system.disk_total|pretty_bytes }}</span>
-                                <span>Free: {{ env_data.system.disk_available|pretty_bytes }}</span>
-                            </div>
+                            ` : '<p class="text-muted small">No data</p>'}
                         </div>
-                        {% endif %}
                     </div>
                 </div>
             </div>
         </div>
-        {% endif %}
     </div>
-</div>
+    `;
+}
 
-<!-- Python Environment -->
-<div class="card shadow-sm mb-4">
-    <div class="card-header bg-dark text-white d-flex justify-content-between align-items-center">
-        <span><i class="bi bi-file-code"></i> Python Environment</span>
-        {% if env_data.python.packages %}
-        <span class="badge bg-light text-dark">{{ env_data.python.packages|length }} packages</span>
-        {% endif %}
-    </div>
-    <div class="card-body">
-        {% if env_data.python.error %}
-        <div class="alert alert-danger small">{{ env_data.python.error }}</div>
-        {% else %}
-        <div class="info-row">
-            <div class="label">Python Version</div>
-            <div class="value"><code>{{ env_data.python.version }}</code></div>
+function buildPythonCard(python) {
+    if (python.error) {
+        return `
+        <div class="card shadow-sm mb-4">
+            <div class="card-header bg-dark text-white">
+                <i class="bi bi-file-code"></i> Python Environment
+            </div>
+            <div class="card-body">
+                <div class="alert alert-danger small">${python.error}</div>
+            </div>
         </div>
-        
-        {% if env_data.python.packages %}
+        `;
+    }
+    
+    let packagesHtml = '';
+    if (python.packages && python.packages.length > 0) {
+        packagesHtml = `
         <div class="mt-4">
             <h6 class="mb-3"><i class="bi bi-box-seam"></i> Installed Packages</h6>
-            <div class="accordion sub-accordion" id="pythonPackagesAccordion">
+            <div class="accordion sub-accordion">
                 <div class="accordion-item">
                     <h2 class="accordion-header">
                         <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#pythonPackages">
-                            <span>View all {{ env_data.python.packages|length }} Python packages</span>
+                            <span>View all ${python.packages.length} Python packages</span>
                         </button>
                     </h2>
                     <div id="pythonPackages" class="accordion-collapse collapse">
@@ -141,12 +211,12 @@
                                         </tr>
                                     </thead>
                                     <tbody>
-                                        {% for pkg in env_data.python.packages %}
+                                        ${python.packages.map(pkg => `
                                         <tr>
-                                            <td><code>{{ pkg.name }}</code></td>
-                                            <td>{{ pkg.version }}</td>
+                                            <td><code>${pkg.name}</code></td>
+                                            <td>${pkg.version}</td>
                                         </tr>
-                                        {% endfor %}
+                                        `).join('')}
                                     </tbody>
                                 </table>
                             </div>
@@ -155,36 +225,50 @@
                 </div>
             </div>
         </div>
-        {% endif %}
-        {% endif %}
-    </div>
-</div>
-
-<!-- R Environment -->
-<div class="card shadow-sm mb-4">
-    <div class="card-header bg-dark text-white d-flex justify-content-between align-items-center">
-        <span><i class="bi bi-bar-chart-fill"></i> R Environment</span>
-        {% if env_data.r.packages %}
-        <span class="badge bg-light text-dark">{{ env_data.r.packages|length }} packages</span>
-        {% endif %}
-    </div>
-    <div class="card-body">
-        {% if env_data.r.error %}
-        <div class="alert alert-danger small">{{ env_data.r.error }}</div>
-        {% else %}
-        <div class="info-row">
-            <div class="label">R Version</div>
-            <div class="value"><code>{{ env_data.r.version }}</code></div>
+        `;
+    }
+    
+    return `
+    <div class="card shadow-sm mb-4">
+        <div class="card-header bg-dark text-white d-flex justify-content-between align-items-center">
+            <span><i class="bi bi-file-code"></i> Python Environment</span>
+            ${python.packages ? `<span class="badge bg-light text-dark">${python.packages.length} packages</span>` : ''}
         </div>
-        
-        {% if env_data.r.packages %}
+        <div class="card-body">
+            <div class="info-row">
+                <div class="label">Python Version</div>
+                <div class="value"><code>${python.version || 'N/A'}</code></div>
+            </div>
+            ${packagesHtml}
+        </div>
+    </div>
+    `;
+}
+
+function buildRCard(r) {
+    if (r.error) {
+        return `
+        <div class="card shadow-sm mb-4">
+            <div class="card-header bg-dark text-white">
+                <i class="bi bi-bar-chart-fill"></i> R Environment
+            </div>
+            <div class="card-body">
+                <div class="alert alert-danger small">${r.error}</div>
+            </div>
+        </div>
+        `;
+    }
+    
+    let packagesHtml = '';
+    if (r.packages && r.packages.length > 0) {
+        packagesHtml = `
         <div class="mt-4">
             <h6 class="mb-3"><i class="bi bi-box-seam"></i> Installed Packages</h6>
-            <div class="accordion sub-accordion" id="rPackagesAccordion">
+            <div class="accordion sub-accordion">
                 <div class="accordion-item">
                     <h2 class="accordion-header">
                         <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#rPackages">
-                            <span>View all {{ env_data.r.packages|length }} R packages</span>
+                            <span>View all ${r.packages.length} R packages</span>
                         </button>
                     </h2>
                     <div id="rPackages" class="accordion-collapse collapse">
@@ -201,12 +285,12 @@
                                         </tr>
                                     </thead>
                                     <tbody>
-                                        {% for pkg in env_data.r.packages %}
+                                        ${r.packages.map(pkg => `
                                         <tr>
-                                            <td><code>{{ pkg.Package }}</code></td>
-                                            <td>{{ pkg.Version }}</td>
+                                            <td><code>${pkg.Package}</code></td>
+                                            <td>${pkg.Version}</td>
                                         </tr>
-                                        {% endfor %}
+                                        `).join('')}
                                     </tbody>
                                 </table>
                             </div>
@@ -215,53 +299,62 @@
                 </div>
             </div>
         </div>
-        {% endif %}
-        {% endif %}
+        `;
+    }
+    
+    return `
+    <div class="card shadow-sm mb-4">
+        <div class="card-header bg-dark text-white d-flex justify-content-between align-items-center">
+            <span><i class="bi bi-bar-chart-fill"></i> R Environment</span>
+            ${r.packages ? `<span class="badge bg-light text-dark">${r.packages.length} packages</span>` : ''}
+        </div>
+        <div class="card-body">
+            <div class="info-row">
+                <div class="label">R Version</div>
+                <div class="value"><code>${r.version || 'N/A'}</code></div>
+            </div>
+            ${packagesHtml}
+        </div>
     </div>
-</div>
+    `;
+}
 
-<!-- System Packages (APT) -->
-<div class="card shadow-sm mb-4">
-    <div class="card-header bg-dark text-white d-flex justify-content-between align-items-center">
-        <span><i class="bi bi-boxes"></i> System Environment</span>
-        {% if env_data.system.apt_packages_count %}
-        <span class="badge bg-light text-dark">{{ env_data.system.apt_packages_count }} packages</span>
-        {% endif %}
-    </div>
-    <div class="card-body">
-        {% if env_data.system.os_name or env_data.system.kernel %}
+function buildSystemCard(system) {
+    let osHtml = '';
+    if (system.os_name || system.kernel) {
+        osHtml = `
         <div class="mb-4">
             <h6 class="mb-3"><i class="bi bi-ubuntu"></i> Operating System</h6>
-            
-            {% if env_data.system.os_name %}
+            ${system.os_name ? `
             <div class="info-row">
                 <div class="label">OS Version</div>
-                <div class="value"><code>{{ env_data.system.os_name }}</code></div>
+                <div class="value"><code>${system.os_name}</code></div>
             </div>
-            {% endif %}
-            
-            {% if env_data.system.kernel %}
+            ` : ''}
+            ${system.kernel ? `
             <div class="info-row">
                 <div class="label">Kernel</div>
-                <div class="value"><code>{{ env_data.system.kernel }}</code></div>
+                <div class="value"><code>${system.kernel}</code></div>
             </div>
-            {% endif %}
-            
-            {% if env_data.system.architecture %}
+            ` : ''}
+            ${system.architecture ? `
             <div class="info-row">
                 <div class="label">Architecture</div>
-                <div class="value"><code>{{ env_data.system.architecture }}</code></div>
+                <div class="value"><code>${system.architecture}</code></div>
             </div>
-            {% endif %}
+            ` : ''}
         </div>
-        {% endif %}
-        
-        {% if env_data.system.apt_packages %}
-        <div class="accordion sub-accordion" id="aptPackagesAccordion">
+        `;
+    }
+    
+    let aptHtml = '';
+    if (system.apt_packages && system.apt_packages.length > 0) {
+        aptHtml = `
+        <div class="accordion sub-accordion">
             <div class="accordion-item">
                 <h2 class="accordion-header">
                     <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#aptPackages">
-                        <span>View all {{ env_data.system.apt_packages|length }} APT packages</span>
+                        <span>View all ${system.apt_packages.length} APT packages</span>
                     </button>
                 </h2>
                 <div id="aptPackages" class="accordion-collapse collapse">
@@ -278,12 +371,12 @@
                                     </tr>
                                 </thead>
                                 <tbody>
-                                    {% for pkg in env_data.system.apt_packages %}
+                                    ${system.apt_packages.map(pkg => `
                                     <tr>
-                                        <td><code>{{ pkg.name }}</code></td>
-                                        <td>{{ pkg.version }}</td>
+                                        <td><code>${pkg.name}</code></td>
+                                        <td>${pkg.version}</td>
                                     </tr>
-                                    {% endfor %}
+                                    `).join('')}
                                 </tbody>
                             </table>
                         </div>
@@ -291,87 +384,97 @@
                 </div>
             </div>
         </div>
-        {% endif %}
-    </div>
-</div>
-
-<!-- Slurm Configuration -->
-<div class="card shadow-sm mb-4">
-    <div class="card-header bg-dark text-white">
-        <i class="bi bi-cpu"></i> Slurm Configuration
-    </div>
-    <div class="card-body">
-        {% if env_data.slurm.error %}
-        <div class="alert alert-danger small">{{ env_data.slurm.error }}</div>
-        {% else %}
-        {% if env_data.slurm.version %}
-        <div class="info-row">
-            <div class="label">Slurm Version</div>
-            <div class="value"><code>{{ env_data.slurm.version }}</code></div>
-        </div>
-        {% endif %}
-        
-        {% if env_data.slurm.config %}
-        <div class="mt-4">
-            <h6 class="mb-3"><i class="bi bi-file-text"></i> Configuration File (slurm.conf)</h6>
-            <div class="terminal" style="max-height: 500px;" id="slurmConfig">{{ env_data.slurm.config }}</div>
-        </div>
-        {% endif %}
-        
-        {% if env_data.slurm.node_info %}
-        <div class="mt-4">
-            <h6 class="mb-3"><i class="bi bi-hdd-network"></i> Node Information</h6>
-            <div class="terminal" style="max-height: 400px;" id="nodeInfo">{{ env_data.slurm.node_info }}</div>
-        </div>
-        {% endif %}
-        {% endif %}
-    </div>
-</div>
-{% endif %}
-{% endblock %}
-
-{% block extra_js %}
-<script>
-    // Filter packages function
-    function filterPackages(searchId, tableId) {
-        const input = document.getElementById(searchId);
-        const filter = input.value.toLowerCase();
-        const table = document.getElementById(tableId);
-        const rows = table.getElementsByTagName('tbody')[0].getElementsByTagName('tr');
-        
-        let visibleCount = 0;
-        for (let i = 0; i < rows.length; i++) {
-            const cells = rows[i].getElementsByTagName('td');
-            let found = false;
-            
-            for (let j = 0; j < cells.length; j++) {
-                const cellText = cells[j].textContent || cells[j].innerText;
-                if (cellText.toLowerCase().indexOf(filter) > -1) {
-                    found = true;
-                    break;
-                }
-            }
-            
-            if (found) {
-                rows[i].style.display = '';
-                visibleCount++;
-            } else {
-                rows[i].style.display = 'none';
-            }
-        }
+        `;
     }
     
+    return `
+    <div class="card shadow-sm mb-4">
+        <div class="card-header bg-dark text-white d-flex justify-content-between align-items-center">
+            <span><i class="bi bi-boxes"></i> System Environment</span>
+            ${system.apt_packages_count ? `<span class="badge bg-light text-dark">${system.apt_packages_count} packages</span>` : ''}
+        </div>
+        <div class="card-body">
+            ${osHtml}
+            ${aptHtml}
+        </div>
+    </div>
+    `;
+}
+
+function buildSlurmCard(slurm) {
+    if (slurm.error) {
+        return `
+        <div class="card shadow-sm mb-4">
+            <div class="card-header bg-dark text-white">
+                <i class="bi bi-cpu"></i> Slurm Configuration
+            </div>
+            <div class="card-body">
+                <div class="alert alert-danger small">${slurm.error}</div>
+            </div>
+        </div>
+        `;
+    }
+    
+    return `
+    <div class="card shadow-sm mb-4">
+        <div class="card-header bg-dark text-white">
+            <i class="bi bi-cpu"></i> Slurm Configuration
+        </div>
+        <div class="card-body">
+            ${slurm.version ? `
+            <div class="info-row">
+                <div class="label">Slurm Version</div>
+                <div class="value"><code>${slurm.version}</code></div>
+            </div>
+            ` : ''}
+            
+            ${slurm.config ? `
+            <div class="mt-4">
+                <h6 class="mb-3"><i class="bi bi-file-text"></i> Configuration File (slurm.conf)</h6>
+                <div class="terminal" style="max-height: 500px;" id="slurmConfig">${escapeHtml(slurm.config)}</div>
+            </div>
+            ` : ''}
+            
+            ${slurm.node_info ? `
+            <div class="mt-4">
+                <h6 class="mb-3"><i class="bi bi-hdd-network"></i> Node Information</h6>
+                <div class="terminal" style="max-height: 400px;" id="nodeInfo">${escapeHtml(slurm.node_info)}</div>
+            </div>
+            ` : ''}
+        </div>
+    </div>
+    `;
+}
+
+function formatBytes(bytes) {
+    const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+    let size = bytes;
+    let unitIndex = 0;
+    
+    while (size >= 1024 && unitIndex < units.length - 1) {
+        size /= 1024;
+        unitIndex++;
+    }
+    
+    return size.toFixed(2) + ' ' + units[unitIndex];
+}
+
+function escapeHtml(text) {
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
+}
+
+function applySyntaxHighlighting() {
     // Syntax highlight slurm.conf
     const configElement = document.getElementById('slurmConfig');
     if (configElement) {
         let configText = configElement.textContent;
         
-        // Highlight comments (lines starting with #)
         configText = configText.split('\n').map(line => {
             if (line.trim().startsWith('#')) {
                 return `<span class="ansi-green">${line}</span>`;
             }
-            // Highlight key=value pairs
             return line.replace(/^(\w+)=(.+)$/, '<span class="ansi-cyan">$1</span>=<span class="ansi-yellow">$2</span>');
         }).join('\n');
         
@@ -383,13 +486,37 @@
     if (nodeInfoElement) {
         let nodeText = nodeInfoElement.textContent;
         
-        // Highlight key=value pairs
         nodeText = nodeText.split('\n').map(line => {
-            // Highlight keys before = sign
             return line.replace(/(\w+)=([^\s]+)/g, '<span class="ansi-cyan">$1</span>=<span class="ansi-yellow">$2</span>');
         }).join('\n');
         
         nodeInfoElement.innerHTML = nodeText;
     }
+}
+
+function filterPackages(searchId, tableId) {
+    const input = document.getElementById(searchId);
+    const filter = input.value.toLowerCase();
+    const table = document.getElementById(tableId);
+    const rows = table.getElementsByTagName('tbody')[0].getElementsByTagName('tr');
+    
+    for (let i = 0; i < rows.length; i++) {
+        const cells = rows[i].getElementsByTagName('td');
+        let found = false;
+        
+        for (let j = 0; j < cells.length; j++) {
+            const cellText = cells[j].textContent || cells[j].innerText;
+            if (cellText.toLowerCase().indexOf(filter) > -1) {
+                found = true;
+                break;
+            }
+        }
+        
+        rows[i].style.display = found ? '' : 'none';
+    }
+}
+
+// Load data on page load
+loadEnvironmentData();
 </script>
 {% endblock %}

@@ -30,6 +30,7 @@ DISPLAY_NAME=$(get_config_value "display_name")
 DOCKER_PREFIX=$(get_config_value "docker_stack_prefix")
 BASE_REPO=$(get_config_value "base_repository")
 DEFAULT_PORT=$(get_config_value "default_api_port")
+DEFAULT_ADMIN_PORT=$(get_config_value "default_admin_port")
 DESCRIPTION=$(get_config_value "description")
 
 # Fallback values if config file is missing or malformed
@@ -38,6 +39,7 @@ DISPLAY_NAME=${DISPLAY_NAME:-"High-Performance Computing Environment"}
 DOCKER_PREFIX=${DOCKER_PREFIX:-"dshpc"}
 BASE_REPO=${BASE_REPO:-"https://github.com/isglobal-brge/dsHPC-docker.git"}
 DEFAULT_PORT=${DEFAULT_PORT:-8001}
+DEFAULT_ADMIN_PORT=${DEFAULT_ADMIN_PORT:-8002}
 DESCRIPTION=${DESCRIPTION:-"High-Performance Computing Environment"}
 
 # Generate random API key
@@ -450,6 +452,7 @@ generate_env_file() {
         fi
     else
         local api_key=$(generate_api_key)
+        local admin_password=$(generate_api_key)
         # Convert to uppercase in a bash 3.2 compatible way
         local docker_prefix_upper=$(echo "$DOCKER_PREFIX" | tr '[:lower:]' '[:upper:]')
         
@@ -462,6 +465,10 @@ generate_env_file() {
 API_EXTERNAL_PORT=$DEFAULT_PORT
 API_KEY=$api_key
 
+# Admin Panel Configuration
+ADMIN_EXTERNAL_PORT=$DEFAULT_ADMIN_PORT
+ADMIN_PASSWORD=$admin_password
+
 # Docker Stack Configuration
 COMPOSE_PROJECT_NAME=${DOCKER_PREFIX}
 
@@ -470,7 +477,11 @@ LOG_LEVEL=WARNING
 EOF
         
         echo -e "${GREEN}✓ Environment file created: .env${NC}"
+        echo -e "${YELLOW}📝 API Port: $DEFAULT_PORT${NC}"
+        echo -e "${YELLOW}📝 Admin Panel Port: $DEFAULT_ADMIN_PORT${NC}"
         echo -e "${YELLOW}📝 Generated API Key: $api_key${NC}"
+        echo -e "${YELLOW}📝 Generated Admin Password: $admin_password${NC}"
+        echo -e "${RED}⚠️  IMPORTANT: Save the admin password securely!${NC}"
         echo -e "${CYAN}💡 You can modify these settings in .env${NC}"
     fi
     
@@ -623,12 +634,14 @@ generate_instructions() {
     echo -e "   ${CYAN}docker-compose up${NC}"
     echo -e "   ${CYAN}# Or run in background: docker-compose up -d${NC}"
     echo
-    echo -e "${YELLOW}2.${NC} Access the API:"
-    echo -e "   ${CYAN}http://localhost:$DEFAULT_PORT${NC}"
+    echo -e "${YELLOW}2.${NC} Access the services:"
+    echo -e "   ${CYAN}API: http://localhost:$DEFAULT_PORT${NC}"
+    echo -e "   ${CYAN}Admin Panel: http://localhost:$DEFAULT_ADMIN_PORT${NC}"
     echo
     echo -e "${BOLD}${CYAN}Configuration Files:${NC}"
     echo -e "• ${YELLOW}Environment variables:${NC} .env"
     echo -e "• ${YELLOW}API Authentication:${NC} Use X-API-Key header with generated key"
+    echo -e "• ${YELLOW}Admin Panel:${NC} Login with generated password at http://localhost:$DEFAULT_ADMIN_PORT"
     echo -e "• ${YELLOW}Methods:${NC} environment/methods/"
     echo -e "• ${YELLOW}Dependencies:${NC} environment/*.json"
     echo
