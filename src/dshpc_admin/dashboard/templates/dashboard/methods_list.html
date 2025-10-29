@@ -585,30 +585,58 @@
     function unifiedSearch() {
         const search = document.getElementById('unifiedSearch').value.toLowerCase();
         window.currentSearch = search;
+        window.currentOccurrenceIndex = 0;
         const items = document.querySelectorAll('.file-item');
         let matchCount = 0;
         
         if (!search) {
-            items.forEach(item => item.style.display = '');
+            items.forEach(item => {
+                item.style.display = '';
+                const badge = item.querySelector('.badge');
+                if (badge) badge.remove();
+            });
             document.getElementById('searchResults').textContent = '';
+            
+            // Refresh current file view if one is open
+            const currentFilePath = Object.keys(window.currentFiles)[0];
+            if (currentFilePath) {
+                showFile(currentFilePath, window.currentFiles[currentFilePath]);
+            }
             return;
         }
         
         items.forEach(item => {
             const filename = item.getAttribute('data-filename');
             const filepath = item.getAttribute('data-filepath');
-            const content = window.allFiles[filename]?.content || '';
+            
+            // Find content
+            let content = '';
+            for (const [path, data] of Object.entries(window.allFiles)) {
+                if (data.originalPath === filepath) {
+                    content = data.content;
+                    break;
+                }
+            }
             
             // Match in filename OR content
-            if (filename.includes(search) || content.toLowerCase().includes(search)) {
+            const filenameMatch = filename.includes(search);
+            const contentMatch = content.toLowerCase().includes(search);
+            
+            if (filenameMatch || contentMatch) {
                 item.style.display = '';
                 matchCount++;
                 
+                // Remove old badge
+                const oldBadge = item.querySelector('.badge');
+                if (oldBadge) oldBadge.remove();
+                
                 // Add badge if content match
-                if (content.toLowerCase().includes(search)) {
-                    const occurrences = (content.toLowerCase().match(new RegExp(search, 'g')) || []).length;
-                    item.innerHTML = item.innerHTML.replace(/<span class="badge.*?<\/span>/, '');
-                    item.innerHTML += ` <span class="badge bg-warning text-dark">${occurrences}</span>`;
+                if (contentMatch) {
+                    const occurrences = (content.toLowerCase().match(new RegExp(escapeRegex(search), 'g')) || []).length;
+                    const iconSpan = item.querySelector('span');
+                    if (iconSpan) {
+                        iconSpan.insertAdjacentHTML('afterend', ` <span class="badge bg-warning text-dark">${occurrences}</span>`);
+                    }
                 }
             } else {
                 item.style.display = 'none';
@@ -616,6 +644,12 @@
         });
         
         document.getElementById('searchResults').textContent = matchCount ? `${matchCount} file(s) match` : 'No matches';
+        
+        // Update current file view if one is open
+        const currentFilePath = Object.keys(window.currentFiles)[0];
+        if (currentFilePath) {
+            showFile(currentFilePath, window.currentFiles[currentFilePath]);
+        }
     }
     
     window.currentFiles = {};
@@ -637,51 +671,73 @@
         const displayPath = filepath.split('/').slice(1).join('/') || filepath;
         const ext = filepath.includes('.') ? filepath.split('.').pop().toLowerCase() : '';
         
-        // Escape HTML first
-        let displayContent = content.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        // Split by lines for processing
+        const lines = content.split('\n');
+        let processedLines = [];
         
-        // Apply syntax highlighting for R
-        if (ext === 'r') {
-            // Comments (entire line starting with #)
-            displayContent = displayContent.replace(/^(\s*#.*)$/gm, '<span style="color: #6a9955;">$1</span>');
-            // Strings (double and single quotes)
-            displayContent = displayContent.replace(/"([^"]*)"/g, '<span style="color: #ce9178;">"$1"</span>');
-            displayContent = displayContent.replace(/'([^']*)'/g, '<span style="color: #ce9178;">\'$1\'</span>');
-            // Keywords
-            const keywords = ['function', 'if', 'else', 'for', 'while', 'return', 'library', 'require', 'TRUE', 'FALSE', 'NULL', 'NA'];
-            keywords.forEach(kw => {
-                const regex = new RegExp(`\\b${kw}\\b`, 'g');
-                displayContent = displayContent.replace(regex, `<span style="color: #569cd6;">${kw}</span>`);
-            });
+        for (let line of lines) {
+            // Escape HTML entities in the line first
+            let processedLine = line.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+            
+            // Apply syntax highlighting for R
+            if (ext === 'r') {
+                // Check if it's a comment line
+                if (/^\s*#/.test(line)) {
+                    processedLine = `<span class="code-comment">${processedLine}</span>`;
+                } else {
+                    // Strings
+                    processedLine = processedLine.replace(/"([^"]*)"/g, '<span class="code-string">"$1"</span>');
+                    processedLine = processedLine.replace(/'([^']*)'/g, '<span class="code-string">\'$1\'</span>');
+                    // Numbers
+                    processedLine = processedLine.replace(/\b(\d+\.?\d*)\b/g, '<span class="code-number">$1</span>');
+                    // Keywords
+                    const keywords = ['function', 'if', 'else', 'for', 'while', 'return', 'library', 'require', 'TRUE', 'FALSE', 'NULL', 'NA', 'in', 'break', 'next'];
+                    keywords.forEach(kw => {
+                        const regex = new RegExp(`\\b${kw}\\b`, 'g');
+                        processedLine = processedLine.replace(regex, `<span class="code-keyword">${kw}</span>`);
+                    });
+                }
+            }
+            
+            // Apply search highlighting if active
+            if (window.currentSearch) {
+                const searchRegex = new RegExp(`(${escapeRegex(window.currentSearch)})`, 'gi');
+                processedLine = processedLine.replace(searchRegex, '<mark style="background: #ffeb3b; color: #000; font-weight: bold;">$1</mark>');
+            }
+            
+            processedLines.push(processedLine);
         }
         
-        // Apply search highlighting if there's an active search
-        if (window.currentSearch) {
-            const searchRegex = new RegExp(`(${escapeRegex(window.currentSearch)})`, 'gi');
-            displayContent = displayContent.replace(searchRegex, '<mark style="background: #ffeb3b; color: #000; font-weight: bold;">$1</mark>');
-        }
+        const displayContent = processedLines.join('\n');
+        
+        // Count occurrences after rendering
+        const tempDiv = document.createElement('div');
+        tempDiv.innerHTML = displayContent;
+        const marks = tempDiv.querySelectorAll('mark');
+        const occurrenceCount = marks.length;
         
         let navButtons = '';
-        if (window.currentSearch && window.currentOccurrences.length > 0) {
+        if (window.currentSearch && occurrenceCount > 0) {
             navButtons = `
-                <div class="btn-group btn-group-sm me-2">
-                    <button class="btn btn-outline-secondary" onclick="prevOccurrence()">
-                        <i class="bi bi-chevron-up"></i>
-                    </button>
-                    <button class="btn btn-outline-secondary" onclick="nextOccurrence()">
-                        <i class="bi bi-chevron-down"></i>
-                    </button>
+                <div class="d-flex align-items-center gap-2">
+                    <small class="text-muted">${occurrenceCount} match(es)</small>
+                    <div class="btn-group btn-group-sm">
+                        <button class="btn btn-outline-secondary" onclick="prevOccurrence()" title="Previous">
+                            <i class="bi bi-chevron-up"></i>
+                        </button>
+                        <button class="btn btn-outline-secondary" onclick="nextOccurrence()" title="Next">
+                            <i class="bi bi-chevron-down"></i>
+                        </button>
+                    </div>
+                    <small class="text-muted" id="occurrenceCounter">1 / ${occurrenceCount}</small>
                 </div>
-                <small class="text-muted me-2">${window.currentOccurrenceIndex + 1} / ${window.currentOccurrences.length}</small>
             `;
         }
         
         document.getElementById('codeViewer').innerHTML = `
             <div class="mb-3 d-flex justify-content-between align-items-center">
                 <h6><i class="bi bi-file-code"></i> ${displayPath}</h6>
-                <div class="d-flex align-items-center">
-                    ${navButtons}
-                </div>
+                ${navButtons}
             </div>
             <div class="code-display terminal" id="codeContent" style="max-height: calc(70vh - 100px); white-space: pre; font-family: 'Courier New', monospace; font-size: 13px; line-height: 1.5; overflow-x: auto;">
                 ${displayContent}
@@ -689,11 +745,14 @@
         `;
         
         // Scroll to first occurrence if search is active
-        if (window.currentSearch) {
-            const marks = document.querySelectorAll('#codeContent mark');
-            if (marks.length > 0) {
-                marks[0].scrollIntoView({behavior: 'smooth', block: 'center'});
-            }
+        if (window.currentSearch && occurrenceCount > 0) {
+            setTimeout(() => {
+                const marks = document.querySelectorAll('#codeContent mark');
+                if (marks.length > 0) {
+                    window.currentOccurrenceIndex = 0;
+                    marks[0].scrollIntoView({behavior: 'smooth', block: 'center'});
+                }
+            }, 100);
         }
     }
     
@@ -706,7 +765,9 @@
         if (marks.length > 0) {
             window.currentOccurrenceIndex = (window.currentOccurrenceIndex + 1) % marks.length;
             marks[window.currentOccurrenceIndex].scrollIntoView({behavior: 'smooth', block: 'center'});
-            showFile(Object.keys(window.currentFiles)[0], window.currentFiles[Object.keys(window.currentFiles)[0]]);
+            
+            // Update counter
+            document.getElementById('occurrenceCounter').textContent = `${window.currentOccurrenceIndex + 1} / ${marks.length}`;
         }
     }
     
@@ -715,7 +776,9 @@
         if (marks.length > 0) {
             window.currentOccurrenceIndex = (window.currentOccurrenceIndex - 1 + marks.length) % marks.length;
             marks[window.currentOccurrenceIndex].scrollIntoView({behavior: 'smooth', block: 'center'});
-            showFile(Object.keys(window.currentFiles)[0], window.currentFiles[Object.keys(window.currentFiles)[0]]);
+            
+            // Update counter
+            document.getElementById('occurrenceCounter').textContent = `${window.currentOccurrenceIndex + 1} / ${marks.length}`;
         }
     }
     
