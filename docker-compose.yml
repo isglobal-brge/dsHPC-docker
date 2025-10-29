@@ -115,6 +115,38 @@ services:
     logging:
       driver: "none"
 
+  __DOCKER_PREFIX__-admin:
+    container_name: __DOCKER_PREFIX__-admin
+    build:
+      context: .
+      dockerfile: src/dshpc_admin/Dockerfile
+    ports:
+      - "${ADMIN_EXTERNAL_PORT:-8002}:8000"
+    depends_on:
+      - __DOCKER_PREFIX__-jobs
+      - __DOCKER_PREFIX__-files
+      - __DOCKER_PREFIX__-methods
+      - __DOCKER_PREFIX__-slurm
+    environment:
+      - MONGO_JOBS_URI=mongodb://__DOCKER_PREFIX__-jobs:27017/
+      - MONGO_JOBS_DB=__DOCKER_PREFIX__-jobs
+      - MONGO_FILES_URI=mongodb://__DOCKER_PREFIX__-files:27017/
+      - MONGO_FILES_DB=__DOCKER_PREFIX__-files
+      - MONGO_METHODS_URI=mongodb://__DOCKER_PREFIX__-methods:27017/
+      - MONGO_METHODS_DB=__DOCKER_PREFIX__-methods
+      - SLURM_API_URL=http://__DOCKER_PREFIX__-slurm:8000
+      - ADMIN_PASSWORD=${ADMIN_PASSWORD:-admin}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - __DOCKER_PREFIX__-internal-network
+      - __DOCKER_PREFIX__-public-network
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
 volumes:
   mongodb_jobs_data:
     name: __DOCKER_PREFIX__-mongodb-jobs-data
