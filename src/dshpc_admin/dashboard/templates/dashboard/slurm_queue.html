@@ -1,0 +1,64 @@
+{% extends "base.html" %}
+{% load dashboard_filters %}
+
+{% block content %}
+<div class="card shadow-sm">
+    <div class="card-header bg-dark text-white d-flex justify-content-between align-items-center">
+        <div class="d-flex align-items-center gap-3">
+            <span><i class="bi bi-cpu"></i> Slurm Status</span>
+            <span class="badge bg-light text-dark" id="jobCount">{{ queue|length }} job(s)</span>
+        </div>
+        <div class="d-flex align-items-center gap-2">
+            <small class="text-white-50">Auto-refresh in <span id="countdown" class="fw-bold">5</span>s</small>
+            <button onclick="refreshQueue()" class="btn btn-sm btn-light" id="refreshBtn" title="Refresh now">
+                <i class="bi bi-arrow-clockwise"></i>
+            </button>
+        </div>
+    </div>
+    <div class="card-body p-0" id="queueContainer">
+        {% include "dashboard/slurm_queue_content.html" %}
+</div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+let countdown = 5;
+let countdownInterval;
+
+function refreshQueue() {
+    const refreshBtn = document.getElementById('refreshBtn');
+    refreshBtn.disabled = true;
+    
+    fetch('/slurm/?ajax=1')
+        .then(r => r.text())
+        .then(html => {
+            document.getElementById('queueContainer').innerHTML = html;
+            const count = document.querySelectorAll('#queueContainer tbody tr').length;
+            document.getElementById('jobCount').textContent = count + ' job(s)';
+            refreshBtn.disabled = false;
+            countdown = 5;
+        })
+        .catch(e => {
+            console.error('Error refreshing queue:', e);
+            refreshBtn.disabled = false;
+        });
+}
+
+// Countdown timer
+countdownInterval = setInterval(() => {
+    countdown--;
+    document.getElementById('countdown').textContent = countdown;
+    
+    if (countdown <= 0) {
+        refreshQueue();
+        countdown = 5;
+    }
+}, 1000);
+
+// Cleanup
+window.addEventListener('beforeunload', () => {
+    if (countdownInterval) clearInterval(countdownInterval);
+});
+</script>
+{% endblock %}

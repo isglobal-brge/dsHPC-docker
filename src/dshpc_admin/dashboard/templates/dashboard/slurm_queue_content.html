@@ -1,0 +1,58 @@
+{% load dashboard_filters %}
+{% if queue %}
+<div class="table-responsive">
+    <table class="table table-hover table-striped mb-0">
+        <thead class="table-dark">
+            <tr>
+                <th style="width: 15%;">Job ID</th>
+                <th style="width: 25%;">Name</th>
+                <th style="width: 15%;">User</th>
+                <th style="width: 15%;">Status</th>
+                <th style="width: 15%;">Time</th>
+                <th style="width: 15%;">Nodes</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for job in queue %}
+            <tr>
+                <td><code>{{ job.job_id }}</code></td>
+                <td><strong>{{ job.name }}</strong></td>
+                <td>{{ job.user }}</td>
+                <td>
+                    {% if job.status == 'RUNNING' %}
+                        <span class="badge bg-info">
+                            <i class="bi bi-play-circle-fill"></i> {{ job.status }}
+                        </span>
+                    {% elif job.status == 'PENDING' %}
+                        <span class="badge bg-warning">
+                            <i class="bi bi-clock"></i> {{ job.status }}
+                        </span>
+                    {% elif job.status == 'COMPLETED' %}
+                        <span class="badge bg-success">
+                            <i class="bi bi-check-circle-fill"></i> {{ job.status }}
+                        </span>
+                    {% elif job.status == 'FAILED' %}
+                        <span class="badge bg-danger">
+                            <i class="bi bi-x-circle-fill"></i> {{ job.status }}
+                        </span>
+                    {% else %}
+                        <span class="badge bg-secondary">{{ job.status }}</span>
+                    {% endif %}
+                </td>
+                <td><code class="small">{{ job.time }}</code></td>
+                <td>
+                    <span class="badge bg-primary">{{ job.nodes }} node(s)</span>
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% else %}
+<div class="text-center py-5">
+    <i class="bi bi-inbox fs-1 d-block mb-3" style="opacity: 0.3;"></i>
+    <h5>No jobs in Slurm queue</h5>
+    <p class="text-muted mb-0">The Slurm queue is currently empty</p>
+</div>
+{% endif %}
+

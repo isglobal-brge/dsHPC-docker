@@ -1,0 +1,213 @@
+{% extends "base.html" %}
+
+{% block extra_css %}
+<style>
+    .refresh-indicator {
+        position: fixed;
+        bottom: 20px;
+        right: 20px;
+        z-index: 1000;
+        transition: opacity 0.3s ease;
+    }
+    
+    .refresh-indicator.hidden {
+        opacity: 0;
+        pointer-events: none;
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<!-- Container Selector -->
+<div class="container-selector mb-4">
+    {% for cont, name in containers.items %}
+    <div class="container-card {% if cont == selected_container %}active{% endif %}" 
+            onclick="changeContainer('{{ cont }}')">
+        <div class="icon">
+            {% if 'api' in cont %}
+                <i class="bi bi-server"></i>
+            {% elif 'slurm' in cont %}
+                <i class="bi bi-cpu"></i>
+            {% elif 'admin' in cont %}
+                <i class="bi bi-speedometer2"></i>
+            {% else %}
+                <i class="bi bi-box"></i>
+            {% endif %}
+        </div>
+        <div class="name">{{ name }}</div>
+        <div class="status">
+            <i class="bi bi-circle-fill text-success"></i> Running
+        </div>
+    </div>
+    {% endfor %}
+</div>
+
+<!-- Logs Card -->
+<div class="card modern-table">
+    <div class="card-header bg-dark text-white d-flex justify-content-between align-items-center">
+        <div class="d-flex align-items-center gap-3">
+        <span><i class="bi bi-terminal"></i> <strong id="containerName">{% for cont, name in containers.items %}{% if cont == selected_container %}{{ name }}{% endif %}{% endfor %}</strong></span>
+        </div>
+        <div class="d-flex gap-2 align-items-center">
+            <select id="linesSelect" class="form-select form-select-sm" style="width: auto;">
+                <option value="50" {% if lines == 50 %}selected{% endif %}>50 lines</option>
+                <option value="100" {% if lines == 100 %}selected{% endif %}>100 lines</option>
+                <option value="200" {% if lines == 200 %}selected{% endif %}>200 lines</option>
+                <option value="500" {% if lines == 500 %}selected{% endif %}>500 lines</option>
+                <option value="1000" {% if lines == 1000 %}selected{% endif %}>1000 lines</option>
+            </select>
+            <button onclick="refreshLogs()" class="btn btn-sm btn-light" title="Refresh now">
+                <i class="bi bi-arrow-clockwise"></i>
+            </button>
+        </div>
+    </div>
+    <div class="card-body p-0">
+        <div id="logsContent" class="terminal">
+            <div class="text-center py-5 text-muted">
+                <i class="bi bi-arrow-clockwise spin fs-3"></i>
+                <p class="mt-2">Loading logs...</p>
+            </div>
+        </div>
+    </div>
+    <div class="card-footer d-flex justify-content-between align-items-center">
+        <span class="text-muted small">
+            <i class="bi bi-info-circle"></i> Auto-refreshing every 5 seconds
+        </span>
+        <span class="text-muted small">
+            Next refresh in <span id="countdown" class="fw-bold">5</span>s
+        </span>
+    </div>
+</div>
+
+<!-- Refresh Indicator -->
+<div class="refresh-indicator hidden" id="refreshIndicator">
+    <div class="card shadow-lg">
+        <div class="card-body py-2 px-3 d-flex align-items-center gap-2">
+            <i class="bi bi-arrow-clockwise spin text-primary"></i>
+            <span class="small">Refreshing logs...</span>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+let currentContainer = '{{ selected_container }}';
+let currentLines = {{ lines }};
+let countdown = 5;
+let autoRefreshInterval;
+let countdownInterval;
+let lastScrollPos = 0;
+let lastScrollHeight = 0;
+let isUserScrolling = false;
+
+// Change container
+function changeContainer(container) {
+    if (currentContainer === container) return;
+    currentContainer = container;
+    refreshLogs();
+    
+    // Update active state visually
+    document.querySelectorAll('.container-card').forEach(card => {
+        card.classList.remove('active');
+    });
+    event.currentTarget.classList.add('active');
+}
+
+// Refresh logs
+function refreshLogs(showIndicator = false) {
+    const logsDiv = document.getElementById('logsContent');
+    
+    // Show refresh indicator if not initial load
+    if (showIndicator) {
+        document.getElementById('refreshIndicator').classList.remove('hidden');
+    }
+    
+    // Save scroll position and check if at bottom
+    lastScrollPos = logsDiv.scrollTop;
+    lastScrollHeight = logsDiv.scrollHeight;
+    const isAtBottom = (logsDiv.scrollHeight - logsDiv.scrollTop - logsDiv.clientHeight) < 50;
+    
+    // Detect if user has scrolled recently (within last 2 seconds)
+    const timeSinceLastScroll = Date.now() - (window.lastUserScrollTime || 0);
+    isUserScrolling = timeSinceLastScroll < 2000;
+    
+    fetch(`/logs/?container=${currentContainer}&lines=${currentLines}&ajax=1`)
+        .then(r => r.json())
+        .then(data => {
+            // Parse ANSI and update content
+            const parsedLogs = parseAnsiToHtml(data.logs);
+            logsDiv.innerHTML = parsedLogs;
+            
+            // Update container name
+            document.getElementById('containerName').textContent = data.container_name;
+            
+            // Restore scroll position intelligently
+            setTimeout(() => {
+                if (isAtBottom && !isUserScrolling) {
+                    // Auto-scroll to bottom if user was at bottom
+                    logsDiv.scrollTop = logsDiv.scrollHeight;
+                } else {
+                    // Try to maintain relative position
+                    const heightDiff = logsDiv.scrollHeight - lastScrollHeight;
+                    logsDiv.scrollTop = lastScrollPos + heightDiff;
+                }
+                
+                // Hide refresh indicator
+                document.getElementById('refreshIndicator').classList.add('hidden');
+            }, 10);
+        })
+        .catch(e => {
+            logsDiv.innerHTML = `<div class="text-danger p-3">
+                <i class="bi bi-exclamation-triangle"></i> Error loading logs: ${e.message}
+            </div>`;
+            document.getElementById('refreshIndicator').classList.add('hidden');
+        });
+    
+    // Reset countdown
+    countdown = 5;
+}
+
+// Track user scrolling
+document.getElementById('logsContent').addEventListener('scroll', function() {
+    window.lastUserScrollTime = Date.now();
+}, { passive: true });
+
+// Countdown timer
+countdownInterval = setInterval(() => {
+    countdown--;
+    document.getElementById('countdown').textContent = countdown;
+    
+    if (countdown <= 0) {
+        refreshLogs(true);
+        countdown = 5;
+    }
+}, 1000);
+
+// Change lines selector
+document.getElementById('linesSelect').onchange = function() {
+    currentLines = this.value;
+    refreshLogs(true);
+};
+
+// Initial load
+refreshLogs(false);
+
+// Cleanup on page unload
+window.addEventListener('beforeunload', () => {
+    if (countdownInterval) clearInterval(countdownInterval);
+    if (autoRefreshInterval) clearInterval(autoRefreshInterval);
+});
+</script>
+
+<style>
+    @keyframes spin {
+        from { transform: rotate(0deg); }
+        to { transform: rotate(360deg); }
+    }
+    
+    .spin {
+        animation: spin 1s linear infinite;
+    }
+</style>
+{% endblock %}
