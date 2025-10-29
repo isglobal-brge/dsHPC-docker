@@ -330,25 +330,26 @@
             transition: all 0.2s ease;
         }
         
-        /* Flat accordion (no borders, no radius) */
+        /* Flat accordion (no borders, rounded corners) */
         #authorsAccordion .accordion-item {
-            border: none;
-            border-radius: 0;
-            border-top: 1px solid #e2e8f0;
-            margin-bottom: 0;
-        }
-        
-        #authorsAccordion .accordion-item:first-child {
-            border-top: none;
+            border: 1px solid #cbd5e1;
+            border-radius: 6px;
+            margin-bottom: 0.5rem;
+            overflow: hidden;
         }
         
         #authorsAccordion .accordion-button {
-            border-radius: 0;
+            background: transparent;
+            border: none;
         }
         
         #authorsAccordion .accordion-button:not(.collapsed) {
-            background: white;
-            color: #1e293b;
+            background: transparent;
+            color: #334155;
+        }
+        
+        #authorsAccordion .accordion-body {
+            background: transparent;
         }
         
         .accordion-modern .accordion-item:hover {

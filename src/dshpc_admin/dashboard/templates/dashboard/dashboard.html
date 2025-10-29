@@ -7,16 +7,17 @@
 <div class="card shadow-sm" style="margin-bottom: 3rem;">
     <div class="card-header text-white text-center py-4" style="background: #1e293b;">
         <h2 class="mb-0" style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 0 2rem;">{{ env_config.display_name }}</h2>
-    </div>
-    <div class="card-body p-4">
-        <p class="text-muted text-center mb-4">{{ env_config.description }}</p>
+            </div>
+    <div class="card-body" style="padding: 1.5rem 1.5rem 0 1.5rem;">
+        <p class="text-center mb-4" style="font-size: 1.15rem; line-height: 1.6; color: #334155; font-weight: 400;">{{ env_config.description }}</p>
         
         {% if env_config.authors %}
         <!-- Authors Accordions -->
-        <div class="accordion" id="authorsAccordion" style="margin-left: -1.5rem; margin-right: -1.5rem;">
+        <hr style="margin: 0 -1.5rem; border-color: #cbd5e1;">
+        <div class="accordion" id="authorsAccordion" style="margin-left: -1.5rem; margin-right: -1.5rem; margin-top: 1rem;">
             <div class="accordion-item">
                 <h2 class="accordion-header">
-                    <button class="accordion-button collapsed text-center justify-content-center" type="button" data-bs-toggle="collapse" data-bs-target="#envAuthors">
+                    <button class="accordion-button collapsed text-center justify-content-center" type="button" data-bs-toggle="collapse" data-bs-target="#envAuthors" style="font-weight: 400; font-size: 0.9rem; color: #334155;">
                         {{ env_config.environment_name }} Authors
                     </button>
                 </h2>
@@ -39,8 +40,8 @@
                                         {% else %}
                                         <small class="text-muted">{{ author.institution }}</small>
                                         {% endif %}
-                                    </div>
-                                    {% endif %}
+                </div>
+                {% endif %}
                                     
                                     <div class="d-flex gap-3 mt-2 justify-content-center" style="font-size: 1.1rem;">
                                         {% if author.email %}<a href="mailto:{{ author.email }}" class="social-icon" title="{{ author.email }}"><i class="bi bi-envelope-fill text-primary"></i></a>{% endif %}
@@ -48,21 +49,21 @@
                                         {% if author.orcid %}<a href="https://orcid.org/{{ author.orcid }}" target="_blank" class="social-icon" title="ORCID"><svg width="18" height="18" viewBox="0 0 256 256" style="display: inline-block; vertical-align: -0.15em;"><path fill="#A6CE39" d="M256,128c0,70.7-57.3,128-128,128C57.3,256,0,198.7,0,128C0,57.3,57.3,0,128,0C198.7,0,256,57.3,256,128z"/><g><path fill="#FFFFFF" d="M86.3,186.2H70.9V79.1h15.4v48.4V186.2z"/><path fill="#FFFFFF" d="M108.9,79.1h41.6c39.6,0,57,28.3,57,53.6c0,27.5-21.5,53.6-56.8,53.6h-41.8V79.1z M124.3,172.4h24.5c34.9,0,42.9-26.5,42.9-39.7c0-21.5-13.7-39.7-43.7-39.7h-23.7V172.4z"/><path fill="#FFFFFF" d="M88.7,56.8c0,5.5-4.5,10.1-10.1,10.1c-5.6,0-10.1-4.6-10.1-10.1c0-5.6,4.5-10.1,10.1-10.1C84.2,46.7,88.7,51.3,88.7,56.8z"/></g></svg></a>{% endif %}
                                         {% if author.linkedin %}<a href="{{ author.linkedin }}" target="_blank" class="social-icon" title="LinkedIn"><i class="bi bi-linkedin text-primary"></i></a>{% endif %}
                                         {% if author.github %}<a href="https://github.com/{{ author.github }}" target="_blank" class="social-icon" title="GitHub"><i class="bi bi-github text-dark"></i></a>{% endif %}
-                                    </div>
-                                </div>
-                            </div>
-                        </div>
+            </div>
+            </div>
+        </div>
+    </div>
                         {% endif %}
                         {% endfor %}
                         </div>
-                    </div>
+            </div>
                 </div>
             </div>
             
             <!-- dsHPC Authors Accordion -->
             <div class="accordion-item">
                 <h2 class="accordion-header">
-                    <button class="accordion-button collapsed text-center justify-content-center" type="button" data-bs-toggle="collapse" data-bs-target="#dshpcAuthors">
+                    <button class="accordion-button collapsed text-center justify-content-center" type="button" data-bs-toggle="collapse" data-bs-target="#dshpcAuthors" style="font-weight: 400; font-size: 0.9rem; color: #334155; padding-bottom: 16px;">
                         dsHPC Authors
                     </button>
                 </h2>
@@ -78,10 +79,10 @@
                                         <a href="https://github.com/isglobal-brge/dsHPC" target="_blank" class="social-icon" title="GitHub"><i class="bi bi-github text-dark"></i></a>
                                     </div>
                                 </div>
-                            </div>
-                        </div>
-                        </div>
-                    </div>
+            </div>
+        </div>
+    </div>
+            </div>
                 </div>
             </div>
         </div>
@@ -134,7 +135,7 @@ function refreshContainerStatus() {
             document.getElementById('containerStatusContent').innerHTML = `
                 <div class="alert alert-danger">
                     <i class="bi bi-exclamation-triangle-fill"></i> Error: ${error.message}
-                </div>
+            </div>
             `;
         });
 }

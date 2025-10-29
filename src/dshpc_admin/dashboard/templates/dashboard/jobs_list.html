@@ -6,13 +6,13 @@
     <div class="btn-group btn-group-sm">
         <a href="{% url 'jobs_list' %}?per_page={{ per_page }}" class="btn {% if not status_filter %}btn-dark{% else %}btn-outline-secondary{% endif %}">
             All
-        </a>
+    </a>
         <a href="{% url 'jobs_list' %}?status=R&per_page={{ per_page }}" class="btn {% if status_filter == 'R' %}btn-info{% else %}btn-outline-secondary{% endif %}">
             Running
-        </a>
+    </a>
         <a href="{% url 'jobs_list' %}?status=CD&per_page={{ per_page }}" class="btn {% if status_filter == 'CD' %}btn-success{% else %}btn-outline-secondary{% endif %}">
             Completed
-        </a>
+    </a>
         <a href="{% url 'jobs_list' %}?status=F&per_page={{ per_page }}" class="btn {% if status_filter == 'F' %}btn-danger{% else %}btn-outline-secondary{% endif %}">
             Failed
         </a>
