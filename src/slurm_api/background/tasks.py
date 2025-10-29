@@ -134,7 +134,7 @@ async def check_job_status():
     """Background task to check and update status of running jobs."""
     # First run the function once immediately (with error protection)
     try:
-        await check_jobs_once()
+    await check_jobs_once()
     except Exception as e:
         logger.error(f"Error in initial job check: {e}")
     

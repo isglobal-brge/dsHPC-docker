@@ -503,7 +503,10 @@
                             <div class="row g-0" style="height: calc(100vh - 56px);">
                                 <div class="col-md-3 border-end" style="display: flex; flex-direction: column; background: #f8f9fa;">
                                     <div class="p-3" style="flex: 1; display: flex; flex-direction: column; min-height: 0;">
-                                        <h6 class="text-muted mb-3">Files</h6>
+                                        <div class="d-flex justify-content-between align-items-center mb-3">
+                                            <h6 class="text-muted mb-0">Files</h6>
+                                            <small class="text-muted" id="fileTotalCount"></small>
+                                        </div>
                                         <div style="flex: 1; display: flex; flex-direction: column; min-height: 0;">
                                             <div class="mb-3">
                                                 <div class="input-group input-group-sm">
@@ -659,10 +662,21 @@
             </div>
         `;
         
-        // Update search results
+        // Update search results and total count
         if (window.currentSearch) {
             document.getElementById('searchResults').textContent = 
                 totalMatches > 0 ? `${totalMatches} file(s) match` : 'No matches';
+        }
+        
+        // Update total file count
+        const totalFilesCount = Object.keys(window.allFiles).length;
+        const fileTotalElem = document.getElementById('fileTotalCount');
+        if (fileTotalElem) {
+            if (window.currentSearch && totalMatches < totalFilesCount) {
+                fileTotalElem.textContent = `${totalMatches} / ${totalFilesCount}`;
+            } else {
+                fileTotalElem.textContent = `${totalFilesCount} file(s)`;
+            }
         }
         
         // Add pagination controls if needed
@@ -840,6 +854,16 @@
         // Trim again after processing
         content = content.trim();
         
+        // Check file size and truncate if necessary
+        const maxSize = 30000; // 30k characters (~30KB)
+        const originalSize = content.length;
+        let isTruncated = false;
+        
+        if (content.length > maxSize) {
+            content = content.substring(0, maxSize);
+            isTruncated = true;
+        }
+        
         // Aggressive line-by-line trimming: remove multiple consecutive blank lines
         // Keep single blank lines but remove doubles/triples
         let lines = content.split('\n');
@@ -875,7 +899,7 @@
         
         // If search is active, mark occurrences BEFORE syntax highlighting
         let processedContent = content;
-        if (window.currentSearch) {
+        if (window.currentSearch && !isTruncated) {
             // Use unique placeholders with index that won't be affected by highlight.js
             const searchRegex = new RegExp(`(${escapeRegex(window.currentSearch)})`, 'gi');
             let matchIndex = 0;
@@ -886,23 +910,31 @@
             });
         }
         
-        // Apply syntax highlighting with highlight.js
+        // Apply syntax highlighting with highlight.js (skip if truncated)
         let highlightedCode;
-        try {
-            highlightedCode = hljs.highlight(processedContent, { language: language }).value;
-        } catch (e) {
-            // Fallback to escaped HTML if highlighting fails
+        if (!isTruncated) {
+            try {
+                highlightedCode = hljs.highlight(processedContent, { language: language }).value;
+            } catch (e) {
+                // Fallback to escaped HTML if highlighting fails
+                highlightedCode = processedContent.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+            }
+        } else {
+            // No highlighting for truncated files
             highlightedCode = processedContent.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
         }
         
-        // Replace placeholders with actual mark tags (with different classes)
+        // Replace placeholders with actual mark tags (with INLINE STYLES)
         let displayContent = highlightedCode;
-        if (window.currentSearch) {
-            // Replace each placeholder with appropriate class
-            let idx = 0;
+        if (window.currentSearch && !isTruncated) {
+            // Replace each placeholder with inline styles directly
             displayContent = displayContent.replace(/⟪MARK(\d+)START⟫/g, (match, num) => {
-                const cls = parseInt(num) === window.currentOccurrenceIndex ? 'mark-current' : 'mark-normal';
-                return `<mark class="${cls}">`;
+                const isCurrentMark = parseInt(num) === window.currentOccurrenceIndex;
+                if (isCurrentMark) {
+                    return '<mark style="background: #ff9800; color: #000; font-weight: bold; box-shadow: 0 0 0 2px rgba(255, 152, 0, 0.3);">';
+                } else {
+                    return '<mark style="background: #ffeb3b; color: #000; font-weight: bold;">';
+                }
             });
             displayContent = displayContent.replace(/⟪MARK\d+END⟫/g, '</mark>');
         }
@@ -932,6 +964,19 @@
             `;
         }
         
+        let truncationWarning = '';
+        if (isTruncated) {
+            const originalChars = originalSize.toLocaleString();
+            const shownChars = maxSize.toLocaleString();
+            truncationWarning = `
+                <div class="alert alert-warning mt-3 mb-0">
+                    <i class="bi bi-exclamation-triangle"></i> 
+                    <strong>File truncated for display</strong><br>
+                    <small>Original: ${originalChars} characters | Showing: ${shownChars} characters | Syntax highlighting disabled</small>
+                </div>
+            `;
+        }
+        
         document.getElementById('codeViewer').innerHTML = `
             <div class="mb-3 d-flex justify-content-between align-items-center">
                 <h6><i class="bi bi-file-code"></i> ${displayPath}</h6>
@@ -943,28 +988,18 @@
                 </div>
             </div>
             <div class="code-display terminal" id="codeContent" style="max-height: calc(100vh - 200px); white-space: pre; font-family: 'Courier New', monospace; font-size: 13px; line-height: 1.5; overflow-x: auto;">${displayContent}</div>
+            ${truncationWarning}
         `;
         
         // Scroll to current occurrence if search is active
-        if (window.currentSearch && occurrenceCount > 0) {
-            // Use requestAnimationFrame for better timing
-            requestAnimationFrame(() => {
-                setTimeout(() => {
-                    // Force update classes after render
-                    const marks = document.querySelectorAll('#codeContent mark');
-                    marks.forEach((mark, idx) => {
-                        // Force remove both classes first
-                        mark.classList.remove('mark-normal', 'mark-current');
-                        // Then add the correct one
-                        mark.classList.add(idx === window.currentOccurrenceIndex ? 'mark-current' : 'mark-normal');
-                    });
-                    
-                    const currentMark = marks[window.currentOccurrenceIndex];
-                    if (currentMark) {
-                        currentMark.scrollIntoView({behavior: 'smooth', block: 'center'});
-                    }
-                }, 150);
-            });
+        if (window.currentSearch && occurrenceCount > 0 && !isTruncated) {
+            setTimeout(() => {
+                const marks = document.querySelectorAll('#codeContent mark');
+                const currentMark = marks[window.currentOccurrenceIndex];
+                if (currentMark) {
+                    currentMark.scrollIntoView({behavior: 'smooth', block: 'center'});
+                }
+            }, 50);
         }
     }
     
@@ -984,31 +1019,22 @@
     }
     
     function updateOccurrenceHighlight() {
-        // Use requestAnimationFrame for better timing
-        requestAnimationFrame(() => {
-            const marks = document.querySelectorAll('#codeContent mark');
-            if (marks.length === 0) return;
+        // Re-render with updated index
+        if (window.currentFilePath && window.currentFiles[window.currentFilePath]) {
+            showFile(window.currentFilePath, window.currentFiles[window.currentFilePath]);
             
-            // Force update all marks with correct class
-            marks.forEach((mark, idx) => {
-                // Remove both classes first to ensure clean state
-                mark.classList.remove('mark-normal', 'mark-current');
-                // Add correct class
-                mark.classList.add(idx === window.currentOccurrenceIndex ? 'mark-current' : 'mark-normal');
-            });
-            
-            // Scroll to current mark
-            const currentMark = marks[window.currentOccurrenceIndex];
-            if (currentMark) {
-                currentMark.scrollIntoView({behavior: 'smooth', block: 'center'});
-            }
-            
-            // Update counter
-            const counter = document.getElementById('occurrenceCounter');
-            if (counter) {
-                counter.textContent = `${window.currentOccurrenceIndex + 1} / ${marks.length}`;
-            }
-        });
+            // After re-render, scroll instantly to target
+            setTimeout(() => {
+                const newCodeContent = document.getElementById('codeContent');
+                if (newCodeContent) {
+                    const marks = newCodeContent.querySelectorAll('mark');
+                    const currentMark = marks[window.currentOccurrenceIndex];
+                    if (currentMark) {
+                        currentMark.scrollIntoView({behavior: 'instant', block: 'center'});
+                    }
+                }
+            }, 10);
+        }
     }
     
     function copyCode() {
