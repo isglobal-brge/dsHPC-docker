@@ -78,12 +78,26 @@ def dashboard_home(request):
         # If config doesn't exist or can't be read, just continue without it
         pass
     
+    # Load dsHPC authors from local file
+    dshpc_authors = []
+    try:
+        import json
+        import os
+        authors_path = os.path.join(os.path.dirname(__file__), '..', 'authors-data.json')
+        if os.path.exists(authors_path):
+            with open(authors_path, 'r') as f:
+                authors_data = json.load(f)
+                dshpc_authors = authors_data.get('dshpc_authors', [])
+    except:
+        pass
+    
     # Get docker prefix for container names
     docker_prefix = env_config.get('docker_stack_prefix', 'dshpc') if env_config else 'dshpc'
     
     context = {
         'stats': stats,
         'env_config': env_config,
+        'dshpc_authors': dshpc_authors,
         'docker_prefix': docker_prefix,
         'page_title': 'Overview'
     }
