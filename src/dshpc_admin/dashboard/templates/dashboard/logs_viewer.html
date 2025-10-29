@@ -56,9 +56,6 @@
                 <option value="500" {% if lines == 500 %}selected{% endif %}>500 lines</option>
                 <option value="1000" {% if lines == 1000 %}selected{% endif %}>1000 lines</option>
             </select>
-            <button onclick="refreshLogs()" class="btn btn-sm btn-light" title="Refresh now">
-                <i class="bi bi-arrow-clockwise"></i>
-            </button>
         </div>
     </div>
     <div class="card-body p-0">
@@ -71,11 +68,9 @@
     </div>
     <div class="card-footer d-flex justify-content-between align-items-center">
         <span class="text-muted small">
-            <i class="bi bi-info-circle"></i> Auto-refreshing every 5 seconds
+            <i class="bi bi-arrow-repeat"></i> Live updates
         </span>
-        <span class="text-muted small">
-            Next refresh in <span id="countdown" class="fw-bold">5</span>s
-        </span>
+        <span class="text-muted small" id="logsTimestamp"></span>
     </div>
 </div>
 
@@ -94,9 +89,6 @@
 <script>
 let currentContainer = '{{ selected_container }}';
 let currentLines = {{ lines }};
-let countdown = 5;
-let autoRefreshInterval;
-let countdownInterval;
 let lastScrollPos = 0;
 let lastScrollHeight = 0;
 let isUserScrolling = false;
@@ -142,6 +134,17 @@ function refreshLogs(showIndicator = false) {
             // Update container name
             document.getElementById('containerName').textContent = data.container_name;
             
+            // Update timestamp
+            const now = new Date();
+            const year = now.getFullYear();
+            const month = String(now.getMonth() + 1).padStart(2, '0');
+            const day = String(now.getDate()).padStart(2, '0');
+            const hours = String(now.getHours()).padStart(2, '0');
+            const minutes = String(now.getMinutes()).padStart(2, '0');
+            const seconds = String(now.getSeconds()).padStart(2, '0');
+            const timeStr = `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`;
+            document.getElementById('logsTimestamp').innerHTML = `<i class="bi bi-clock-history"></i> ${timeStr}`;
+            
             // Restore scroll position intelligently
             setTimeout(() => {
                 if (isAtBottom && !isUserScrolling) {
@@ -164,9 +167,6 @@ function refreshLogs(showIndicator = false) {
             document.getElementById('refreshIndicator').classList.add('hidden');
         });
     
-    // Reset countdown and update display immediately
-    countdown = 5;
-    document.getElementById('countdown').textContent = countdown;
 }
 
 // Track user scrolling
@@ -174,16 +174,10 @@ document.getElementById('logsContent').addEventListener('scroll', function() {
     window.lastUserScrollTime = Date.now();
 }, { passive: true });
 
-// Countdown timer
-countdownInterval = setInterval(() => {
-    countdown--;
-    document.getElementById('countdown').textContent = countdown;
-    
-    if (countdown <= 0) {
-        refreshLogs(true);
-        countdown = 5;
-    }
-}, 1000);
+// Auto-refresh every 5 seconds (silent, no countdown)
+setInterval(() => {
+    refreshLogs(true);
+}, 5000);
 
 // Change lines selector
 document.getElementById('linesSelect').onchange = function() {
@@ -194,11 +188,7 @@ document.getElementById('linesSelect').onchange = function() {
 // Initial load
 refreshLogs(false);
 
-// Cleanup on page unload
-window.addEventListener('beforeunload', () => {
-    if (countdownInterval) clearInterval(countdownInterval);
-    if (autoRefreshInterval) clearInterval(autoRefreshInterval);
-});
+// No cleanup needed - intervals are anonymous
 </script>
 
 <style>

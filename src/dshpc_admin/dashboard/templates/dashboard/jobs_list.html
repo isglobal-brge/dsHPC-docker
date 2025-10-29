@@ -6,13 +6,13 @@
     <div class="btn-group btn-group-sm">
         <a href="{% url 'jobs_list' %}?per_page={{ per_page }}" class="btn {% if not status_filter %}btn-dark{% else %}btn-outline-secondary{% endif %}">
             All
-    </a>
+        </a>
         <a href="{% url 'jobs_list' %}?status=R&per_page={{ per_page }}" class="btn {% if status_filter == 'R' %}btn-info{% else %}btn-outline-secondary{% endif %}">
             Running
-    </a>
+        </a>
         <a href="{% url 'jobs_list' %}?status=CD&per_page={{ per_page }}" class="btn {% if status_filter == 'CD' %}btn-success{% else %}btn-outline-secondary{% endif %}">
             Completed
-    </a>
+        </a>
         <a href="{% url 'jobs_list' %}?status=F&per_page={{ per_page }}" class="btn {% if status_filter == 'F' %}btn-danger{% else %}btn-outline-secondary{% endif %}">
             Failed
         </a>
@@ -20,11 +20,21 @@
     <button class="btn btn-sm btn-outline-secondary" type="button" data-bs-toggle="collapse" data-bs-target="#filterPanel">
         <i class="bi bi-funnel"></i> Advanced Filters
     </button>
+    <button class="btn btn-sm btn-outline-secondary" onclick="manualRefresh()" id="refreshBtn" disabled>
+        <i class="bi bi-arrow-clockwise spin"></i>
+    </button>
     <span class="text-muted small">{{ total_jobs }} job(s)</span>
 </div>
 {% endblock %}
 
 {% block content %}
+<!-- Last Update Indicator -->
+<div class="text-end mb-2">
+    <small class="text-muted">
+        <i class="bi bi-clock-history"></i> Last update: {{ snapshot_time|date:"Y-m-d H:i:s" }}
+    </small>
+</div>
+
 <!-- Filter Panel -->
 <div class="collapse {% if search or method_filter or date_from or date_to %}show{% endif %}" id="filterPanel">
     <div class="filter-panel">
@@ -363,11 +373,49 @@
 
 {% block extra_js %}
 <script>
+    const currentSnapshotTime = new Date('{{ snapshot_time|date:"c" }}').getTime();
+    let checkInterval = null;
+    
+    // Manual refresh
+    function manualRefresh() {
+        const btn = document.getElementById('refreshBtn');
+        btn.disabled = true;
+        btn.innerHTML = '<i class="bi bi-arrow-clockwise spin"></i>';
+        
+        // Start checking for update
+        checkInterval = setInterval(checkForUpdate, 2000);
+        
+        // Reload page
+        location.reload();
+    }
+    
+    // Check if snapshot has been updated
+    function checkForUpdate() {
+        fetch('/api/snapshot-timestamp/')
+            .then(r => r.json())
+            .then(data => {
+                const newTime = new Date(data.timestamp).getTime();
+                if (newTime > currentSnapshotTime) {
+                    // New snapshot available, enable button
+                    clearInterval(checkInterval);
+                    const btn = document.getElementById('refreshBtn');
+                    if (btn) {
+                        btn.disabled = false;
+                        btn.innerHTML = '<i class="bi bi-arrow-clockwise"></i>';
+                    }
+                }
+            })
+            .catch(e => console.error('Error checking snapshot:', e));
+    }
+    
+    // Always start checking for updates (button starts disabled)
+    checkInterval = setInterval(checkForUpdate, 2000);
+    
     // Per page selector
     document.getElementById('perPageSelect')?.addEventListener('change', function() {
         const params = getUrlParams();
         params.per_page = this.value;
-        params.page = 1; // Reset to first page
+        params.page = 1;
         window.location.href = '?' + buildQueryString(params);
     });
 </script>

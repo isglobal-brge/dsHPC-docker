@@ -7,6 +7,7 @@ from django.urls import reverse
 from django.contrib import messages
 from .db_connections import MongoDBConnections, get_stats
 from .auth import login_required_simple
+from .snapshot_utils import get_container_status, get_system_resources, get_job_logs, get_environment_info, get_slurm_queue, get_latest_snapshot
 import requests
 from django.conf import settings
 
@@ -73,72 +74,45 @@ def dashboard_home(request):
 
 
 def container_status(request):
-    """Get container status via Docker API."""
-    import docker
-    import json
-    import os
+    """Get container status from latest snapshot."""
+    snapshot_data = get_container_status()
     
-    # Get docker prefix
-    docker_prefix = 'dshpc'
-    try:
-        config_path = '/app/environment-config.json'
-        if os.path.exists(config_path):
-            with open(config_path, 'r') as f:
-                config = json.load(f)
-                docker_prefix = config.get('docker_stack_prefix', 'dshpc')
-    except:
-        pass
+    # Add display names and icons
+    display_info = {
+        'slurm': {'displayName': 'Slurm Service', 'icon': 'cpu'},
+        'api': {'displayName': 'API Server', 'icon': 'server'},
+        'admin': {'displayName': 'Admin Panel', 'icon': 'speedometer2'},
+        'jobs': {'displayName': 'Jobs Database', 'icon': 'database'},
+        'files': {'displayName': 'Files Database', 'icon': 'database'},
+        'methods': {'displayName': 'Methods Database', 'icon': 'database'}
+    }
     
-    containers = [
-        {'name': f'{docker_prefix}-slurm', 'displayName': 'Slurm Service', 'icon': 'cpu', 'type': 'service'},
-        {'name': f'{docker_prefix}-api', 'displayName': 'API Server', 'icon': 'server', 'type': 'service'},
-        {'name': f'{docker_prefix}-admin', 'displayName': 'Admin Panel', 'icon': 'speedometer2', 'type': 'service'},
-        {'name': f'{docker_prefix}-jobs', 'displayName': 'Jobs Database', 'icon': 'database', 'type': 'database'},
-        {'name': f'{docker_prefix}-files', 'displayName': 'Files Database', 'icon': 'database', 'type': 'database'},
-        {'name': f'{docker_prefix}-methods', 'displayName': 'Methods Database', 'icon': 'database', 'type': 'database'}
-    ]
-    
-    results = []
-    
-    try:
-        client = docker.from_env()
+    enriched_containers = []
+    for container in snapshot_data['containers']:
+        # Extract suffix (api, slurm, jobs, etc.) from name
+        parts = container['name'].split('-')
+        suffix = parts[-1] if parts else 'unknown'
         
-        for container_info in containers:
-            try:
-                container = client.containers.get(container_info['name'])
-                status = container.status  # running, paused, restarting, exited, etc.
-                
-                results.append({
-                    **container_info,
-                    'status': 'running' if status == 'running' else 'stopped',
-                    'docker_status': status,
-                    'error': None
-                })
-            except docker.errors.NotFound:
-                results.append({
-                    **container_info,
-                    'status': 'stopped',
-                    'docker_status': 'not found',
-                    'error': 'Container not found'
-                })
-            except Exception as e:
-                results.append({
-                    **container_info,
-                    'status': 'unknown',
-                    'docker_status': 'error',
-                    'error': str(e)
-                })
-    except Exception as e:
-        # Return error if can't connect to Docker
-        return JsonResponse({'error': f'Cannot connect to Docker: {str(e)}'}, status=500)
+        info = display_info.get(suffix, {'displayName': container['name'], 'icon': 'box'})
+        
+        enriched_containers.append({
+            **container,
+            'displayName': info['displayName'],
+            'icon': info['icon']
+        })
     
-    return JsonResponse({'containers': results})
+    return JsonResponse({
+        'containers': enriched_containers,
+        'timestamp': snapshot_data['timestamp'],
+        'age_seconds': snapshot_data['age_seconds']
+    })
 
 
 @login_required_simple
 def files_list(request):
     """List all files with advanced filtering."""
     from datetime import datetime
+    from django.utils import timezone
     
     files_db = MongoDBConnections.get_files_db()
     
@@ -233,6 +207,10 @@ def files_list(request):
         else:
             page_range = [1, '...'] + list(range(page - 1, page + 2)) + ['...', total_pages]
     
+    # Get snapshot timestamp
+    snapshot = get_latest_snapshot()
+    snapshot_time = snapshot['timestamp'] if snapshot else timezone.now()
+    
     context = {
         'files': files,
         'page': page,
@@ -245,6 +223,7 @@ def files_list(request):
         'size_max': size_max,
         'date_from': date_from,
         'date_to': date_to,
+        'snapshot_time': snapshot_time,
         'page_title': 'Files'
     }
     
@@ -255,6 +234,7 @@ def files_list(request):
 def jobs_list(request):
     """List all jobs with advanced filtering."""
     from datetime import datetime
+    from django.utils import timezone
     
     jobs_db = MongoDBConnections.get_jobs_db()
     methods_db = MongoDBConnections.get_methods_db()
@@ -402,6 +382,10 @@ def jobs_list(request):
         else:
             page_range = [1, '...'] + list(range(page - 1, page + 2)) + ['...', total_pages]
     
+    # Get snapshot timestamp for last update indicator
+    snapshot = get_latest_snapshot()
+    snapshot_time = snapshot['timestamp'] if snapshot else timezone.now()
+    
     context = {
         'jobs': jobs,
         'status_filter': status_filter,
@@ -414,6 +398,7 @@ def jobs_list(request):
         'total_jobs': total_jobs,
         'per_page': per_page,
         'page_range': page_range,
+        'snapshot_time': snapshot_time,
         'page_title': 'Jobs'
     }
     
@@ -424,6 +409,7 @@ def jobs_list(request):
 def meta_jobs_list(request):
     """List all meta-jobs with advanced filtering."""
     from datetime import datetime
+    from django.utils import timezone
     
     jobs_db = MongoDBConnections.get_jobs_db()
     methods_db = MongoDBConnections.get_methods_db()
@@ -563,6 +549,10 @@ def meta_jobs_list(request):
         else:
             page_range = [1, '...'] + list(range(page - 1, page + 2)) + ['...', total_pages]
     
+    # Get snapshot timestamp
+    snapshot = get_latest_snapshot()
+    snapshot_time = snapshot['timestamp'] if snapshot else timezone.now()
+    
     context = {
         'meta_jobs': meta_jobs,
         'page': page,
@@ -574,6 +564,7 @@ def meta_jobs_list(request):
         'status_filter': status_filter,
         'date_from': date_from,
         'date_to': date_to,
+        'snapshot_time': snapshot_time,
         'page_title': 'Meta-Jobs'
     }
     
@@ -583,6 +574,8 @@ def meta_jobs_list(request):
 @login_required_simple
 def methods_list(request):
     """List all methods with filtering and pagination."""
+    from django.utils import timezone
+    
     methods_db = MongoDBConnections.get_methods_db()
     
     # Get filter parameters
@@ -654,6 +647,10 @@ def methods_list(request):
         else:
             page_range = [1, '...'] + list(range(page - 1, page + 2)) + ['...', total_pages]
     
+    # Get snapshot timestamp
+    snapshot = get_latest_snapshot()
+    snapshot_time = snapshot['timestamp'] if snapshot else timezone.now()
+    
     context = {
         'active_methods': active_methods,
         'inactive_methods': inactive_methods,
@@ -666,6 +663,7 @@ def methods_list(request):
         'per_page': per_page,
         'page_range': page_range,
         'methods_count': len(active_methods) + len(inactive_methods),
+        'snapshot_time': snapshot_time,
         'page_title': 'Methods'
     }
     
@@ -674,72 +672,23 @@ def methods_list(request):
 
 @login_required_simple
 def slurm_queue(request):
-    """Show Slurm queue status."""
-    try:
-        # Call Slurm API to get queue status
-        response = requests.get(f"{settings.SLURM_API_URL}/queue", timeout=5)
-        if response.status_code == 200:
-            data = response.json()
-            # The API returns {"jobs": [...]}
-            queue_data = data.get('jobs', []) if isinstance(data, dict) else []
-        else:
-            queue_data = []
-    except Exception as e:
-        queue_data = []
-    
-    # Enrich Slurm jobs with data from MongoDB
-    jobs_db = MongoDBConnections.get_jobs_db()
-    methods_db = MongoDBConnections.get_methods_db()
-    files_db = MongoDBConnections.get_files_db()
-    
-    for slurm_job in queue_data:
-        slurm_id = slurm_job.get('job_id')
-        if slurm_id:
-            # Find job in MongoDB by slurm_id
-            job_doc = jobs_db.jobs.find_one({'slurm_id': slurm_id})
-            if job_doc:
-                # Add MongoDB job data
-                slurm_job['db_job_id'] = job_doc.get('job_id')
-                slurm_job['db_status'] = job_doc.get('status')
-                slurm_job['created_at'] = job_doc.get('created_at')
-                slurm_job['function_hash'] = job_doc.get('function_hash')
-                
-                # Get method name
-                if job_doc.get('function_hash'):
-                    method = methods_db.methods.find_one({'function_hash': job_doc['function_hash']})
-                    if method:
-                        slurm_job['method_name'] = method.get('name')
-                        slurm_job['method_version'] = method.get('version')
-                
-                # Get input file info
-                if job_doc.get('file_hash'):
-                    file_doc = files_db.files.find_one({'file_hash': job_doc['file_hash']})
-                    if file_doc:
-                        slurm_job['input_filename'] = file_doc.get('filename')
-                        slurm_job['input_size'] = file_doc.get('file_size')
-                elif job_doc.get('file_inputs'):
-                    slurm_job['file_inputs'] = job_doc['file_inputs']
-                    slurm_job['file_info'] = {}
-                    for name, hash_val in job_doc['file_inputs'].items():
-                        file_doc = files_db.files.find_one({'file_hash': hash_val})
-                        if file_doc:
-                            slurm_job['file_info'][name] = {
-                                'filename': file_doc.get('filename'),
-                                'size': file_doc.get('file_size')
-                            }
-                
-                # Get parameters
-                slurm_job['parameters'] = job_doc.get('parameters')
+    """Show Slurm queue status from snapshot."""
+    # Get data from snapshot
+    snapshot_data = get_slurm_queue()
     
     # Check if AJAX request
     is_ajax = request.GET.get('ajax', '0') == '1'
     
     # Return JSON for AJAX
     if is_ajax:
-        return JsonResponse({'queue': queue_data}, safe=False)
+        return JsonResponse({
+            'queue': snapshot_data['queue'],
+            'age_seconds': snapshot_data['age_seconds']
+        }, safe=False)
     
     context = {
-        'queue': queue_data,
+        'queue': snapshot_data['queue'],
+        'snapshot_time': snapshot_data['timestamp'],
         'page_title': 'Slurm'
     }
     
@@ -748,113 +697,28 @@ def slurm_queue(request):
 
 @login_required_simple
 def slurm_job_logs(request, slurm_id):
-    """Get logs for a specific Slurm job."""
-    import docker
-    import json
-    import os
+    """Get logs for a specific Slurm job from snapshot."""
+    # Try to get from snapshot first
+    log_data = get_job_logs(slurm_id=slurm_id)
     
-    # Get docker prefix
-    docker_prefix = 'dshpc'
-    try:
-        config_path = '/app/environment-config.json'
-        if os.path.exists(config_path):
-            with open(config_path, 'r') as f:
-                config = json.load(f)
-                docker_prefix = config.get('docker_stack_prefix', 'dshpc')
-    except:
-        pass
-    
-    container_name = f'{docker_prefix}-slurm'
-    
-    try:
-        client = docker.from_env()
-        container = client.containers.get(container_name)
-        
-        # Get job details from scontrol to find actual log paths
-        scontrol_cmd = f'scontrol show job {slurm_id}'
-        result = container.exec_run(['bash', '-c', scontrol_cmd])
-        
-        slurm_stdout_path = None
-        slurm_stderr_path = None
-        
-        if result.exit_code == 0:
-            output = result.output.decode('utf-8')
-            # Parse StdOut and StdErr paths
-            for line in output.split('\n'):
-                if 'StdOut=' in line:
-                    slurm_stdout_path = line.split('StdOut=')[1].split()[0] if 'StdOut=' in line else None
-                if 'StdErr=' in line:
-                    slurm_stderr_path = line.split('StdErr=')[1].split()[0] if 'StdErr=' in line else None
-        
-        stdout = None
-        stderr = None
-        system_output = None
-        system_error = None
-        
-        # Try to read Slurm's stdout/stderr (combined in one file usually)
-        if slurm_stdout_path:
-            try:
-                result = container.exec_run(['bash', '-c', f'cat {slurm_stdout_path}'])
-                if result.exit_code == 0:
-                    slurm_output = result.output.decode('utf-8', errors='replace')
-                    if slurm_output.strip():
-                        stdout = slurm_output
-            except:
-                pass
-        
-        # Try to find the job by slurm_id in MongoDB to get job_id
-        jobs_db = MongoDBConnections.get_jobs_db()
-        job_doc = jobs_db.jobs.find_one({'slurm_id': slurm_id})
-        
-        if job_doc:
-            job_id = job_doc.get('job_id')
-            
-            # Try to read our system's output files
-            try:
-                result = container.exec_run(['bash', '-c', f'cat /tmp/output_{job_id}.txt'])
-                if result.exit_code == 0:
-                    output_content = result.output.decode('utf-8', errors='replace')
-                    if output_content.strip():
-                        system_output = output_content
-            except:
-                pass
-            
-            try:
-                result = container.exec_run(['bash', '-c', f'cat /tmp/error_{job_id}.txt'])
-                if result.exit_code == 0:
-                    error_content = result.output.decode('utf-8', errors='replace')
-                    if error_content.strip():
-                        system_error = error_content
-            except:
-                pass
-        
-        if not stdout and not stderr and not system_output and not system_error:
-            return JsonResponse({
-                'error': 'No log files found. Job may still be initializing or logs may have been cleaned up.'
-            })
-        
+    if log_data:
         return JsonResponse({
-            'stdout': stdout,
-            'stderr': stderr,
-            'system_output': system_output,
-            'system_error': system_error,
+            'stdout': log_data.get('slurm_output'),
+            'system_output': log_data.get('system_output'),
+            'system_error': log_data.get('system_error'),
+            'from_snapshot': True,
             'error': None
         })
-        
-    except docker.errors.NotFound:
-        return JsonResponse({'error': f"Container '{container_name}' not found"}, status=404)
-    except Exception as e:
-        return JsonResponse({'error': str(e)}, status=500)
+    
+    # If not in snapshot, job might be too old or completed
+    return JsonResponse({
+        'error': 'Logs not available in current snapshot. Job may have completed or logs may have been archived.'
+    })
 
 
 @login_required_simple
 def environment_info(request):
-    """Show environment information from Slurm container."""
-    import docker
-    from django.core.cache import cache
-    from django.utils import timezone
-    from datetime import timedelta
-    
+    """Show environment information from snapshot."""
     # Check if this is an AJAX request for data
     is_ajax = request.GET.get('ajax', '0') == '1'
     
@@ -865,158 +729,8 @@ def environment_info(request):
         }
         return render(request, 'dashboard/environment.html', context)
     
-    # AJAX request - fetch actual data
-    # Get docker prefix from environment config
-    import json
-    import os
-    docker_prefix = 'dshpc'
-    try:
-        config_path = '/app/environment-config.json'
-        if os.path.exists(config_path):
-            with open(config_path, 'r') as f:
-                config = json.load(f)
-                docker_prefix = config.get('docker_stack_prefix', 'dshpc')
-    except:
-        pass
-    
-    container_name = f'{docker_prefix}-slurm'
-    cache_key = 'environment_info_data'
-    cache_timeout = 5  # seconds
-    
-    # Check if we have cached data
-    cached_data = cache.get(cache_key)
-    last_update = cache.get(f'{cache_key}_timestamp')
-    
-    # If we have cached data and it's less than 10 seconds old, use it
-    cache_timeout_display = 10  # Show for 10 seconds
-    if cached_data and last_update:
-        time_since_update = (timezone.now() - last_update).total_seconds()
-        if time_since_update < cache_timeout_display:
-            cached_data['cached'] = True
-            cached_data['cache_age'] = int(time_since_update)
-            cached_data['next_refresh'] = int(cache_timeout_display - time_since_update)
-            return JsonResponse(cached_data)
-    
-    # Otherwise, fetch fresh data
-    env_data = {
-        'python': {},
-        'r': {},
-        'system': {},
-        'slurm': {},
-        'error': None,
-        'cached': False
-    }
-    
-    try:
-        client = docker.from_env()
-        container = client.containers.get(container_name)
-        
-        # Get Python version and packages
-        try:
-            python_version = container.exec_run('python3 --version').output.decode('utf-8').strip()
-            env_data['python']['version'] = python_version
-            
-            # Get pip list
-            pip_list = container.exec_run('/opt/venvs/system_python/bin/pip list --format=json').output.decode('utf-8')
-            import json
-            env_data['python']['packages'] = json.loads(pip_list) if pip_list else []
-        except Exception as e:
-            env_data['python']['error'] = str(e)
-        
-        # Get R version and packages
-        try:
-            r_version = container.exec_run('R --version').output.decode('utf-8').split('\n')[0]
-            env_data['r']['version'] = r_version
-            
-            # Get installed R packages
-            r_packages_cmd = 'R -s -e "ip <- installed.packages(); cat(jsonlite::toJSON(data.frame(Package=ip[,\'Package\'], Version=ip[,\'Version\'])))"'
-            r_packages = container.exec_run(['bash', '-c', r_packages_cmd]).output.decode('utf-8')
-            # Extract JSON from R output
-            import re
-            json_match = re.search(r'\[.*\]', r_packages, re.DOTALL)
-            if json_match:
-                env_data['r']['packages'] = json.loads(json_match.group(0))
-            else:
-                env_data['r']['packages'] = []
-        except Exception as e:
-            env_data['r']['error'] = str(e)
-        
-        # Get system info
-        try:
-            # OS information
-            os_name = container.exec_run(['bash', '-c', 'cat /etc/os-release | grep "^PRETTY_NAME=" | cut -d\'"\' -f2']).output.decode('utf-8').strip()
-            env_data['system']['os_name'] = os_name if os_name else 'Unknown'
-            
-            # Kernel version
-            kernel = container.exec_run('uname -r').output.decode('utf-8').strip()
-            env_data['system']['kernel'] = kernel
-            
-            # Architecture
-            arch = container.exec_run('uname -m').output.decode('utf-8').strip()
-            env_data['system']['architecture'] = arch
-            
-            # CPU info
-            cpu_info = container.exec_run('nproc').output.decode('utf-8').strip()
-            env_data['system']['cpus'] = cpu_info
-            
-            # Memory info - parse for visualization
-            mem_raw = container.exec_run('free -b').output.decode('utf-8')
-            mem_lines = mem_raw.strip().split('\n')
-            if len(mem_lines) > 1:
-                mem_parts = mem_lines[1].split()
-                if len(mem_parts) >= 7:
-                    env_data['system']['mem_total'] = int(mem_parts[1])
-                    env_data['system']['mem_used'] = int(mem_parts[2])
-                    env_data['system']['mem_free'] = int(mem_parts[3])
-                    env_data['system']['mem_available'] = int(mem_parts[6])
-                    env_data['system']['mem_used_pct'] = int((int(mem_parts[2]) / int(mem_parts[1])) * 100)
-            
-            # Disk info - parse for visualization
-            disk_raw = container.exec_run(['bash', '-c', 'df -B1 / | tail -1']).output.decode('utf-8')
-            disk_parts = disk_raw.strip().split()
-            if len(disk_parts) >= 5:
-                env_data['system']['disk_total'] = int(disk_parts[1])
-                env_data['system']['disk_used'] = int(disk_parts[2])
-                env_data['system']['disk_available'] = int(disk_parts[3])
-                env_data['system']['disk_used_pct'] = int(disk_parts[4].replace('%', ''))
-            
-            # APT packages - get ALL installed packages properly
-            apt_cmd = 'dpkg-query -W -f=\'${Package}\t${Version}\n\' | sort'
-            apt_output = container.exec_run(['bash', '-c', apt_cmd]).output.decode('utf-8')
-            apt_packages = []
-            for line in apt_output.strip().split('\n'):
-                if line and '\t' in line:
-                    parts = line.split('\t')
-                    if len(parts) == 2:
-                        apt_packages.append({'name': parts[0], 'version': parts[1]})
-            env_data['system']['apt_packages'] = apt_packages
-            env_data['system']['apt_packages_count'] = len(apt_packages)
-        except Exception as e:
-            env_data['system']['error'] = str(e)
-        
-        # Get Slurm configuration
-        try:
-            slurm_conf = container.exec_run('cat /etc/slurm/slurm.conf').output.decode('utf-8')
-            env_data['slurm']['config'] = slurm_conf
-            
-            # Get Slurm version
-            slurm_version = container.exec_run('scontrol --version').output.decode('utf-8').strip()
-            env_data['slurm']['version'] = slurm_version
-            
-            # Get node info
-            node_info = container.exec_run('scontrol show node').output.decode('utf-8')
-            env_data['slurm']['node_info'] = node_info
-        except Exception as e:
-            env_data['slurm']['error'] = str(e)
-            
-    except docker.errors.NotFound:
-        env_data['error'] = f"Container '{container_name}' not found"
-    except Exception as e:
-        env_data['error'] = f"Error accessing container: {str(e)}"
-    
-    # Cache the data for 10 seconds
-    cache.set(cache_key, env_data, timeout=10)
-    cache.set(f'{cache_key}_timestamp', timezone.now(), timeout=10)
+    # AJAX request - get data from snapshot
+    env_data = get_environment_info()
     
     # Return JSON for AJAX request
     return JsonResponse(env_data)

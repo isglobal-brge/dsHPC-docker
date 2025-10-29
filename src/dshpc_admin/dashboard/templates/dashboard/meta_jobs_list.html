@@ -20,11 +20,21 @@
     <button class="btn btn-sm btn-outline-secondary" type="button" data-bs-toggle="collapse" data-bs-target="#filterPanel">
         <i class="bi bi-funnel"></i> Advanced Filters
     </button>
+    <button class="btn btn-sm btn-outline-secondary" onclick="manualRefresh()" id="refreshBtn" disabled>
+        <i class="bi bi-arrow-clockwise spin"></i>
+    </button>
     <span class="text-muted small">{{ total_meta_jobs }} meta-job(s)</span>
 </div>
 {% endblock %}
 
 {% block content %}
+<!-- Last Update Indicator -->
+<div class="text-end mb-2">
+    <small class="text-muted">
+        <i class="bi bi-clock-history"></i> Last update: {{ snapshot_time|date:"Y-m-d H:i:s" }}
+    </small>
+</div>
+
 <!-- Filter Panel -->
 <div class="collapse {% if search or date_from or date_to %}show{% endif %}" id="filterPanel">
     <div class="filter-panel">
@@ -437,7 +447,37 @@
 
 {% block extra_js %}
 <script>
-    // Per page selector
+    const currentSnapshotTime = new Date('{{ snapshot_time|date:"c" }}').getTime();
+    let checkInterval = null;
+    
+    function manualRefresh() {
+        const btn = document.getElementById('refreshBtn');
+        btn.disabled = true;
+        btn.innerHTML = '<i class="bi bi-arrow-clockwise spin"></i>';
+        checkInterval = setInterval(checkForUpdate, 2000);
+        location.reload();
+    }
+    
+    function checkForUpdate() {
+        fetch('/api/snapshot-timestamp/')
+            .then(r => r.json())
+            .then(data => {
+                const newTime = new Date(data.timestamp).getTime();
+                if (newTime > currentSnapshotTime) {
+                    clearInterval(checkInterval);
+                    const btn = document.getElementById('refreshBtn');
+                    if (btn) {
+                        btn.disabled = false;
+                        btn.innerHTML = '<i class="bi bi-arrow-clockwise"></i>';
+                    }
+                }
+            })
+            .catch(e => console.error('Error:', e));
+    }
+    
+    // Always start checking for updates (button starts disabled)
+    checkInterval = setInterval(checkForUpdate, 2000);
+    
     document.getElementById('perPageSelect')?.addEventListener('change', function() {
         const params = getUrlParams();
         params.per_page = this.value;

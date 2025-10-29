@@ -3,12 +3,14 @@ URL patterns for dashboard app.
 """
 from django.urls import path
 from . import views
+from . import api_views
 
 urlpatterns = [
     path('login/', views.login_view, name='login'),
     path('logout/', views.logout_view, name='logout'),
     path('', views.dashboard_home, name='dashboard'),
     path('api/container-status/', views.container_status, name='container_status'),
+    path('api/snapshot-timestamp/', api_views.snapshot_timestamp, name='snapshot_timestamp'),
     path('files/', views.files_list, name='files_list'),
     path('jobs/', views.jobs_list, name='jobs_list'),
     path('meta-jobs/', views.meta_jobs_list, name='meta_jobs_list'),

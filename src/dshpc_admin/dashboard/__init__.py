@@ -1,2 +1,2 @@
-# Dashboard app for dsHPC admin panel
+# Dashboard app for dsHPCAdmin
 

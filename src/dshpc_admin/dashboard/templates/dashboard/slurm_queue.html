@@ -1,18 +1,27 @@
 {% extends "base.html" %}
 {% load dashboard_filters %}
 
+{% block page_actions %}
+<button class="btn btn-sm btn-outline-secondary" onclick="manualRefresh()" id="refreshBtn" disabled>
+    <i class="bi bi-arrow-clockwise spin"></i>
+</button>
+{% endblock %}
+
 {% block content %}
+<!-- Last Update Indicator -->
+{% if snapshot_time %}
+<div class="text-end mb-2">
+    <small class="text-muted">
+        <i class="bi bi-clock-history"></i> Last update: {{ snapshot_time|date:"Y-m-d H:i:s" }}
+    </small>
+</div>
+{% endif %}
+
 <div class="card shadow-sm">
     <div class="card-header bg-dark text-white d-flex justify-content-between align-items-center">
         <div class="d-flex align-items-center gap-3">
             <span><i class="bi bi-cpu"></i> Slurm Queue</span>
             <span class="badge bg-light text-dark" id="jobCount">{{ queue|length }} job(s)</span>
-        </div>
-        <div class="d-flex align-items-center gap-2">
-            <small class="text-white-50">Auto-refresh in <span id="countdown" class="fw-bold">5</span>s</small>
-            <button onclick="refreshQueue()" class="btn btn-sm btn-light" id="refreshBtn">
-                <i class="bi bi-arrow-clockwise"></i>
-            </button>
         </div>
     </div>
     <div class="card-body p-3" id="queueContainer">
@@ -23,39 +32,71 @@
 
 {% block extra_js %}
 <script>
-let countdown = 5;
-let countdownInterval;
+const currentSnapshotTime = new Date('{{ snapshot_time|date:"c" }}').getTime();
 let currentJobs = [];
-let activeLogRefresh = {}; // Track which job logs are being auto-refreshed
+let activeLogRefresh = {};
+let checkInterval = null;
+
+function manualRefresh() {
+    const btn = document.getElementById('refreshBtn');
+    btn.disabled = true;
+    btn.innerHTML = '<i class="bi bi-arrow-clockwise spin"></i>';
+    checkInterval = setInterval(checkForUpdate, 2000);
+    location.reload();
+}
+
+function checkForUpdate() {
+    fetch('/api/snapshot-timestamp/')
+        .then(r => r.json())
+        .then(data => {
+            const newTime = new Date(data.timestamp).getTime();
+            if (newTime > currentSnapshotTime) {
+                clearInterval(checkInterval);
+                const btn = document.getElementById('refreshBtn');
+                if (btn) {
+                    btn.disabled = false;
+                    btn.innerHTML = '<i class="bi bi-arrow-clockwise"></i>';
+                }
+            }
+        })
+        .catch(e => console.error('Error:', e));
+}
+
+// Always start checking for updates (button starts disabled)
+checkInterval = setInterval(checkForUpdate, 2000);
 
 function refreshQueue() {
     const refreshBtn = document.getElementById('refreshBtn');
-    refreshBtn.disabled = true;
+    if (refreshBtn) refreshBtn.disabled = true;
     
     fetch('/slurm/?ajax=1')
         .then(r => r.json())
         .then(data => {
-            updateQueue(data.queue);
-            const count = data.queue.length;
-            document.getElementById('jobCount').textContent = count + ' job(s)';
+            if (data.error) {
+                console.warn('Slurm queue error:', data.error);
+                // Don't update if there's an error, keep current state
+            } else {
+                updateQueue(data.queue || []);
+                const count = (data.queue || []).length;
+                document.getElementById('jobCount').textContent = count + ' job(s)';
+            }
             
-            refreshBtn.disabled = false;
-            countdown = 5;
+            if (refreshBtn)             refreshBtn.disabled = false;
+            countdown = 10;
             document.getElementById('countdown').textContent = countdown;
         })
         .catch(e => {
             console.error('Error refreshing queue:', e);
-            refreshBtn.disabled = false;
+            if (refreshBtn) refreshBtn.disabled = false;
         });
 }
 
 function updateQueue(newJobs) {
-    // NEVER update if there are open accordions - too risky
-    const hasOpenAccordions = document.querySelectorAll('.accordion-collapse.show').length > 0;
+    // Don't update if there are open accordions
+    const hasOpenAccordions = document.querySelectorAll('#slurmJobsAccordion .accordion-collapse.show').length > 0;
     
     if (hasOpenAccordions) {
-        // Only update the job count, nothing else
-        currentJobs = newJobs;
+        // Don't touch anything if user is viewing details
         return;
     }
     
@@ -85,8 +126,7 @@ function updateQueue(newJobs) {
     const newJobIds = newJobs.map(j => j.job_id).sort().join(',');
     
     if (currentJobIds !== newJobIds) {
-        // Jobs changed, but DON'T render if any accordion is open
-        console.log('Jobs changed but accordions are closed, safe to update');
+        // Jobs changed, safe to update since no accordions are open
         renderQueue(newJobs);
     }
     
@@ -278,12 +318,25 @@ function renderQueue(queue) {
                         </div>
                         ` : ''}
                         
-                        <!-- Job Logs Button -->
+                        <!-- Job Logs Section -->
                         <div class="mt-4">
                             <button class="btn btn-sm btn-outline-primary" onclick="loadJobLogs('${job.job_id}', ${index})">
                                 <i class="bi bi-file-text"></i> View Job Logs
                             </button>
-                            <div id="jobLogs${index}" class="mt-3" style="display: none;"></div>
+                            <div id="jobLogsContainer${index}" class="mt-3" style="display: none;">
+                                <div class="card modern-table">
+                                    <div class="card-header bg-dark text-white d-flex justify-content-between align-items-center">
+                                        <span><i class="bi bi-terminal"></i> Job Logs</span>
+                                        <small class="text-white-50">
+                                            <i class="bi bi-arrow-repeat"></i> Live updates
+                                        </small>
+                                    </div>
+                                    <div class="card-body p-0">
+                                        <div id="jobLogs${index}"></div>
+                                    </div>
+                                    <div class="card-footer text-muted small" id="jobLogsFooter${index}"></div>
+                                </div>
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -297,14 +350,16 @@ function renderQueue(queue) {
 
 function loadJobLogs(slurmId, index, isAutoRefresh = false) {
     const logsDiv = document.getElementById(`jobLogs${index}`);
+    const logsContainer = document.getElementById(`jobLogsContainer${index}`);
+    const logsFooter = document.getElementById(`jobLogsFooter${index}`);
     
-    // If not auto-refresh, show loading and make visible
+    // If not auto-refresh, show container and loading
     if (!isAutoRefresh) {
-        logsDiv.style.display = 'block';
+        logsContainer.style.display = 'block';
         logsDiv.innerHTML = `
-            <div class="text-center py-3">
-                <div class="spinner-border spinner-border-sm text-primary" role="status"></div>
-                <span class="ms-2">Loading logs...</span>
+            <div class="terminal text-center py-5">
+                <div class="spinner-border text-primary mb-3" role="status"></div>
+                <p class="text-muted">Loading logs...</p>
             </div>
         `;
         
@@ -335,35 +390,55 @@ function loadJobLogs(slurmId, index, isAutoRefresh = false) {
                 return;
             }
             
+            // Update footer with timestamp
+            const now = new Date();
+            const year = now.getFullYear();
+            const month = String(now.getMonth() + 1).padStart(2, '0');
+            const day = String(now.getDate()).padStart(2, '0');
+            const hours = String(now.getHours()).padStart(2, '0');
+            const minutes = String(now.getMinutes()).padStart(2, '0');
+            const seconds = String(now.getSeconds()).padStart(2, '0');
+            const timeStr = `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`;
+            
+            if (logsFooter) {
+                logsFooter.innerHTML = `<i class="bi bi-clock-history"></i> ${timeStr}`;
+            }
+            
             let html = '';
             let terminalIndex = 0;
             
             // Slurm stdout (combined stdout/stderr from Slurm)
             if (data.stdout) {
+                const lines = data.stdout.split('\n');
+                const displayLines = lines.slice(-200).join('\n');
                 html += `
                     <h6 class="mb-2"><i class="bi bi-file-text"></i> Slurm Output (slurm-${slurmId}.out)</h6>
-                    <div class="terminal terminal-${terminalIndex}" style="max-height: 300px;">${escapeHtml(data.stdout.slice(-5000))}</div>
-                    ${data.stdout.length > 5000 ? '<div class="alert alert-info small mt-2">Showing last 5,000 characters of ' + data.stdout.length + ' total</div>' : ''}
+                    <div class="terminal terminal-${terminalIndex}" style="max-height: 300px;">${escapeHtml(displayLines)}</div>
+                    ${lines.length > 200 ? '<div class="alert alert-info small mt-2">Showing last 200 lines of ' + lines.length + ' total</div>' : ''}
                 `;
                 terminalIndex++;
             }
             
             // System error output (R package loading messages, etc.)
             if (data.system_error) {
+                const lines = data.system_error.split('\n');
+                const displayLines = lines.slice(-200).join('\n');
                 html += `
                     <h6 class="mb-2 mt-3"><i class="bi bi-info-circle"></i> System Messages</h6>
-                    <div class="terminal terminal-${terminalIndex}" style="max-height: 300px;">${escapeHtml(data.system_error.slice(-5000))}</div>
-                    ${data.system_error.length > 5000 ? '<div class="alert alert-info small mt-2">Showing last 5,000 characters of ' + data.system_error.length + ' total</div>' : ''}
+                    <div class="terminal terminal-${terminalIndex}" style="max-height: 300px;">${escapeHtml(displayLines)}</div>
+                    ${lines.length > 200 ? '<div class="alert alert-info small mt-2">Showing last 200 lines of ' + lines.length + ' total</div>' : ''}
                 `;
                 terminalIndex++;
             }
             
             // System output (actual job output)
             if (data.system_output) {
+                const lines = data.system_output.split('\n');
+                const displayLines = lines.slice(-200).join('\n');
                 html += `
                     <h6 class="mb-2 mt-3"><i class="bi bi-terminal"></i> Job Output</h6>
-                    <div class="terminal terminal-${terminalIndex}" style="max-height: 300px;">${escapeHtml(data.system_output.slice(-5000))}</div>
-                    ${data.system_output.length > 5000 ? '<div class="alert alert-info small mt-2">Showing last 5,000 characters of ' + data.system_output.length + ' total</div>' : ''}
+                    <div class="terminal terminal-${terminalIndex}" style="max-height: 300px;">${escapeHtml(displayLines)}</div>
+                    ${lines.length > 200 ? '<div class="alert alert-info small mt-2">Showing last 200 lines of ' + lines.length + ' total</div>' : ''}
                 `;
                 terminalIndex++;
             }
@@ -422,7 +497,7 @@ function startLogAutoRefresh(slurmId, index) {
             clearInterval(activeLogRefresh[index]);
             delete activeLogRefresh[index];
         }
-    }, 5000);
+    }, 5000);  // 5 seconds
 }
 
 // Stop all log auto-refreshes when accordion is collapsed
@@ -461,22 +536,10 @@ function formatBytes(bytes) {
 // Initial load
 fetch('/slurm/?ajax=1')
     .then(r => r.json())
-    .then(data => renderQueue(data.queue));
-
-// Countdown timer
-countdownInterval = setInterval(() => {
-    countdown--;
-    document.getElementById('countdown').textContent = countdown;
-    
-    if (countdown <= 0) {
-        refreshQueue();
-        countdown = 5;
-    }
-}, 1000);
+    .then(data => renderQueue(data.queue || []));
 
 // Cleanup
 window.addEventListener('beforeunload', () => {
-    if (countdownInterval) clearInterval(countdownInterval);
     // Clear all log refresh intervals
     Object.values(activeLogRefresh).forEach(interval => clearInterval(interval));
 });

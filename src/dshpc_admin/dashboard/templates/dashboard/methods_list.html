@@ -6,18 +6,28 @@
     <button class="btn btn-sm btn-outline-secondary" type="button" data-bs-toggle="collapse" data-bs-target="#filterPanel">
         <i class="bi bi-funnel"></i> Advanced Filters
     </button>
+    <button class="btn btn-sm btn-outline-secondary" onclick="manualRefresh()" id="refreshBtn" disabled>
+        <i class="bi bi-arrow-clockwise spin"></i>
+    </button>
     <div class="form-check form-switch ms-3">
-    <input class="form-check-input" type="checkbox" id="showInactive" 
+        <input class="form-check-input" type="checkbox" id="showInactive" 
                {% if show_inactive %}checked{% endif %}>
         <label class="form-check-label small" for="showInactive">
             Show Inactive
-    </label>
+        </label>
     </div>
     <span class="text-muted small">{{ total_methods }} method(s)</span>
 </div>
 {% endblock %}
 
 {% block content %}
+<!-- Last Update Indicator -->
+<div class="text-end mb-2">
+    <small class="text-muted">
+        <i class="bi bi-clock-history"></i> Last update: {{ snapshot_time|date:"Y-m-d H:i:s" }}
+    </small>
+</div>
+
 <!-- Filter Panel -->
 <div class="collapse {% if search %}show{% endif %}" id="filterPanel">
     <div class="filter-panel">
@@ -417,6 +427,37 @@
 
 {% block extra_js %}
 <script>
+    const currentSnapshotTime = new Date('{{ snapshot_time|date:"c" }}').getTime();
+    let checkInterval = null;
+    
+    function manualRefresh() {
+        const btn = document.getElementById('refreshBtn');
+        btn.disabled = true;
+        btn.innerHTML = '<i class="bi bi-arrow-clockwise spin"></i>';
+        checkInterval = setInterval(checkForUpdate, 2000);
+        location.reload();
+    }
+    
+    function checkForUpdate() {
+        fetch('/api/snapshot-timestamp/')
+            .then(r => r.json())
+            .then(data => {
+                const newTime = new Date(data.timestamp).getTime();
+                if (newTime > currentSnapshotTime) {
+                    clearInterval(checkInterval);
+                    const btn = document.getElementById('refreshBtn');
+                    if (btn) {
+                        btn.disabled = false;
+                        btn.innerHTML = '<i class="bi bi-arrow-clockwise"></i>';
+                    }
+                }
+            })
+            .catch(e => console.error('Error:', e));
+    }
+    
+    // Always start checking for updates (button starts disabled)
+    checkInterval = setInterval(checkForUpdate, 2000);
+    
     // Show/hide inactive toggle WITHOUT page reload
     document.addEventListener('DOMContentLoaded', function() {
         const showInactiveCheckbox = document.getElementById('showInactive');

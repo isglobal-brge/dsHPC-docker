@@ -2,17 +2,19 @@
 {% load dashboard_filters %}
 
 {% block page_actions %}
-<div class="d-flex align-items-center gap-2">
-    <small class="text-muted" id="cacheStatus" style="display: none;">
-        <i class="bi bi-clock-history"></i> <span id="cacheAge"></span>
-    </small>
-    <button onclick="loadEnvironmentData()" class="btn btn-sm btn-outline-secondary" id="refreshBtn">
-        <i class="bi bi-arrow-clockwise"></i>
-    </button>
-</div>
+<button onclick="manualRefresh()" class="btn btn-sm btn-outline-secondary" id="refreshBtn" disabled>
+    <i class="bi bi-arrow-clockwise spin"></i>
+</button>
 {% endblock %}
 
 {% block content %}
+<!-- Last Update Indicator -->
+<div class="text-end mb-2" id="updateIndicator" style="display: none;">
+    <small class="text-muted">
+        <i class="bi bi-clock-history"></i> Last update: <span id="snapshotTimestamp"></span>
+    </small>
+</div>
+
 <!-- Loading State -->
 <div id="loadingState">
     <div class="card shadow-sm">
@@ -37,9 +39,6 @@
 <script>
 // Fetch environment data
 function loadEnvironmentData() {
-    const refreshBtn = document.getElementById('refreshBtn');
-    if (refreshBtn) refreshBtn.disabled = true;
-    
     fetch('/environment/?ajax=1')
         .then(r => r.json())
         .then(data => {
@@ -47,28 +46,20 @@ function loadEnvironmentData() {
             document.getElementById('loadingState').style.display = 'none';
             document.getElementById('contentContainer').style.display = 'block';
             
-            // Show cache status if applicable
-            if (data.cached) {
-                document.getElementById('cacheStatus').style.display = 'inline';
-                document.getElementById('cacheAge').textContent = `Updated ${data.cache_age}s ago`;
+            // Update last update time from snapshot
+            if (data.timestamp) {
+                const snapshotDate = new Date(data.timestamp);
+                const year = snapshotDate.getFullYear();
+                const month = String(snapshotDate.getMonth() + 1).padStart(2, '0');
+                const day = String(snapshotDate.getDate()).padStart(2, '0');
+                const hours = String(snapshotDate.getHours()).padStart(2, '0');
+                const minutes = String(snapshotDate.getMinutes()).padStart(2, '0');
+                const seconds = String(snapshotDate.getSeconds()).padStart(2, '0');
+                document.getElementById('snapshotTimestamp').textContent = `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`;
+                document.getElementById('updateIndicator').style.display = 'block';
                 
-                // Disable refresh button for remaining time
-                if (data.next_refresh && refreshBtn) {
-                    refreshBtn.title = `Please wait ${data.next_refresh}s before refreshing`;
-                    setTimeout(() => {
-                        refreshBtn.disabled = false;
-                        refreshBtn.title = 'Refresh environment information';
-                    }, data.next_refresh * 1000);
-                }
-            } else {
-                // Fresh data loaded, enable button after 10 seconds
-                if (refreshBtn) {
-                    refreshBtn.title = 'Please wait 10s before refreshing';
-                    setTimeout(() => {
-                        refreshBtn.disabled = false;
-                        refreshBtn.title = 'Refresh environment information';
-                    }, 10000);
-                }
+                // Update current snapshot time for comparison
+                currentSnapshotTime = snapshotDate.getTime();
             }
             
             // Check for errors
@@ -544,5 +535,43 @@ function filterPackages(searchId, tableId) {
 
 // Load data on page load
 loadEnvironmentData();
+
+// Track current snapshot time (will be set after data loads)
+let currentSnapshotTime = 0;
+let checkInterval = null;
+
+// Update snapshot time tracker when data loads
+const originalLoadData = loadEnvironmentData;
+loadEnvironmentData = function() {
+    originalLoadData();
+}
+
+function manualRefresh() {
+    const btn = document.getElementById('refreshBtn');
+    btn.disabled = true;
+    btn.innerHTML = '<i class="bi bi-arrow-clockwise spin"></i>';
+    checkInterval = setInterval(checkForUpdate, 2000);
+    location.reload();
+}
+
+function checkForUpdate() {
+    fetch('/api/snapshot-timestamp/')
+        .then(r => r.json())
+        .then(data => {
+            const newTime = new Date(data.timestamp).getTime();
+            if (newTime > currentSnapshotTime) {
+                clearInterval(checkInterval);
+                const btn = document.getElementById('refreshBtn');
+                if (btn) {
+                    btn.disabled = false;
+                    btn.innerHTML = '<i class="bi bi-arrow-clockwise"></i>';
+                }
+            }
+        })
+        .catch(e => console.error('Error:', e));
+}
+
+// Always start checking for updates (button starts disabled)
+checkInterval = setInterval(checkForUpdate, 2000);
 </script>
 {% endblock %}
