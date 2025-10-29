@@ -211,6 +211,8 @@ def create_job(job: JobSubmission) -> Tuple[str, Dict[str, Any]]:
         "parameters": sorted_params,
         "status": JobStatus.PENDING,
         "created_at": datetime.utcnow(),
+        "last_submission_attempt": None,  # Track when we last tried to submit
+        "submission_attempts": 0,  # Count submission attempts
         "name": job.name,
         "output": None,
         "error": None

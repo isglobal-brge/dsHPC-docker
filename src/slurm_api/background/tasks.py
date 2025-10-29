@@ -15,20 +15,38 @@ async def check_orphaned_jobs():
     
     try:
         # Find jobs that are pending but have no slurm_id (orphaned jobs)
-        # Only retry jobs older than 30 seconds to avoid retrying jobs still being processed
-        thirty_seconds_ago = datetime.utcnow() - timedelta(seconds=30)
+        # Use last_submission_attempt to determine if job needs retry
+        # Two cases:
+        # 1. last_submission_attempt is None (never tried) - retry immediately
+        # 2. last_submission_attempt exists - retry if >2 minutes ago (exponential backoff could be added)
+        two_minutes_ago = datetime.utcnow() - timedelta(minutes=2)
         
         orphaned_jobs = jobs_collection.find({
-            "status": JobStatus.PENDING,
-            "slurm_id": None,
-            "created_at": {"$lt": thirty_seconds_ago}
+            "$and": [
+                {"status": JobStatus.PENDING},
+                {"slurm_id": None},
+                {"$or": [
+                    {"last_submission_attempt": None},  # Never attempted
+                    {"last_submission_attempt": {"$lt": two_minutes_ago}}  # Last attempt >2 min ago
+                ]}
+            ]
         }).sort("created_at", 1).limit(10)  # Process max 10 at a time, oldest first (FIFO)
         
         for job in orphaned_jobs:
             job_id = job["job_id"]
-            logger.warning(f"Found orphaned job {job_id}, attempting to submit to Slurm...")
+            attempts = job.get("submission_attempts", 0)
+            logger.warning(f"Found orphaned job {job_id} (attempt #{attempts + 1}), submitting to Slurm...")
             
             try:
+                # Update last_submission_attempt timestamp BEFORE attempting
+                jobs_collection.update_one(
+                    {"job_id": job_id},
+                    {"$set": {
+                        "last_submission_attempt": datetime.utcnow(),
+                        "submission_attempts": attempts + 1
+                    }}
+                )
+                
                 # Reconstruct JobSubmission from database document
                 job_submission = JobSubmission(
                     file_hash=job.get("file_hash"),
@@ -43,23 +61,34 @@ async def check_orphaned_jobs():
                 success, message, slurm_id = submit_slurm_job(script_path)
                 
                 if success:
-                    # Update job with slurm_id
+                    # Update job with slurm_id and clear retry tracking
                     jobs_collection.update_one(
                         {"job_id": job_id},
-                        {"$set": {"slurm_id": slurm_id}}
+                        {"$set": {
+                            "slurm_id": slurm_id,
+                            "last_submission_attempt": None  # Clear since now submitted
+                        }}
                     )
-                    logger.info(f"Successfully submitted orphaned job {job_id} to Slurm with ID {slurm_id}")
+                    logger.info(f"✅ Successfully submitted orphaned job {job_id} to Slurm with ID {slurm_id}")
                 else:
-                    # Mark as failed if submission failed
-                    update_job_status(job_id, JobStatus.FAILED, error=f"Failed to submit to Slurm: {message}")
-                    logger.error(f"Failed to submit orphaned job {job_id}: {message}")
+                    # Don't mark as failed yet - will retry based on last_submission_attempt
+                    logger.warning(f"⚠️ Could not submit job {job_id} (attempt #{attempts + 1}): {message}")
+                    # Mark as failed after 5 attempts
+                    if attempts >= 4:  # 5th attempt failed
+                        update_job_status(job_id, JobStatus.FAILED, error=f"Failed after {attempts + 1} attempts: {message}")
+                        logger.error(f"❌ Job {job_id} marked as FAILED after {attempts + 1} submission attempts")
                     
             except Exception as e:
-                logger.error(f"Error retrying orphaned job {job_id}: {e}")
-                update_job_status(job_id, JobStatus.FAILED, error=str(e))
+                # Log error but allow retries
+                logger.error(f"❌ Error retrying job {job_id}: {e}")
+                # Mark as failed after 5 attempts
+                if attempts >= 4:
+                    update_job_status(job_id, JobStatus.FAILED, error=f"Failed after {attempts + 1} attempts: {str(e)}")
+                    logger.error(f"Job {job_id} marked as FAILED after {attempts + 1} submission attempts")
                 
     except Exception as e:
-        logger.error(f"Error checking orphaned jobs: {e}")
+        # Never let this crash the background task
+        logger.error(f"Error checking orphaned jobs (will retry next iteration): {e}")
 
 
 async def check_jobs_once():
@@ -103,8 +132,11 @@ async def check_jobs_once():
         
 async def check_job_status():
     """Background task to check and update status of running jobs."""
-    # First run the function once immediately
-    await check_jobs_once()
+    # First run the function once immediately (with error protection)
+    try:
+        await check_jobs_once()
+    except Exception as e:
+        logger.error(f"Error in initial job check: {e}")
     
     # Then continue with the periodic check loop
     while True:
@@ -112,6 +144,7 @@ async def check_job_status():
             await check_jobs_once()
         except Exception as e:
             logger.error(f"Error in job status checking loop: {e}")
+            # Log the error but CONTINUE the loop - never exit
         
         # Wait before next check
         await asyncio.sleep(5)  # Check every 5 seconds 
