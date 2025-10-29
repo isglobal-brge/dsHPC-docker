@@ -584,12 +584,13 @@
     
     function unifiedSearch() {
         const search = document.getElementById('unifiedSearch').value.toLowerCase();
-        window.currentSearch = search;
-        window.currentOccurrenceIndex = 0;
-        const items = document.querySelectorAll('.file-item');
-        let matchCount = 0;
         
-        if (!search) {
+        // Ignore empty or whitespace-only searches
+        if (!search || search.trim() === '') {
+            window.currentSearch = '';
+            window.currentOccurrenceIndex = 0;
+            const items = document.querySelectorAll('.file-item');
+            
             items.forEach(item => {
                 item.style.display = '';
                 const badge = item.querySelector('.badge');
@@ -604,6 +605,11 @@
             }
             return;
         }
+        
+        window.currentSearch = search;
+        window.currentOccurrenceIndex = 0;
+        const items = document.querySelectorAll('.file-item');
+        let matchCount = 0;
         
         items.forEach(item => {
             const filename = item.getAttribute('data-filename');
@@ -670,6 +676,9 @@
         // Remove first directory level from display path
         const displayPath = filepath.split('/').slice(1).join('/') || filepath;
         const ext = filepath.includes('.') ? filepath.split('.').pop().toLowerCase() : '';
+        
+        // Trim leading and trailing whitespace/newlines
+        content = content.trim();
         
         // Split by lines for processing
         const lines = content.split('\n');
