@@ -10,6 +10,9 @@ from .auth import login_required_simple
 from .snapshot_utils import get_container_status, get_system_resources, get_job_logs, get_environment_info, get_slurm_queue, get_latest_snapshot
 import requests
 from django.conf import settings
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 def login_view(request):
@@ -240,6 +243,67 @@ def files_list(request):
         # Ensure status field exists
         if 'status' not in f or f['status'] is None:
             f['status'] = 'completed'  # Default for old files without status
+        
+        # Add content preview for ALL files (text and binary)
+        try:
+            content_bytes = None
+            content_type = f.get('content_type', '')
+            
+            # Get content based on storage type
+            if f.get('storage_type') == 'gridfs' and f.get('gridfs_id'):
+                try:
+                    from gridfs import GridFS
+                    from bson import ObjectId
+                    fs = GridFS(files_db, collection='fs')
+                    
+                    grid_id = f['gridfs_id']
+                    if isinstance(grid_id, str):
+                        grid_id = ObjectId(grid_id)
+                    
+                    # Read first 10KB for preview
+                    grid_out = fs.get(grid_id)
+                    content_bytes = grid_out.read(10000)
+                    grid_out.close()
+                except Exception as e:
+                    logger.debug(f"Could not load GridFS content for {f.get('filename')}: {e}")
+            
+            elif f.get('storage_type') in ['mongodb', 'inline'] and f.get('content'):
+                import base64
+                try:
+                    # Decode base64 content
+                    content_bytes = base64.b64decode(f.get('content'))[:10000]
+                except Exception as e:
+                    logger.debug(f"Could not decode content for {f.get('filename')}: {e}")
+            
+            # Generate preview
+            if content_bytes:
+                # Try to decode as text first
+                is_text = content_type.startswith('text/') or content_type in ['application/json', 'application/x-r', '']
+                
+                if is_text:
+                    try:
+                        content_str = content_bytes.decode('utf-8', errors='replace')
+                        max_preview = 5000
+                        f['content_preview'] = content_str[:max_preview]
+                        f['content_truncated'] = len(content_bytes) > max_preview
+                        f['preview_type'] = 'text'
+                    except:
+                        is_text = False
+                
+                if not is_text:
+                    # Show hex dump for binary files
+                    hex_lines = []
+                    for i in range(0, min(512, len(content_bytes)), 16):
+                        chunk = content_bytes[i:i+16]
+                        hex_part = ' '.join(f'{b:02x}' for b in chunk)
+                        ascii_part = ''.join(chr(b) if 32 <= b < 127 else '.' for b in chunk)
+                        hex_lines.append(f'{i:08x}  {hex_part:<48}  {ascii_part}')
+                    
+                    f['content_preview'] = '\n'.join(hex_lines)
+                    f['content_truncated'] = len(content_bytes) > 512
+                    f['preview_type'] = 'hex'
+        except Exception as e:
+            logger.debug(f"Error adding preview for {f.get('filename')}: {e}")
     
     # Generate page range for pagination (with ellipsis)
     page_range = []
@@ -373,14 +437,30 @@ def jobs_list(request):
                 if isinstance(grid_id, str):
                     grid_id = ObjectId(grid_id)
                 
-                # Retrieve only first 10000 chars to avoid memory issues
+                # Retrieve first 10KB
                 grid_out = fs.get(grid_id)
-                output_bytes = grid_out.read(10000)  # Read first 10KB
-                j['output'] = output_bytes.decode('utf-8', errors='replace')
-                j['output_truncated'] = True
+                output_bytes = grid_out.read(10000)
                 grid_out.close()
+                
+                # Try to decode as text, fallback to hex
+                try:
+                    j['output'] = output_bytes.decode('utf-8', errors='strict')
+                    j['output_type'] = 'text'
+                except UnicodeDecodeError:
+                    # Binary data - show hex dump
+                    hex_lines = []
+                    for i in range(0, min(512, len(output_bytes)), 16):
+                        chunk = output_bytes[i:i+16]
+                        hex_part = ' '.join(f'{b:02x}' for b in chunk)
+                        ascii_part = ''.join(chr(b) if 32 <= b < 127 else '.' for b in chunk)
+                        hex_lines.append(f'{i:08x}  {hex_part:<48}  {ascii_part}')
+                    j['output'] = '\n'.join(hex_lines)
+                    j['output_type'] = 'hex'
+                
+                j['output_truncated'] = True
             except Exception as e:
                 j['output'] = f"[Error retrieving output from GridFS: {str(e)}]"
+                j['output_type'] = 'error'
         
         # Retrieve error from GridFS if stored there
         if j.get('error_storage') == 'gridfs' and j.get('error_gridfs_id'):
@@ -394,12 +474,28 @@ def jobs_list(request):
                     grid_id = ObjectId(grid_id)
                 
                 grid_out = fs.get(grid_id)
-                error_bytes = grid_out.read(10000)  # Read first 10KB
-                j['error'] = error_bytes.decode('utf-8', errors='replace')
-                j['error_truncated'] = True
+                error_bytes = grid_out.read(10000)
                 grid_out.close()
+                
+                # Try to decode as text, fallback to hex
+                try:
+                    j['error'] = error_bytes.decode('utf-8', errors='strict')
+                    j['error_type'] = 'text'
+                except UnicodeDecodeError:
+                    # Binary data - show hex dump
+                    hex_lines = []
+                    for i in range(0, min(512, len(error_bytes)), 16):
+                        chunk = error_bytes[i:i+16]
+                        hex_part = ' '.join(f'{b:02x}' for b in chunk)
+                        ascii_part = ''.join(chr(b) if 32 <= b < 127 else '.' for b in chunk)
+                        hex_lines.append(f'{i:08x}  {hex_part:<48}  {ascii_part}')
+                    j['error'] = '\n'.join(hex_lines)
+                    j['error_type'] = 'hex'
+                
+                j['error_truncated'] = True
             except Exception as e:
                 j['error'] = f"[Error retrieving error from GridFS: {str(e)}]"
+                j['error_type'] = 'error'
         
         # Enrich with file info
         if j.get('file_inputs'):

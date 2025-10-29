@@ -266,10 +266,18 @@
                 <!-- Output -->
                 {% if job.output %}
                 <div class="mt-4">
-                    <h6 class="mb-3"><i class="bi bi-terminal"></i> Output Preview</h6>
+                    <h6 class="mb-3">
+                        <i class="bi bi-{% if job.output_type == 'hex' %}file-binary{% else %}terminal{% endif %}"></i> 
+                        Output Preview {% if job.output_type == 'hex' %}(Hex Dump){% endif %}
+                    </h6>
                     {% if job.output_storage == 'gridfs' or job.output_truncated %}
                     <div class="alert alert-info small mb-2">
-                        <i class="bi bi-info-circle"></i> Showing preview of output (first ~10,000 characters)
+                        <i class="bi bi-info-circle"></i> 
+                        {% if job.output_type == 'hex' %}
+                            Showing first 512 bytes (hex dump)
+                        {% else %}
+                            Showing preview of output (first ~10,000 characters)
+                        {% endif %}
                         {% if job.output_size %}
                             - Total size: {{ job.output_size|pretty_bytes }}
                         {% endif %}
@@ -279,7 +287,7 @@
                         <i class="bi bi-info-circle"></i> Showing first 5,000 characters of {{ job.output|length }} total
                     </div>
                     {% endif %}
-                    <div class="terminal" style="max-height: 400px;">{{ job.output|slice:":5000" }}</div>
+                    <div class="terminal" style="max-height: 400px; font-size: {% if job.output_type == 'hex' %}0.75rem{% else %}0.85rem{% endif %};">{{ job.output|slice:":5000" }}</div>
                 </div>
                 {% endif %}
                 

@@ -345,10 +345,18 @@
                                 <!-- Job Output -->
                                 {% if step.job_data.output %}
                                 <div class="mt-3">
-                                    <h6 class="mb-2"><i class="bi bi-terminal"></i> Job Output Preview</h6>
+                                    <h6 class="mb-2">
+                                        <i class="bi bi-{% if step.job_data.output_type == 'hex' %}file-binary{% else %}terminal{% endif %}"></i> 
+                                        Job Output Preview {% if step.job_data.output_type == 'hex' %}(Hex Dump){% endif %}
+                                    </h6>
                                     {% if step.job_data.output_storage == 'gridfs' or step.job_data.output_truncated %}
                                     <div class="alert alert-info small mb-2">
-                                        <i class="bi bi-info-circle"></i> Showing preview (first ~10,000 characters)
+                                        <i class="bi bi-info-circle"></i> 
+                                        {% if step.job_data.output_type == 'hex' %}
+                                            Showing first 512 bytes (hex dump)
+                                        {% else %}
+                                            Showing preview (first ~10,000 characters)
+                                        {% endif %}
                                         {% if step.job_data.output_size %}
                                             - Total: {{ step.job_data.output_size|pretty_bytes }}
                                         {% endif %}
@@ -358,7 +366,7 @@
                                         <i class="bi bi-info-circle"></i> Showing first 3,000 characters of {{ step.job_data.output|length }} total
                                     </div>
                                     {% endif %}
-                                    <div class="terminal" style="max-height: 250px; font-size: 0.8rem;">{{ step.job_data.output|slice:":3000" }}</div>
+                                    <div class="terminal" style="max-height: 250px; font-size: {% if step.job_data.output_type == 'hex' %}0.7rem{% else %}0.8rem{% endif %};">{{ step.job_data.output|slice:":3000" }}</div>
                                 </div>
                                 {% endif %}
                                 
