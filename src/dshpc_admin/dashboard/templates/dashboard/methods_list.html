@@ -559,12 +559,14 @@
     function buildFileTree(files) {
         // Store all files globally
         window.allFiles = {};
+        window.currentFiles = {};  // Reset current files
         
-        // Remove first directory level from paths
+        // Remove first directory level from paths and store content
         for (const [filepath, content] of Object.entries(files)) {
             const parts = filepath.split('/');
             const newPath = parts.length > 1 ? parts.slice(1).join('/') : parts[0];
             window.allFiles[newPath] = {originalPath: filepath, content};
+            window.currentFiles[filepath] = content;  // Store for easy access
         }
         
         let html = `
@@ -580,20 +582,26 @@
                 </div>
                 <small class="text-muted" id="searchResults"></small>
             </div>
-            <div class="list-group list-group-flush" id="fileList">
+            <div class="list-group list-group-flush" id="fileList" style="max-height: 60vh; overflow-y: auto;">
         `;
         
+        let isFirst = true;
         for (const [displayPath, data] of Object.entries(window.allFiles)) {
             html += `
-                <a href="javascript:void(0)" class="list-group-item list-group-item-action file-item" 
+                <a href="javascript:void(0)" class="list-group-item list-group-item-action file-item ${isFirst ? 'active' : ''}" 
                    onclick="showFileByPath('${data.originalPath}')" 
                    data-filename="${displayPath.toLowerCase()}"
                    data-filepath="${data.originalPath}"
-                   title="${displayPath}">
-                    <i class="bi bi-file-code"></i> 
-                    <span style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: inline-block; max-width: 200px; vertical-align: middle;">${displayPath}</span>
+                   style="overflow-x: auto; white-space: nowrap;">
+                    ${displayPath}
                 </a>
             `;
+            
+            // Show first file by default
+            if (isFirst) {
+                setTimeout(() => showFileByPath(data.originalPath), 100);
+                isFirst = false;
+            }
         }
         
         html += '</div>';
@@ -670,10 +678,8 @@
                 // Add badge if content match
                 if (contentMatch) {
                     const occurrences = (content.toLowerCase().match(new RegExp(escapeRegex(search), 'g')) || []).length;
-                    const iconSpan = item.querySelector('span');
-                    if (iconSpan) {
-                        iconSpan.insertAdjacentHTML('afterend', ` <span class="badge bg-warning text-dark">${occurrences}</span>`);
-                    }
+                    // Insert badge at the end of the item
+                    item.insertAdjacentHTML('beforeend', ` <span class="badge bg-warning text-dark ms-2">${occurrences}</span>`);
                 }
             } else {
                 item.style.display = 'none';
@@ -689,13 +695,25 @@
         }
     }
     
-    window.currentFiles = {};
-    
     function showFileByPath(filepath) {
         const content = window.currentFiles[filepath];
-        if (content) {
-            showFile(filepath, content);
+        
+        if (!content) {
+            console.error('File content not found for:', filepath);
+            return;
         }
+        
+        // Highlight selected file in the list
+        document.querySelectorAll('.file-item').forEach(item => {
+            item.classList.remove('active');
+        });
+        
+        const selectedItem = document.querySelector(`.file-item[data-filepath="${filepath}"]`);
+        if (selectedItem) {
+            selectedItem.classList.add('active');
+        }
+        
+        showFile(filepath, content);
     }
     
     window.currentOccurrences = [];
