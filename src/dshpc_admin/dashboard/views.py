@@ -687,19 +687,164 @@ def slurm_queue(request):
     except Exception as e:
         queue_data = []
     
+    # Enrich Slurm jobs with data from MongoDB
+    jobs_db = MongoDBConnections.get_jobs_db()
+    methods_db = MongoDBConnections.get_methods_db()
+    files_db = MongoDBConnections.get_files_db()
+    
+    for slurm_job in queue_data:
+        slurm_id = slurm_job.get('job_id')
+        if slurm_id:
+            # Find job in MongoDB by slurm_id
+            job_doc = jobs_db.jobs.find_one({'slurm_id': slurm_id})
+            if job_doc:
+                # Add MongoDB job data
+                slurm_job['db_job_id'] = job_doc.get('job_id')
+                slurm_job['db_status'] = job_doc.get('status')
+                slurm_job['created_at'] = job_doc.get('created_at')
+                slurm_job['function_hash'] = job_doc.get('function_hash')
+                
+                # Get method name
+                if job_doc.get('function_hash'):
+                    method = methods_db.methods.find_one({'function_hash': job_doc['function_hash']})
+                    if method:
+                        slurm_job['method_name'] = method.get('name')
+                        slurm_job['method_version'] = method.get('version')
+                
+                # Get input file info
+                if job_doc.get('file_hash'):
+                    file_doc = files_db.files.find_one({'file_hash': job_doc['file_hash']})
+                    if file_doc:
+                        slurm_job['input_filename'] = file_doc.get('filename')
+                        slurm_job['input_size'] = file_doc.get('file_size')
+                elif job_doc.get('file_inputs'):
+                    slurm_job['file_inputs'] = job_doc['file_inputs']
+                    slurm_job['file_info'] = {}
+                    for name, hash_val in job_doc['file_inputs'].items():
+                        file_doc = files_db.files.find_one({'file_hash': hash_val})
+                        if file_doc:
+                            slurm_job['file_info'][name] = {
+                                'filename': file_doc.get('filename'),
+                                'size': file_doc.get('file_size')
+                            }
+                
+                # Get parameters
+                slurm_job['parameters'] = job_doc.get('parameters')
+    
     # Check if AJAX request
     is_ajax = request.GET.get('ajax', '0') == '1'
+    
+    # Return JSON for AJAX
+    if is_ajax:
+        return JsonResponse({'queue': queue_data}, safe=False)
     
     context = {
         'queue': queue_data,
         'page_title': 'Slurm'
     }
     
-    # Return partial template for AJAX
-    if is_ajax:
-        return render(request, 'dashboard/slurm_queue_content.html', context)
-    
     return render(request, 'dashboard/slurm_queue.html', context)
+
+
+@login_required_simple
+def slurm_job_logs(request, slurm_id):
+    """Get logs for a specific Slurm job."""
+    import docker
+    import json
+    import os
+    
+    # Get docker prefix
+    docker_prefix = 'dshpc'
+    try:
+        config_path = '/app/environment-config.json'
+        if os.path.exists(config_path):
+            with open(config_path, 'r') as f:
+                config = json.load(f)
+                docker_prefix = config.get('docker_stack_prefix', 'dshpc')
+    except:
+        pass
+    
+    container_name = f'{docker_prefix}-slurm'
+    
+    try:
+        client = docker.from_env()
+        container = client.containers.get(container_name)
+        
+        # Get job details from scontrol to find actual log paths
+        scontrol_cmd = f'scontrol show job {slurm_id}'
+        result = container.exec_run(['bash', '-c', scontrol_cmd])
+        
+        slurm_stdout_path = None
+        slurm_stderr_path = None
+        
+        if result.exit_code == 0:
+            output = result.output.decode('utf-8')
+            # Parse StdOut and StdErr paths
+            for line in output.split('\n'):
+                if 'StdOut=' in line:
+                    slurm_stdout_path = line.split('StdOut=')[1].split()[0] if 'StdOut=' in line else None
+                if 'StdErr=' in line:
+                    slurm_stderr_path = line.split('StdErr=')[1].split()[0] if 'StdErr=' in line else None
+        
+        stdout = None
+        stderr = None
+        system_output = None
+        system_error = None
+        
+        # Try to read Slurm's stdout/stderr (combined in one file usually)
+        if slurm_stdout_path:
+            try:
+                result = container.exec_run(['bash', '-c', f'cat {slurm_stdout_path}'])
+                if result.exit_code == 0:
+                    slurm_output = result.output.decode('utf-8', errors='replace')
+                    if slurm_output.strip():
+                        stdout = slurm_output
+            except:
+                pass
+        
+        # Try to find the job by slurm_id in MongoDB to get job_id
+        jobs_db = MongoDBConnections.get_jobs_db()
+        job_doc = jobs_db.jobs.find_one({'slurm_id': slurm_id})
+        
+        if job_doc:
+            job_id = job_doc.get('job_id')
+            
+            # Try to read our system's output files
+            try:
+                result = container.exec_run(['bash', '-c', f'cat /tmp/output_{job_id}.txt'])
+                if result.exit_code == 0:
+                    output_content = result.output.decode('utf-8', errors='replace')
+                    if output_content.strip():
+                        system_output = output_content
+            except:
+                pass
+            
+            try:
+                result = container.exec_run(['bash', '-c', f'cat /tmp/error_{job_id}.txt'])
+                if result.exit_code == 0:
+                    error_content = result.output.decode('utf-8', errors='replace')
+                    if error_content.strip():
+                        system_error = error_content
+            except:
+                pass
+        
+        if not stdout and not stderr and not system_output and not system_error:
+            return JsonResponse({
+                'error': 'No log files found. Job may still be initializing or logs may have been cleaned up.'
+            })
+        
+        return JsonResponse({
+            'stdout': stdout,
+            'stderr': stderr,
+            'system_output': system_output,
+            'system_error': system_error,
+            'error': None
+        })
+        
+    except docker.errors.NotFound:
+        return JsonResponse({'error': f"Container '{container_name}' not found"}, status=404)
+    except Exception as e:
+        return JsonResponse({'error': str(e)}, status=500)
 
 
 @login_required_simple

@@ -5,19 +5,19 @@
 <div class="card shadow-sm">
     <div class="card-header bg-dark text-white d-flex justify-content-between align-items-center">
         <div class="d-flex align-items-center gap-3">
-            <span><i class="bi bi-cpu"></i> Slurm Status</span>
+            <span><i class="bi bi-cpu"></i> Slurm Queue</span>
             <span class="badge bg-light text-dark" id="jobCount">{{ queue|length }} job(s)</span>
         </div>
         <div class="d-flex align-items-center gap-2">
             <small class="text-white-50">Auto-refresh in <span id="countdown" class="fw-bold">5</span>s</small>
-            <button onclick="refreshQueue()" class="btn btn-sm btn-light" id="refreshBtn" title="Refresh now">
+            <button onclick="refreshQueue()" class="btn btn-sm btn-light" id="refreshBtn">
                 <i class="bi bi-arrow-clockwise"></i>
             </button>
         </div>
     </div>
-    <div class="card-body p-0" id="queueContainer">
-        {% include "dashboard/slurm_queue_content.html" %}
-</div>
+    <div class="card-body p-3" id="queueContainer">
+        <div id="queueContent"></div>
+    </div>
 </div>
 {% endblock %}
 
@@ -25,19 +25,21 @@
 <script>
 let countdown = 5;
 let countdownInterval;
+let currentJobs = [];
+let activeLogRefresh = {}; // Track which job logs are being auto-refreshed
 
 function refreshQueue() {
     const refreshBtn = document.getElementById('refreshBtn');
     refreshBtn.disabled = true;
     
     fetch('/slurm/?ajax=1')
-        .then(r => r.text())
-        .then(html => {
-            document.getElementById('queueContainer').innerHTML = html;
-            const count = document.querySelectorAll('#queueContainer tbody tr').length;
+        .then(r => r.json())
+        .then(data => {
+            updateQueue(data.queue);
+            const count = data.queue.length;
             document.getElementById('jobCount').textContent = count + ' job(s)';
+            
             refreshBtn.disabled = false;
-            // Reset countdown and update display immediately
             countdown = 5;
             document.getElementById('countdown').textContent = countdown;
         })
@@ -46,6 +48,420 @@ function refreshQueue() {
             refreshBtn.disabled = false;
         });
 }
+
+function updateQueue(newJobs) {
+    // NEVER update if there are open accordions - too risky
+    const hasOpenAccordions = document.querySelectorAll('.accordion-collapse.show').length > 0;
+    
+    if (hasOpenAccordions) {
+        // Only update the job count, nothing else
+        currentJobs = newJobs;
+        return;
+    }
+    
+    const container = document.getElementById('queueContent');
+    
+    // If no jobs and we already rendered empty, do nothing
+    if ((!newJobs || newJobs.length === 0) && currentJobs.length === 0) {
+        return;
+    }
+    
+    // If no jobs but we had jobs before, render empty state
+    if (!newJobs || newJobs.length === 0) {
+        renderQueue(newJobs);
+        currentJobs = [];
+        return;
+    }
+    
+    // If this is the first load, do full render
+    if (currentJobs.length === 0) {
+        renderQueue(newJobs);
+        currentJobs = newJobs;
+        return;
+    }
+    
+    // Check if job list actually changed
+    const currentJobIds = currentJobs.map(j => j.job_id).sort().join(',');
+    const newJobIds = newJobs.map(j => j.job_id).sort().join(',');
+    
+    if (currentJobIds !== newJobIds) {
+        // Jobs changed, but DON'T render if any accordion is open
+        console.log('Jobs changed but accordions are closed, safe to update');
+        renderQueue(newJobs);
+    }
+    
+    currentJobs = newJobs;
+}
+
+function renderQueue(queue) {
+    const container = document.getElementById('queueContent');
+    
+    if (!queue || queue.length === 0) {
+        container.innerHTML = `
+            <div class="alert alert-info">
+                <div class="text-center py-5">
+                    <i class="bi bi-inbox fs-1 d-block mb-3" style="opacity: 0.3;"></i>
+                    <h5>No jobs in Slurm queue</h5>
+                    <p class="text-muted mb-0">The Slurm queue is currently empty</p>
+                </div>
+            </div>
+        `;
+        return;
+    }
+    
+    let html = '<div class="accordion accordion-modern" id="slurmJobsAccordion">';
+    
+    queue.forEach((job, index) => {
+        let statusClass = job.state === 'R' ? 'primary' : job.state === 'PD' ? 'warning text-dark' : 'secondary';
+        let statusIcon = job.state === 'R' ? 'play-circle-fill' : job.state === 'PD' ? 'clock-fill' : 'circle';
+        
+        html += `
+            <div class="accordion-item">
+                <h2 class="accordion-header">
+                    <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#slurmJob${index}">
+                        <div class="d-flex w-100 justify-content-between align-items-center pe-3">
+                            <div class="d-flex align-items-center gap-3 flex-grow-1">
+                                <div>
+                                    <strong>${job.name || 'Unnamed Job'}</strong>
+                                    <div class="small text-muted">
+                                        Slurm ID: <code>${job.job_id}</code>
+                                        <span class="ms-2">Time: ${job.time || '0:00'}</span>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="d-flex gap-2 align-items-center">
+                                <span class="badge bg-${statusClass}">
+                                    <i class="bi bi-${statusIcon}"></i> ${job.state}
+                                </span>
+                                <small class="text-muted">${job.nodes || '1'} node(s)</small>
+                            </div>
+                        </div>
+                    </button>
+                </h2>
+                <div id="slurmJob${index}" class="accordion-collapse collapse" data-bs-parent="#slurmJobsAccordion">
+                    <div class="accordion-body">
+                        <div class="row">
+                            <div class="col-md-6">
+                                <h6 class="mb-3"><i class="bi bi-info-circle"></i> Job Information</h6>
+                                
+                                <div class="info-row">
+                                    <div class="label">Slurm Job ID</div>
+                                    <div class="value">
+                                        <div class="hash-display">
+                                            <div class="hash-scroll">
+                                                <code class="small">${job.job_id}</code>
+                                            </div>
+                                            <button class="btn btn-sm btn-outline-secondary" onclick="copyToClipboard('${job.job_id}')">
+                                                <i class="bi bi-clipboard"></i>
+                                            </button>
+                                        </div>
+                                    </div>
+                                </div>
+                                
+                                <div class="info-row">
+                                    <div class="label">Job Name</div>
+                                    <div class="value"><strong>${job.name || 'Unnamed'}</strong></div>
+                                </div>
+                                
+                                <div class="info-row">
+                                    <div class="label">Status</div>
+                                    <div class="value">
+                                        <span class="badge bg-${statusClass}">
+                                            <i class="bi bi-${statusIcon}"></i> ${job.state}
+                                        </span>
+                                    </div>
+                                </div>
+                                
+                                <div class="info-row">
+                                    <div class="label">Runtime</div>
+                                    <div class="value"><code>${job.time || '0:00'}</code></div>
+                                </div>
+                                
+                                ${job.time_limit ? `
+                                <div class="info-row">
+                                    <div class="label">Time Limit</div>
+                                    <div class="value"><code>${job.time_limit}</code></div>
+                                </div>
+                                ` : ''}
+                            </div>
+                            
+                            <div class="col-md-6">
+                                <h6 class="mb-3"><i class="bi bi-hdd-network"></i> Resources</h6>
+                                
+                                <div class="info-row">
+                                    <div class="label">Nodes</div>
+                                    <div class="value"><span class="badge bg-primary">${job.nodes || '1'}</span></div>
+                                </div>
+                                
+                                ${job.partition ? `
+                                <div class="info-row">
+                                    <div class="label">Partition</div>
+                                    <div class="value"><code>${job.partition}</code></div>
+                                </div>
+                                ` : ''}
+                            </div>
+                        </div>
+                        
+                        <!-- MongoDB Job Data -->
+                        ${job.db_job_id ? `
+                        <div class="mt-4">
+                            <h6 class="mb-3"><i class="bi bi-database"></i> Job Information from Database</h6>
+                            <div class="row">
+                                <div class="col-md-6">
+                                    <div class="info-row">
+                                        <div class="label">Job ID</div>
+                                        <div class="value">
+                                            <div class="hash-display">
+                                                <div class="hash-scroll">
+                                                    <code class="small">${job.db_job_id}</code>
+                                                </div>
+                                                <button class="btn btn-sm btn-outline-secondary" onclick="copyToClipboard('${job.db_job_id}')">
+                                                    <i class="bi bi-clipboard"></i>
+                                                </button>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    
+                                    ${job.method_name ? `
+                                    <div class="info-row">
+                                        <div class="label">Method</div>
+                                        <div class="value">
+                                            <strong>${job.method_name}</strong>
+                                            ${job.method_version ? ` <span class="badge bg-secondary">v${job.method_version}</span>` : ''}
+                                        </div>
+                                    </div>
+                                    ` : ''}
+                                    
+                                    ${job.created_at ? `
+                                    <div class="info-row">
+                                        <div class="label">Created</div>
+                                        <div class="value">${new Date(job.created_at).toLocaleString()}</div>
+                                    </div>
+                                    ` : ''}
+                                </div>
+                                
+                                <div class="col-md-6">
+                                    ${job.input_filename ? `
+                                    <div class="info-row">
+                                        <div class="label">Input File</div>
+                                        <div class="value">
+                                            <strong>${job.input_filename}</strong>
+                                            ${job.input_size ? `<div class="small text-muted">${formatBytes(job.input_size)}</div>` : ''}
+                                        </div>
+                                    </div>
+                                    ` : ''}
+                                    
+                                    ${job.file_inputs && job.file_info ? `
+                                    <div class="info-row">
+                                        <div class="label">Input Files</div>
+                                        <div class="value">
+                                            ${Object.entries(job.file_info).map(([name, info]) => `
+                                                <div class="mb-1">
+                                                    <strong>${info.filename}</strong>
+                                                    <div class="small text-muted">${formatBytes(info.size)}</div>
+                                                </div>
+                                            `).join('')}
+                                        </div>
+                                    </div>
+                                    ` : ''}
+                                </div>
+                            </div>
+                            
+                            ${job.parameters ? `
+                            <div class="mt-3">
+                                <h6 class="mb-2"><i class="bi bi-sliders"></i> Parameters</h6>
+                                <div class="json-container">
+                                    <pre>${syntaxHighlightJson(JSON.stringify(job.parameters, null, 2))}</pre>
+                                </div>
+                            </div>
+                            ` : ''}
+                        </div>
+                        ` : ''}
+                        
+                        <!-- Job Logs Button -->
+                        <div class="mt-4">
+                            <button class="btn btn-sm btn-outline-primary" onclick="loadJobLogs('${job.job_id}', ${index})">
+                                <i class="bi bi-file-text"></i> View Job Logs
+                            </button>
+                            <div id="jobLogs${index}" class="mt-3" style="display: none;"></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        `;
+    });
+    
+    html += '</div>';
+    container.innerHTML = html;
+}
+
+function loadJobLogs(slurmId, index, isAutoRefresh = false) {
+    const logsDiv = document.getElementById(`jobLogs${index}`);
+    
+    // If not auto-refresh, show loading and make visible
+    if (!isAutoRefresh) {
+        logsDiv.style.display = 'block';
+        logsDiv.innerHTML = `
+            <div class="text-center py-3">
+                <div class="spinner-border spinner-border-sm text-primary" role="status"></div>
+                <span class="ms-2">Loading logs...</span>
+            </div>
+        `;
+        
+        // Start auto-refresh for this job
+        startLogAutoRefresh(slurmId, index);
+    }
+    
+    // Save scroll positions of all terminals in this log div
+    const scrollPositions = {};
+    const terminals = logsDiv.querySelectorAll('.terminal');
+    terminals.forEach((term, i) => {
+        scrollPositions[i] = {
+            top: term.scrollTop,
+            height: term.scrollHeight,
+            isAtBottom: (term.scrollHeight - term.scrollTop - term.clientHeight) < 50
+        };
+    });
+    
+    fetch(`/slurm/job-logs/${slurmId}/`)
+        .then(r => r.json())
+        .then(data => {
+            if (data.error) {
+                logsDiv.innerHTML = `
+                    <div class="alert alert-warning small">
+                        <i class="bi bi-info-circle"></i> ${data.error}
+                    </div>
+                `;
+                return;
+            }
+            
+            let html = '';
+            let terminalIndex = 0;
+            
+            // Slurm stdout (combined stdout/stderr from Slurm)
+            if (data.stdout) {
+                html += `
+                    <h6 class="mb-2"><i class="bi bi-file-text"></i> Slurm Output (slurm-${slurmId}.out)</h6>
+                    <div class="terminal terminal-${terminalIndex}" style="max-height: 300px;">${escapeHtml(data.stdout.slice(-5000))}</div>
+                    ${data.stdout.length > 5000 ? '<div class="alert alert-info small mt-2">Showing last 5,000 characters of ' + data.stdout.length + ' total</div>' : ''}
+                `;
+                terminalIndex++;
+            }
+            
+            // System error output (R package loading messages, etc.)
+            if (data.system_error) {
+                html += `
+                    <h6 class="mb-2 mt-3"><i class="bi bi-info-circle"></i> System Messages</h6>
+                    <div class="terminal terminal-${terminalIndex}" style="max-height: 300px;">${escapeHtml(data.system_error.slice(-5000))}</div>
+                    ${data.system_error.length > 5000 ? '<div class="alert alert-info small mt-2">Showing last 5,000 characters of ' + data.system_error.length + ' total</div>' : ''}
+                `;
+                terminalIndex++;
+            }
+            
+            // System output (actual job output)
+            if (data.system_output) {
+                html += `
+                    <h6 class="mb-2 mt-3"><i class="bi bi-terminal"></i> Job Output</h6>
+                    <div class="terminal terminal-${terminalIndex}" style="max-height: 300px;">${escapeHtml(data.system_output.slice(-5000))}</div>
+                    ${data.system_output.length > 5000 ? '<div class="alert alert-info small mt-2">Showing last 5,000 characters of ' + data.system_output.length + ' total</div>' : ''}
+                `;
+                terminalIndex++;
+            }
+            
+            if (!data.stdout && !data.stderr && !data.system_output && !data.system_error) {
+                html = `
+                    <div class="alert alert-info small">
+                        <i class="bi bi-info-circle"></i> No logs available yet for this job
+                    </div>
+                `;
+            }
+            
+            logsDiv.innerHTML = html;
+            
+            // Restore scroll positions
+            setTimeout(() => {
+                const newTerminals = logsDiv.querySelectorAll('.terminal');
+                newTerminals.forEach((term, i) => {
+                    if (scrollPositions[i]) {
+                        const pos = scrollPositions[i];
+                        if (pos.isAtBottom) {
+                            // Auto-scroll to bottom if user was at bottom
+                            term.scrollTop = term.scrollHeight;
+                        } else {
+                            // Try to maintain relative position
+                            const heightDiff = term.scrollHeight - pos.height;
+                            term.scrollTop = pos.top + heightDiff;
+                        }
+                    }
+                });
+            }, 10);
+        })
+        .catch(e => {
+            logsDiv.innerHTML = `
+                <div class="alert alert-danger small">
+                    <i class="bi bi-exclamation-triangle"></i> Error loading logs: ${e.message}
+                </div>
+            `;
+        });
+}
+
+function startLogAutoRefresh(slurmId, index) {
+    // Stop any existing refresh for this job
+    if (activeLogRefresh[index]) {
+        clearInterval(activeLogRefresh[index]);
+    }
+    
+    // Start auto-refresh every 5 seconds
+    activeLogRefresh[index] = setInterval(() => {
+        const logsDiv = document.getElementById(`jobLogs${index}`);
+        // Only refresh if logs div is visible
+        if (logsDiv && logsDiv.style.display !== 'none') {
+            loadJobLogs(slurmId, index, true);
+        } else {
+            // Logs were hidden, stop auto-refresh
+            clearInterval(activeLogRefresh[index]);
+            delete activeLogRefresh[index];
+        }
+    }, 5000);
+}
+
+// Stop all log auto-refreshes when accordion is collapsed
+document.addEventListener('hidden.bs.collapse', function (event) {
+    // Check if it's a slurm job accordion
+    const accordionId = event.target.id;
+    if (accordionId && accordionId.startsWith('slurmJob')) {
+        const index = parseInt(accordionId.replace('slurmJob', ''));
+        if (activeLogRefresh[index]) {
+            clearInterval(activeLogRefresh[index]);
+            delete activeLogRefresh[index];
+        }
+    }
+});
+
+function escapeHtml(text) {
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
+}
+
+function formatBytes(bytes) {
+    if (!bytes) return 'N/A';
+    const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+    let size = bytes;
+    let unitIndex = 0;
+    
+    while (size >= 1024 && unitIndex < units.length - 1) {
+        size /= 1024;
+        unitIndex++;
+    }
+    
+    return size.toFixed(2) + ' ' + units[unitIndex];
+}
+
+// Initial load
+fetch('/slurm/?ajax=1')
+    .then(r => r.json())
+    .then(data => renderQueue(data.queue));
 
 // Countdown timer
 countdownInterval = setInterval(() => {
@@ -61,6 +477,8 @@ countdownInterval = setInterval(() => {
 // Cleanup
 window.addEventListener('beforeunload', () => {
     if (countdownInterval) clearInterval(countdownInterval);
+    // Clear all log refresh intervals
+    Object.values(activeLogRefresh).forEach(interval => clearInterval(interval));
 });
 </script>
 {% endblock %}
