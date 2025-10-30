@@ -611,7 +611,9 @@
             const search = window.currentSearch;
             filesArray = filesArray.filter(([displayPath, data]) => {
                 const filenameMatch = displayPath.toLowerCase().includes(search);
-                const contentMatch = data.content.toLowerCase().includes(search);
+                // Extract content string from object or use string directly
+                const fileContent = typeof data.content === 'string' ? data.content : (data.content.content || '');
+                const contentMatch = fileContent.toLowerCase().includes(search);
                 return filenameMatch || contentMatch;
             });
             totalMatches = filesArray.length;
@@ -631,9 +633,13 @@
             
             // Calculate badge for this file if searching
             let badgeHtml = '';
-            if (window.currentSearch && data.content.toLowerCase().includes(window.currentSearch)) {
-                const occurrences = (data.content.toLowerCase().match(new RegExp(escapeRegex(window.currentSearch), 'g')) || []).length;
-                badgeHtml = ` <span class="badge bg-warning text-dark ms-2">${occurrences}</span>`;
+            if (window.currentSearch) {
+                // Extract content string from object or use string directly
+                const fileContent = typeof data.content === 'string' ? data.content : (data.content.content || '');
+                if (fileContent.toLowerCase().includes(window.currentSearch)) {
+                    const occurrences = (fileContent.toLowerCase().match(new RegExp(escapeRegex(window.currentSearch), 'g')) || []).length;
+                    badgeHtml = ` <span class="badge bg-warning text-dark ms-2">${occurrences}</span>`;
+                }
             }
             
             html += `
@@ -821,8 +827,24 @@
     window.currentOccurrenceIndex = 0;
     window.currentFilePath = null;  // Track currently displayed file
     
-    function showFile(filepath, content) {
-        window.currentFiles[filepath] = content;
+    function showFile(filepath, fileInfo) {
+        // Handle both old format (string) and new format (object with metadata)
+        let content;
+        let isTruncatedByBackend = false;
+        let originalSize = 0;
+        
+        if (typeof fileInfo === 'string') {
+            // Old format - just content string
+            content = fileInfo;
+            originalSize = content.length;
+        } else {
+            // New format - object with content, truncated flag, and original_size
+            content = fileInfo.content || '';
+            isTruncatedByBackend = fileInfo.truncated || false;
+            originalSize = fileInfo.original_size || content.length;
+        }
+        
+        window.currentFiles[filepath] = fileInfo;
         window.currentFilePath = filepath;  // Update current file
         
         // Remove first directory level from display path
@@ -850,15 +872,21 @@
         // Trim again after processing
         content = content.trim();
         
-        // Check file size and truncate if necessary
-        const maxSize = 30000; // 30k characters (~30KB)
-        const originalSize = content.length;
-        let isTruncated = false;
+        // Check file size and truncate if necessary (only if not already truncated by backend)
+        let isTruncated = isTruncatedByBackend;
+        const maxSize = 100000; // 100k characters (~100KB) - matches backend limit
+        const shownSize = content.length;
         
-        if (content.length > maxSize) {
+        if (!isTruncatedByBackend && content.length > maxSize) {
+            originalSize = content.length;
             content = content.substring(0, maxSize);
             isTruncated = true;
         }
+        
+        // Detect preview type (text, hex, error)
+        const previewType = fileInfo.preview_type || 'text';
+        const isHexDump = previewType === 'hex';
+        const isError = previewType === 'error';
         
         // Aggressive line-by-line trimming: remove multiple consecutive blank lines
         // Keep single blank lines but remove doubles/triples
@@ -893,9 +921,12 @@
         
         const language = langMap[ext] || 'plaintext';
         
+        // Determine if we should apply syntax highlighting
+        const shouldHighlight = !isTruncated && !isHexDump && !isError;
+        
         // If search is active, mark occurrences BEFORE syntax highlighting
         let processedContent = content;
-        if (window.currentSearch && !isTruncated) {
+        if (window.currentSearch && shouldHighlight) {
             // Use unique placeholders with index that won't be affected by highlight.js
             const searchRegex = new RegExp(`(${escapeRegex(window.currentSearch)})`, 'gi');
             let matchIndex = 0;
@@ -906,9 +937,9 @@
             });
         }
         
-        // Apply syntax highlighting with highlight.js (skip if truncated)
+        // Apply syntax highlighting with highlight.js (skip if truncated, hex dump, or error)
         let highlightedCode;
-        if (!isTruncated) {
+        if (shouldHighlight) {
             try {
                 highlightedCode = hljs.highlight(processedContent, { language: language }).value;
             } catch (e) {
@@ -916,13 +947,13 @@
                 highlightedCode = processedContent.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
             }
         } else {
-            // No highlighting for truncated files
+            // No highlighting for truncated/hex/error files
             highlightedCode = processedContent.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
         }
         
         // Replace placeholders with actual mark tags (with INLINE STYLES)
         let displayContent = highlightedCode;
-        if (window.currentSearch && !isTruncated) {
+        if (window.currentSearch && shouldHighlight) {
             // Replace each placeholder with inline styles directly
             displayContent = displayContent.replace(/⟪MARK(\d+)START⟫/g, (match, num) => {
                 const isCurrentMark = parseInt(num) === window.currentOccurrenceIndex;
@@ -960,15 +991,36 @@
             `;
         }
         
-        let truncationWarning = '';
+        let warnings = '';
+        
+        // Hex dump warning
+        if (isHexDump) {
+            warnings += `
+                <div class="alert alert-info py-1 px-2 mb-0" style="font-size: 0.85rem; border-radius: 0; border-left: 3px solid #5bc0de;">
+                    <i class="bi bi-file-binary"></i> 
+                    <strong>Binary file:</strong> Showing hex dump preview (first 1KB)
+                </div>
+            `;
+        }
+        
+        // Error warning
+        if (isError) {
+            warnings += `
+                <div class="alert alert-danger py-1 px-2 mb-0" style="font-size: 0.85rem; border-radius: 0; border-left: 3px solid #d9534f;">
+                    <i class="bi bi-exclamation-octagon-fill"></i> 
+                    <strong>Error:</strong> Could not read file
+                </div>
+            `;
+        }
+        
+        // Truncation warning
         if (isTruncated) {
             const originalChars = originalSize.toLocaleString();
-            const shownChars = maxSize.toLocaleString();
-            truncationWarning = `
-                <div class="alert alert-warning mt-3 mb-0">
-                    <i class="bi bi-exclamation-triangle"></i> 
-                    <strong>File truncated for display</strong><br>
-                    <small>Original: ${originalChars} characters | Showing: ${shownChars} characters | Syntax highlighting disabled</small>
+            const shownChars = shownSize.toLocaleString();
+            warnings += `
+                <div class="alert alert-warning py-1 px-2 mb-0" style="font-size: 0.85rem; border-radius: 0; border-left: 3px solid #f0ad4e;">
+                    <i class="bi bi-exclamation-triangle-fill"></i> 
+                    <strong>Truncated:</strong> ${shownChars} of ${originalChars} chars shown (syntax highlighting disabled)
                 </div>
             `;
         }
@@ -983,12 +1035,12 @@
                     </button>
                 </div>
             </div>
+            ${warnings}
             <div class="code-display terminal" id="codeContent" style="max-height: calc(100vh - 200px); white-space: pre; font-family: 'Courier New', monospace; font-size: 13px; line-height: 1.5; overflow-x: auto;">${displayContent}</div>
-            ${truncationWarning}
         `;
         
         // Scroll to current occurrence if search is active
-        if (window.currentSearch && occurrenceCount > 0 && !isTruncated) {
+        if (window.currentSearch && occurrenceCount > 0 && shouldHighlight) {
             setTimeout(() => {
                 const marks = document.querySelectorAll('#codeContent mark');
                 const currentMark = marks[window.currentOccurrenceIndex];
@@ -1040,7 +1092,10 @@
             return;
         }
         
-        let content = window.currentFiles[window.currentFilePath];
+        let fileInfo = window.currentFiles[window.currentFilePath];
+        
+        // Extract content from object or use string directly
+        let content = typeof fileInfo === 'string' ? fileInfo : (fileInfo.content || '');
         
         // Apply same cleaning as showFile
         content = content.trim();

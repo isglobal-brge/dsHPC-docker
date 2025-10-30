@@ -395,17 +395,56 @@ class MonitorWorker:
                     with tarfile.open(fileobj=io.BytesIO(bundle_bytes), mode='r:gz') as tar:
                         for member in tar.getmembers():
                             if member.isfile():
-                                # Only process code files
-                                if any(member.name.endswith(ext) for ext in ['.R', '.py', '.sh', '.js', '.json', '.yml', '.yaml']):
+                                # Process ALL files (not just specific extensions)
+                                try:
+                                    file_obj = tar.extractfile(member)
+                                    if file_obj:
+                                        # Efficiently read only first 100KB without loading entire file
+                                        truncate_at = 100000  # 100KB - maximum size to collect
+                                        original_size = member.size
+                                        
+                                        # Read only what we need (max 100KB)
+                                        content_bytes = file_obj.read(truncate_at)
+                                        
+                                        # Try to decode as text, fallback to hex dump for binary
+                                        try:
+                                            # Attempt UTF-8 decode
+                                            content = content_bytes.decode('utf-8')
+                                            preview_type = 'text'
+                                        except UnicodeDecodeError:
+                                            # Binary file - create hex dump preview
+                                            hex_lines = []
+                                            for i in range(0, min(1024, len(content_bytes)), 16):  # Max 1KB hex preview
+                                                chunk = content_bytes[i:i+16]
+                                                hex_part = ' '.join(f'{b:02x}' for b in chunk)
+                                                ascii_part = ''.join(chr(b) if 32 <= b < 127 else '.' for b in chunk)
+                                                hex_lines.append(f'{i:08x}  {hex_part:<48}  {ascii_part}')
+                                            content = '\n'.join(hex_lines)
+                                            if len(content_bytes) > 1024:
+                                                content += f'\n\n... (binary file, showing first 1KB as hex dump)'
+                                            preview_type = 'hex'
+                                        
+                                        file_info = {
+                                            'content': content,
+                                            'truncated': original_size > truncate_at,
+                                            'original_size': original_size,
+                                            'preview_type': preview_type
+                                        }
+                                        
+                                        method_data['files'][member.name] = file_info
+                                except Exception as e:
+                                    # Robust error handling - log but don't crash
+                                    logger.debug(f"Could not process {member.name}: {e}")
+                                    # Store error info so user knows file exists but couldn't be read
                                     try:
-                                        file_obj = tar.extractfile(member)
-                                        if file_obj:
-                                            content = file_obj.read().decode('utf-8', errors='replace')
-                                            # Limit to 50KB per file
-                                            if len(content) < 50000:
-                                                method_data['files'][member.name] = content
-                                    except Exception as e:
-                                        logger.debug(f"Could not read {member.name}: {e}")
+                                        method_data['files'][member.name] = {
+                                            'content': f'[Error reading file: {str(e)}]',
+                                            'truncated': False,
+                                            'original_size': member.size if hasattr(member, 'size') else 0,
+                                            'preview_type': 'error'
+                                        }
+                                    except:
+                                        pass  # If even error storage fails, just skip
                     
                     if method_data['files']:
                         methods_source.append(method_data)

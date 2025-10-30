@@ -29,14 +29,22 @@ def method_source(request, function_hash):
         
         # Organize files by directory
         file_tree = {}
-        for filepath, content in files.items():
+        for filepath, file_info in files.items():
             parts = filepath.split('/')
             current = file_tree
             
+            # Handle both old (string) and new (dict) formats for backward compatibility
+            if isinstance(file_info, str):
+                file_data = {'type': 'file', 'content': file_info, 'truncated': False, 'original_size': len(file_info)}
+            else:
+                file_data = {'type': 'file', 'content': file_info.get('content', ''), 
+                           'truncated': file_info.get('truncated', False),
+                           'original_size': file_info.get('original_size', 0)}
+            
             for i, part in enumerate(parts):
                 if i == len(parts) - 1:
-                    # File
-                    current[part] = {'type': 'file', 'content': content}
+                    # File - store with metadata
+                    current[part] = file_data
                 else:
                     # Directory
                     if part not in current:
