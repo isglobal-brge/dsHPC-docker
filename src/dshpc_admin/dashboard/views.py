@@ -776,9 +776,13 @@ def methods_list(request):
     if version_filter:
         query['version'] = {'$regex': version_filter, '$options': 'i'}
     
-    # Get total count (only active for pagination, but retrieve all for display)
-    total_methods = methods_db.methods.count_documents(query)
-    total_pages = max(1, (total_methods + per_page - 1) // per_page)
+    # Get active methods query
+    active_query = query.copy()
+    active_query['active'] = True
+    
+    # Get total count of active methods only (for display)
+    active_methods_count = methods_db.methods.count_documents(active_query)
+    total_pages = max(1, (active_methods_count + per_page - 1) // per_page)
     
     # Ensure page is within bounds
     page = max(1, min(page, total_pages))
@@ -787,8 +791,6 @@ def methods_list(request):
     skip = (page - 1) * per_page
     
     # Get active methods
-    active_query = query.copy()
-    active_query['active'] = True
     active_methods_cursor = list(methods_db.methods.find(active_query).sort('name', 1).skip(skip).limit(per_page))
     
     # Always get inactive methods too (for same page) - without pagination to keep it simple
@@ -836,7 +838,7 @@ def methods_list(request):
         'version_filter': version_filter,
         'page': page,
         'total_pages': total_pages,
-        'total_methods': total_methods,
+        'total_methods': active_methods_count,  # Only count active methods
         'per_page': per_page,
         'page_range': page_range,
         'methods_count': len(active_methods) + len(inactive_methods),
