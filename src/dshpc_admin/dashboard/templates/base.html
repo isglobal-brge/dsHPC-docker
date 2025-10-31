@@ -253,6 +253,19 @@
             word-wrap: break-word;
         }
         
+        /* Log viewer terminals - fixed height */
+        #logsContent.terminal,
+        .log-viewer-terminal.terminal {
+            height: 600px;
+            max-height: 600px;
+        }
+        
+        /* Method source code viewer - higher fixed height */
+        #codeContent.code-display.terminal {
+            height: calc(100vh - 200px);
+            max-height: calc(100vh - 200px);
+        }
+        
         .terminal::-webkit-scrollbar {
             width: 8px;
         }
