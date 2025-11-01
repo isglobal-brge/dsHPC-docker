@@ -94,7 +94,7 @@
                     <div class="d-flex align-items-center gap-3 flex-grow-1">
                         <div style="min-width: 0; flex: 1;">
                             <div style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 700px;">
-                                <strong>{{ pipeline.name|default:"Unnamed Pipeline" }}</strong>
+                                <strong>{{ pipeline.display_name }}</strong>
                             </div>
                             <div class="small text-muted">
                                 <code style="max-width: 150px; display: inline-block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: bottom;">{{ pipeline.pipeline_id }}</code>
@@ -144,13 +144,6 @@
                                 </div>
                             </div>
                         </div>
-                        
-                        {% if pipeline.name %}
-                        <div class="info-row">
-                            <div class="label">Name</div>
-                            <div class="value"><strong>{{ pipeline.name }}</strong></div>
-                        </div>
-                        {% endif %}
                         
                         <div class="info-row">
                             <div class="label">Status</div>
@@ -241,7 +234,7 @@
                 <!-- DAG Visualization Button -->
                 <div class="mb-4">
                     <button class="btn btn-primary" 
-                            onclick="viewPipelineDAG('{{ pipeline.pipeline_id }}', '{{ pipeline.name|default:"Unnamed Pipeline"|escapejs }}')">
+                            onclick="viewPipelineDAG('{{ pipeline.pipeline_id }}', '{{ pipeline.display_name|escapejs }}')">
                         <i class="bi bi-diagram-3-fill"></i> View Pipeline DAG
                     </button>
                     <small class="text-muted ms-2">{{ pipeline.max_depth|default:1 }} layer{{ pipeline.max_depth|pluralize }}, {{ pipeline.total_nodes }} node{{ pipeline.total_nodes|pluralize }}</small>
@@ -586,9 +579,11 @@
                 ${nodeData.meta_job_id ? `
                 <div class="mb-3">
                     <small class="text-muted d-block mb-1">Meta-Job ID</small>
-                    <div class="input-group input-group-sm">
-                        <input type="text" class="form-control" value="${nodeData.meta_job_id}" readonly>
-                        <button class="btn btn-outline-secondary" onclick="copyToClipboard('${nodeData.meta_job_id}')">
+                    <div class="hash-display">
+                        <div class="hash-scroll">
+                            <code class="small">${nodeData.meta_job_id}</code>
+                        </div>
+                        <button class="btn btn-sm btn-outline-secondary" onclick="copyToClipboard('${nodeData.meta_job_id}')">
                             <i class="bi bi-clipboard"></i>
                         </button>
                     </div>
@@ -598,9 +593,11 @@
                 ${nodeData.output_hash ? `
                 <div class="mb-3">
                     <small class="text-muted d-block mb-1">Output Hash</small>
-                    <div class="input-group input-group-sm">
-                        <input type="text" class="form-control" value="${nodeData.output_hash}" readonly>
-                        <button class="btn btn-outline-secondary" onclick="copyToClipboard('${nodeData.output_hash}')">
+                    <div class="hash-display">
+                        <div class="hash-scroll">
+                            <code class="small">${nodeData.output_hash}</code>
+                        </div>
+                        <button class="btn btn-sm btn-outline-secondary" onclick="copyToClipboard('${nodeData.output_hash}')">
                             <i class="bi bi-clipboard"></i>
                         </button>
                     </div>

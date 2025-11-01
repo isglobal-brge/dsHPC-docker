@@ -172,7 +172,6 @@ async def create_pipeline(pipeline_data: Dict[str, Any]) -> Tuple[str, str]:
     # Create pipeline document
     pipeline_doc = {
         "pipeline_id": pipeline_id,
-        "name": pipeline_data.get("name", f"Pipeline {pipeline_id[:8]}"),
         "status": PipelineStatus.PENDING.value,
         "nodes": {},
         "created_at": datetime.utcnow(),
@@ -251,7 +250,6 @@ async def get_pipeline_status(pipeline_id: str) -> Optional[Dict[str, Any]]:
     
     return {
         "pipeline_id": pipeline_id,
-        "name": pipeline["name"],
         "status": pipeline["status"],
         "nodes": [
             {

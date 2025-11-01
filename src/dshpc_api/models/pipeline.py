@@ -35,7 +35,6 @@ class PipelineNodeSubmit(BaseModel):
 
 class PipelineSubmission(BaseModel):
     """Pipeline submission request"""
-    name: Optional[str] = None
     nodes: Dict[str, PipelineNodeSubmit]  # node_id -> node definition
 
 
@@ -57,7 +56,6 @@ class PipelineNodeInfo(BaseModel):
 class PipelineInfo(BaseModel):
     """Complete pipeline information"""
     pipeline_id: str
-    name: Optional[str]
     status: PipelineStatus
     nodes: List[PipelineNodeInfo]
     created_at: datetime

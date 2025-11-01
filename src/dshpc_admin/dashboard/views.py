@@ -787,8 +787,7 @@ def pipelines_list(request):
         # Search filter
         if search:
             search_lower = search.lower()
-            if not (search_lower in pipeline.get('pipeline_id', '').lower() or
-                    search_lower in pipeline.get('name', '').lower()):
+            if not (search_lower in pipeline.get('pipeline_id', '').lower()):
                 continue
         
         # Date filters
@@ -934,6 +933,34 @@ def process_pipeline_for_display(pipeline):
     
     pipeline['max_depth'] = max_depth + 1
     pipeline['layers'] = layers
+    
+    # Generate display name based on pipeline structure
+    if layers:
+        # Get root nodes (first layer)
+        root_nodes = sorted([n['node_id'] for n in layers[0]['nodes']]) if layers else []
+        # Get leaf nodes (last layer)
+        leaf_nodes = sorted([n['node_id'] for n in layers[-1]['nodes']]) if layers else []
+        
+        if len(root_nodes) > 0 and len(leaf_nodes) > 0:
+            # Format: "root1, root2 → ... → leaf1, leaf2" or "root → leaf" if same
+            if len(layers) == 1:
+                # Single layer
+                pipeline['display_name'] = ', '.join(root_nodes)
+            else:
+                # Multiple layers
+                root_str = ', '.join(root_nodes[:3])  # Show max 3 roots
+                if len(root_nodes) > 3:
+                    root_str += f', +{len(root_nodes) - 3}'
+                
+                leaf_str = ', '.join(leaf_nodes[:3])  # Show max 3 leaves
+                if len(leaf_nodes) > 3:
+                    leaf_str += f', +{len(leaf_nodes) - 3}'
+                
+                pipeline['display_name'] = f"{root_str} → ... → {leaf_str}"
+        else:
+            pipeline['display_name'] = f"{len(nodes)} node(s)"
+    else:
+        pipeline['display_name'] = "Empty Pipeline"
     
     return pipeline
 
