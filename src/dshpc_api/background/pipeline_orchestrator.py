@@ -314,6 +314,8 @@ async def update_running_nodes(pipeline_id: str, pipeline_doc: Dict[str, Any]) -
             )
             changes_made = True
             logger.info(f"Pipeline {pipeline_id}: Node {node_id} completed with output_hash {output_hash[:16]}...")
+            # Trigger immediate pipeline check for dependent nodes
+            trigger_pipeline_check()
             
         elif meta_job_info.status == "failed":
             error_msg = meta_job_info.error or "Unknown error"
@@ -328,6 +330,8 @@ async def update_running_nodes(pipeline_id: str, pipeline_doc: Dict[str, Any]) -
             )
             changes_made = True
             logger.warning(f"Pipeline {pipeline_id}: Node {node_id} failed: {error_msg}")
+            # Trigger immediate pipeline check to propagate failure
+            trigger_pipeline_check()
     
     return changes_made
 
@@ -410,10 +414,23 @@ async def process_pipeline_once(pipeline_id: str) -> None:
     await update_pipeline_overall_status(pipeline_id)
 
 
+# Global event for immediate pipeline processing trigger
+_pipeline_check_event = asyncio.Event()
+
+
+def trigger_pipeline_check():
+    """
+    Trigger an immediate check of all pipelines.
+    Call this when a meta-job completes to speed up pipeline execution.
+    """
+    _pipeline_check_event.set()
+
+
 async def pipeline_orchestrator():
     """
     Background task to orchestrate pipelines.
     Polls active pipelines and submits nodes when dependencies are ready.
+    Also responds immediately to completion events from meta-jobs.
     """
     logger.info("Pipeline orchestrator started")
     
@@ -435,6 +452,12 @@ async def pipeline_orchestrator():
         except Exception as e:
             logger.error(f"Error in pipeline orchestrator loop: {e}")
         
-        # Wait before next check
-        await asyncio.sleep(5)  # Check every 5 seconds
+        # Wait for either: event trigger (immediate) or timeout (2 seconds)
+        try:
+            await asyncio.wait_for(_pipeline_check_event.wait(), timeout=2.0)
+            _pipeline_check_event.clear()  # Reset for next trigger
+            logger.debug("Pipeline check triggered by meta-job completion")
+        except asyncio.TimeoutError:
+            # Timeout is normal - just means no trigger in 2 seconds
+            pass
 
