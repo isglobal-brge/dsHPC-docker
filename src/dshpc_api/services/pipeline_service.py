@@ -110,8 +110,14 @@ def resolve_references(params: Dict[str, Any], completed_nodes: Dict[str, str]) 
     
     for key, value in params.items():
         if isinstance(value, str) and value.startswith("$ref:"):
-            # Extract reference: "$ref:node_1" or "$ref:node_1/data/text"
+            # Extract reference: "$ref:node_1" or "$ref:node_1/data/text" or "$ref:prev"
             ref = value[5:]  # Remove "$ref:" prefix
+            
+            # $ref:prev is an internal meta-job reference (previous step in chain)
+            # Don't resolve it here - let the meta-job system handle it
+            if ref == "prev" or ref.startswith("prev/"):
+                resolved[key] = value  # Keep as-is
+                continue
             
             if "/" in ref:
                 # Path-based reference: node_1/data/text

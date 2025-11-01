@@ -30,6 +30,81 @@ import logging
 logger = logging.getLogger(__name__)
 
 
+async def extract_and_store_path_from_hash(source_hash: str, path: str, files_db, meta_job_id: str, step_idx: int, param_name: str) -> str:
+    """
+    Extract a value from a JSON output file using a path and store it as a new file.
+    
+    Args:
+        source_hash: Hash of the source file containing JSON
+        path: Slash-separated path to extract (e.g., "data/text")
+        files_db: Database connection
+        meta_job_id: Meta-job ID (for logging/metadata)
+        step_idx: Step index (for logging/metadata)
+        param_name: Parameter name (for logging/metadata)
+        
+    Returns:
+        Hash of the newly created file with extracted value
+    """
+    # Get source file
+    source_doc = await files_db.files.find_one({"file_hash": source_hash})
+    if not source_doc:
+        raise ValueError(f"Source file {source_hash} not found for path extraction")
+    
+    # Decode content
+    import base64
+    content_bytes = base64.b64decode(source_doc["content"])
+    content_str = content_bytes.decode('utf-8')
+    
+    # Parse JSON
+    try:
+        data = json.loads(content_str)
+    except json.JSONDecodeError as e:
+        raise ValueError(f"Failed to parse JSON from {source_hash}: {e}")
+    
+    # Navigate path
+    current = data
+    parts = path.split("/")
+    for part in parts:
+        if isinstance(current, dict) and part in current:
+            current = current[part]
+        else:
+            raise ValueError(f"Path {path} not found in output")
+    
+    # Wrap extracted value in standard format
+    extracted_data = {"value": current}
+    extracted_json = json.dumps(extracted_data, indent=2)
+    extracted_bytes = extracted_json.encode('utf-8')
+    
+    # Calculate hash
+    extracted_hash = hashlib.sha256(extracted_bytes).hexdigest()
+    
+    # Check if already exists
+    existing = await files_db.files.find_one({"file_hash": extracted_hash})
+    if existing:
+        logger.debug(f"Extracted value for {path} already exists as {extracted_hash[:8]}...")
+        return extracted_hash
+    
+    # Store as new file with metadata
+    file_doc = {
+        "file_hash": extracted_hash,
+        "filename": f"extracted_{param_name}.json",
+        "size": len(extracted_bytes),
+        "content": base64.b64encode(extracted_bytes).decode('utf-8'),
+        "uploaded_at": datetime.utcnow(),
+        "metadata": {
+            "source": "path_extraction",
+            "source_hash": source_hash,
+            "extracted_path": path,
+            "source_node": f"{meta_job_id}_step_{step_idx}"
+        }
+    }
+    
+    await files_db.files.insert_one(file_doc)
+    logger.info(f"Extracted {path} from {source_hash[:8]}... -> {extracted_hash[:8]}...")
+    
+    return extracted_hash
+
+
 async def submit_meta_job(request: MetaJobRequest) -> Tuple[bool, str, Optional[MetaJobResponse]]:
     """
     Submit a meta-job that chains multiple processing steps.
@@ -187,6 +262,7 @@ async def process_meta_job_chain(meta_job_id: str):
         # Initialize with initial file hash or file_inputs
         current_input_hash = meta_job.get("initial_file_hash")
         current_file_inputs = meta_job.get("initial_file_inputs")
+        accumulated_file_inputs = {}  # Track file_inputs across chain steps
         
         # Process each step in the chain
         for i, step in enumerate(meta_job["chain"]):
@@ -203,21 +279,86 @@ async def process_meta_job_chain(meta_job_id: str):
             if i == 0:
                 step_file_hash = current_input_hash
                 step_file_inputs = current_file_inputs
+                if step_file_inputs:
+                    accumulated_file_inputs = step_file_inputs.copy()
             else:
-                # Subsequent steps always use single file (output from previous step)
+                # Subsequent steps: start with accumulated file_inputs from previous steps
                 step_file_hash = current_input_hash
-                step_file_inputs = None
+                step_file_inputs = accumulated_file_inputs.copy() if accumulated_file_inputs else None
             
             # Update step with input info
             step["input_file_hash"] = step_file_hash
             step["input_file_inputs"] = step_file_inputs
             
+            # Resolve $ref:prev references in parameters BEFORE cache lookup
+            resolved_params = step["parameters"].copy()
+            # Start with existing file_inputs (if any)
+            resolved_file_inputs = accumulated_file_inputs.copy()
+            
+            if i > 0:
+                # Get previous step's output
+                prev_step = meta_job["chain"][i-1]
+                prev_output_hash = prev_step.get("output_hash")
+                
+                if not prev_output_hash:
+                    raise Exception(f"Previous step {i-1} has no output_hash")
+                
+                # Resolve $ref:prev references - extract values and pass directly as parameters
+                # This is internal to meta-job chains, not like pipeline references
+                for param_key, param_value in list(resolved_params.items()):
+                    if isinstance(param_value, str) and param_value.startswith("$ref:prev"):
+                        # Get previous step's output content
+                        from dshpc_api.services.db_service import get_files_db
+                        files_db = await get_files_db()
+                        
+                        prev_output_doc = await files_db.files.find_one({"file_hash": prev_output_hash})
+                        if not prev_output_doc:
+                            raise Exception(f"Previous step output {prev_output_hash} not found")
+                        
+                        # Decode content
+                        import base64
+                        content_bytes = base64.b64decode(prev_output_doc["content"])
+                        content_str = content_bytes.decode('utf-8')
+                        
+                        # Parse JSON
+                        try:
+                            prev_output = json.loads(content_str)
+                        except json.JSONDecodeError as e:
+                            raise Exception(f"Failed to parse previous step output: {e}")
+                        
+                        if param_value == "$ref:prev":
+                            # Full output reference - pass entire output as parameter
+                            # This might be too large for direct params, but keeping for compatibility
+                            resolved_params[param_key] = prev_output
+                        elif param_value.startswith("$ref:prev/"):
+                            # Path extraction - extract specific field and pass as parameter
+                            path = param_value[10:]  # Remove "$ref:prev/"
+                            
+                            # Navigate path
+                            current = prev_output
+                            parts = path.split("/")
+                            for part in parts:
+                                if isinstance(current, dict) and part in current:
+                                    current = current[part]
+                                else:
+                                    raise ValueError(f"Path {path} not found in previous output")
+                            
+                            # Pass extracted value directly as parameter
+                            resolved_params[param_key] = current
+            
+            # Update accumulated_file_inputs with newly resolved inputs for next step
+            if resolved_file_inputs:
+                accumulated_file_inputs = resolved_file_inputs.copy()
+            
+            # Use resolved parameters and file inputs for cache lookup
+            lookup_file_inputs = resolved_file_inputs if resolved_file_inputs else step_file_inputs
+            
             # Check if this step already exists (deduplication)
             existing_job = await find_existing_job(
                 file_hash=step_file_hash,
-                file_inputs=step_file_inputs,
+                file_inputs=lookup_file_inputs,
                 function_hash=step["function_hash"],
-                parameters=step["parameters"]
+                parameters=resolved_params
             )
             
             if existing_job and existing_job.get("status") in COMPLETED_STATUSES:
@@ -276,8 +417,8 @@ async def process_meta_job_chain(meta_job_id: str):
                 # Need to submit new job
                 logger.info(f"🔄 CACHE MISS - Meta-job {meta_job_id} step {i}:")
                 logger.info(f"  Method: {step['method_name']}")
-                if step_file_inputs:
-                    logger.info(f"  Input files: {list(step_file_inputs.keys())}")
+                if lookup_file_inputs:
+                    logger.info(f"  Input files: {list(lookup_file_inputs.keys())}")
                 else:
                     logger.info(f"  Input hash: {step_file_hash[:8] if step_file_hash else 'none'}...")
                 if existing_job:
@@ -285,11 +426,12 @@ async def process_meta_job_chain(meta_job_id: str):
                 else:
                     logger.info(f"  No existing job found - submitting new job")
                 
+                # Use already-resolved parameters and file inputs
                 success, message, job_data = await submit_job(
                     file_hash=step_file_hash,
-                    file_inputs=step_file_inputs,
+                    file_inputs=lookup_file_inputs,
                     function_hash=step["function_hash"],
-                    parameters=step["parameters"]
+                    parameters=resolved_params
                 )
                 
                 if not success:
