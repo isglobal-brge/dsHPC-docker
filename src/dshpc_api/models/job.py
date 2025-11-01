@@ -9,7 +9,7 @@ class JobRequest(BaseModel):
 
 class JobResponse(BaseModel):
     """Model for job response."""
-    job_id: str
+    job_hash: str
     status: str
     old_status: Optional[str] = None
     output: Optional[str] = None

@@ -4,7 +4,7 @@ from gridfs import GridFS
 from bson import ObjectId
 import sys
 
-def update_job_status(job_id: str, status: JobStatus, output: str | None = None, error: str | None = None):
+def update_job_status(job_hash: str, status: JobStatus, output: str | None = None, error: str | None = None):
     """Update job status in MongoDB, using GridFS for large outputs."""
     update_data = {"status": status}
     
@@ -22,8 +22,8 @@ def update_job_status(job_id: str, status: JobStatus, output: str | None = None,
             
             # Store output in GridFS
             output_id = fs.put(output.encode('utf-8'), 
-                             filename=f"output_{job_id}",
-                             job_id=job_id,
+                             filename=f"output_{job_hash}",
+                             job_hash=job_hash,
                              field_type="output")
             
             update_data["output"] = None  # Don't store inline
@@ -49,8 +49,8 @@ def update_job_status(job_id: str, status: JobStatus, output: str | None = None,
             
             # Store error in GridFS
             error_id = fs.put(error.encode('utf-8'),
-                            filename=f"error_{job_id}",
-                            job_id=job_id,
+                            filename=f"error_{job_hash}",
+                            job_hash=job_hash,
                             field_type="error")
             
             update_data["error"] = None  # Don't store inline
@@ -66,6 +66,6 @@ def update_job_status(job_id: str, status: JobStatus, output: str | None = None,
             update_data["error_gridfs_id"] = None
     
     jobs_collection.update_one(
-        {"job_id": job_id},
+        {"job_hash": job_hash},
         {"$set": update_data}
     ) 

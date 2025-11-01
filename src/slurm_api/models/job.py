@@ -26,6 +26,7 @@ class JobSubmission(BaseModel):
     file_hash: Optional[str] = None  # Single file (legacy)
     file_inputs: Optional[Dict[str, str]] = None  # Multi-file (new)
     function_hash: str
+    job_hash: Optional[str] = None  # Pre-computed job hash from dshpc_api
     
     @validator('file_inputs')
     def validate_file_input(cls, v, values):

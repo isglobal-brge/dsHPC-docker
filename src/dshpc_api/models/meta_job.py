@@ -68,7 +68,7 @@ class MetaJobStepInfo(BaseModel):
     parameters: Dict[str, Any] = Field(default_factory=dict)
     input_file_hash: Optional[str] = None  # Can be None initially, filled during processing
     output_hash: Optional[str] = None  # Hash of the output (for chaining)
-    job_id: Optional[str] = None
+    job_hash: Optional[str] = None
     status: Optional[str] = None
     cached: bool = False  # Whether this step used cached results
 
@@ -101,7 +101,7 @@ class MetaJobInfo(BaseModel):
     status: MetaJobStatus
     current_step: Optional[int] = None
     current_step_info: Optional[CurrentStepInfo] = None  # Info about current step
-    final_job_id: Optional[str] = None  # ID of the final job in the chain
+    final_job_hash: Optional[str] = None  # Hash of the final job in the chain
     final_output: Optional[Any] = None  # Output from final job (when completed)
     error: Optional[str] = None
     created_at: datetime

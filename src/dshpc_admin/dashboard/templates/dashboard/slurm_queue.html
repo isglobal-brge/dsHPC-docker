@@ -245,7 +245,7 @@ function renderQueue(queue) {
                         </div>
                         
                         <!-- MongoDB Job Data -->
-                        ${job.db_job_id ? `
+                        ${job.db_job_hash ? `
                         <div class="mt-4">
                             <h6 class="mb-3"><i class="bi bi-database"></i> Job Information from Database</h6>
                             <div class="row">
@@ -255,9 +255,9 @@ function renderQueue(queue) {
                                         <div class="value">
                                             <div class="hash-display">
                                                 <div class="hash-scroll">
-                                                    <code class="small">${job.db_job_id}</code>
+                                                    <code class="small">${job.db_job_hash}</code>
                                                 </div>
-                                                <button class="btn btn-sm btn-outline-secondary" onclick="copyToClipboard('${job.db_job_id}')">
+                                                <button class="btn btn-sm btn-outline-secondary" onclick="copyToClipboard('${job.db_job_hash}')">
                                                     <i class="bi bi-clipboard"></i>
                                                 </button>
                                             </div>

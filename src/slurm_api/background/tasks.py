@@ -33,14 +33,14 @@ async def check_orphaned_jobs():
         }).sort("created_at", 1).limit(10)  # Process max 10 at a time, oldest first (FIFO)
         
         for job in orphaned_jobs:
-            job_id = job["job_id"]
+            job_hash = job["job_hash"]
             attempts = job.get("submission_attempts", 0)
-            logger.warning(f"Found orphaned job {job_id} (attempt #{attempts + 1}), submitting to Slurm...")
+            logger.warning(f"Found orphaned job {job_hash} (attempt #{attempts + 1}), submitting to Slurm...")
             
             try:
                 # Update last_submission_attempt timestamp BEFORE attempting
                 jobs_collection.update_one(
-                    {"job_id": job_id},
+                    {"job_hash": job_hash},
                     {"$set": {
                         "last_submission_attempt": datetime.utcnow(),
                         "submission_attempts": attempts + 1
@@ -53,34 +53,35 @@ async def check_orphaned_jobs():
                     file_inputs=job.get("file_inputs"),
                     function_hash=job["function_hash"],
                     parameters=job.get("parameters"),
-                    name=job.get("name")
+                    name=job.get("name"),
+                    job_hash=job_hash
                 )
                 
                 # Prepare and submit job script
-                script_path = prepare_job_script(job_id, job_submission)
+                script_path = prepare_job_script(job_hash, job_submission)
                 success, message, slurm_id = submit_slurm_job(script_path)
                 
                 if success:
                     # Update job with slurm_id and clear retry tracking
                     jobs_collection.update_one(
-                        {"job_id": job_id},
+                        {"job_hash": job_hash},
                         {"$set": {
                             "slurm_id": slurm_id,
                             "last_submission_attempt": None  # Clear since now submitted
                         }}
                     )
-                    logger.info(f"✅ Successfully submitted orphaned job {job_id} to Slurm with ID {slurm_id}")
+                    logger.info(f"✅ Successfully submitted orphaned job {job_hash} to Slurm with ID {slurm_id}")
                 else:
                     # Don't mark as failed yet - will retry based on last_submission_attempt
-                    logger.warning(f"⚠️ Could not submit job {job_id} (attempt #{attempts + 1}): {message}")
+                    logger.warning(f"⚠️ Could not submit job {job_hash} (attempt #{attempts + 1}): {message}")
                     # Mark as failed after 5 attempts
                     if attempts >= 4:  # 5th attempt failed
-                        update_job_status(job_id, JobStatus.FAILED, error=f"Failed after {attempts + 1} attempts: {message}")
-                        logger.error(f"❌ Job {job_id} marked as FAILED after {attempts + 1} submission attempts")
+                        update_job_status(job_hash, JobStatus.FAILED, error=f"Failed after {attempts + 1} attempts: {message}")
+                        logger.error(f"❌ Job {job_hash} marked as FAILED after {attempts + 1} submission attempts")
                     
             except Exception as e:
                 # Log error but allow retries
-                logger.error(f"❌ Error retrying job {job_id}: {e}")
+                logger.error(f"❌ Error retrying job {job_hash}: {e}")
                 # Mark as failed after 5 attempts
                 if attempts >= 4:
                     update_job_status(job_id, JobStatus.FAILED, error=f"Failed after {attempts + 1} attempts: {str(e)}")
@@ -111,19 +112,19 @@ async def check_jobs_once():
         # Check each active job
         for job in active_jobs:
             slurm_id = job["slurm_id"]
-            job_id = job["job_id"]
+            job_hash = job["job_hash"]
             
             # If job not in Slurm queue, check sacct for final status
             if slurm_id not in slurm_statuses:
                 # Get final status from sacct
                 final_state = get_job_final_state(slurm_id)
-                process_job_output(job_id, slurm_id, final_state)
+                process_job_output(job_hash, slurm_id, final_state)
             else:
                 # Update status if job is still in queue
                 slurm_state = slurm_statuses[slurm_id]
                 if slurm_state != job["status"]:
                     try:
-                        update_job_status(job_id, JobStatus(slurm_state))
+                        update_job_status(job_hash, JobStatus(slurm_state))
                     except ValueError:
                         logger.warning(f"Unknown Slurm state: {slurm_state}")
         

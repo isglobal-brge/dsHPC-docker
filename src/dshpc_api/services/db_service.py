@@ -69,12 +69,12 @@ async def get_meta_jobs_db():
         _meta_jobs_db = client[settings.MONGO_JOBS_DB]
     return _meta_jobs_db
 
-async def get_job_by_id(job_id: str) -> Optional[Dict[str, Any]]:
+async def get_job_by_hash(job_hash: str) -> Optional[Dict[str, Any]]:
     """
-    Get a job from the jobs database by ID, retrieving large outputs from GridFS if needed.
+    Get a job from the jobs database by hash, retrieving large outputs from GridFS if needed.
     """
     db = await get_jobs_db()
-    job = await db.jobs.find_one({"job_id": job_id})
+    job = await db.jobs.find_one({"job_hash": job_hash})
     if job:
         job["_id"] = str(job["_id"])  # Convert ObjectId to string
         

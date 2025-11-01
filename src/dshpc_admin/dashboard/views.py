@@ -367,9 +367,9 @@ def jobs_list(request):
     if status_filter:
         query['status'] = status_filter
     
-    # Search by job_id
+    # Search by job_hash
     if search:
-        query['job_id'] = {'$regex': search, '$options': 'i'}
+        query['job_hash'] = {'$regex': search, '$options': 'i'}
     
     # Date range filter
     if date_from or date_to:
@@ -633,8 +633,8 @@ def meta_jobs_list(request):
         # For each step, get the actual job
         if 'chain' in m:
             for step in m['chain']:
-                if step.get('job_id'):
-                    job = jobs_db.jobs.find_one({'job_id': step['job_id']})
+                if step.get('job_hash'):
+                    job = jobs_db.jobs.find_one({'job_hash': step['job_hash']})
                     if job:
                         # Retrieve output from GridFS if stored there
                         if job.get('output_storage') == 'gridfs' and job.get('output_gridfs_id'):

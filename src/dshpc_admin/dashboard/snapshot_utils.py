@@ -59,7 +59,7 @@ def get_system_resources():
     }
 
 
-def get_job_logs(slurm_id=None, job_id=None):
+def get_job_logs(slurm_id=None, job_hash=None):
     """Get job logs from latest snapshot."""
     snapshot = get_latest_snapshot()
     
@@ -70,7 +70,7 @@ def get_job_logs(slurm_id=None, job_id=None):
     for log_entry in snapshot['job_logs']:
         if slurm_id and log_entry.get('slurm_id') == slurm_id:
             return log_entry
-        if job_id and log_entry.get('job_id') == job_id:
+        if job_hash and log_entry.get('job_hash') == job_hash:
             return log_entry
     
     return None

@@ -19,9 +19,9 @@ from slurm_api.models.method import MethodExecution
 from slurm_api.utils.parameter_utils import sort_parameters
 from slurm_api.utils.sorting_utils import sort_file_inputs
 
-def prepare_job_script(job_id: str, job: JobSubmission) -> str:
+def prepare_job_script(job_hash: str, job: JobSubmission) -> str:
     """Prepare a job script file and return its path."""
-    logger.info(f"prepare_job_script called for job {job_id}")
+    logger.info(f"prepare_job_script called for job {job_hash}")
     logger.info(f"  file_hash: {job.file_hash}")
     logger.info(f"  file_inputs: {job.file_inputs}")
     
@@ -85,7 +85,7 @@ def prepare_job_script(job_id: str, job: JobSubmission) -> str:
     with open(metadata_file_path, "w") as meta_f:
         json.dump(metadata, meta_f, indent=2)
     
-    script_path = f"/tmp/job_{job_id}.sh"
+    script_path = f"/tmp/job_{job_hash}.sh"
     
     # Check if we're using a method (function_hash is provided)
     method_doc = None
@@ -137,8 +137,8 @@ def prepare_job_script(job_id: str, job: JobSubmission) -> str:
         # Use all available CPUs
         f.write("#SBATCH --cpus-per-task=8\n")
         # Capture output to a file
-        output_path = f"/tmp/output_{job_id}.txt"
-        error_path = f"/tmp/error_{job_id}.txt"
+        output_path = f"/tmp/output_{job_hash}.txt"
+        error_path = f"/tmp/error_{job_hash}.txt"
         # Redirect stdout to output file and stderr to error file (separate them)
         f.write(f"exec 1> {output_path} 2> {error_path}\n")
         
@@ -204,7 +204,7 @@ def prepare_job_script(job_id: str, job: JobSubmission) -> str:
             # Write the original script
             f.write(job.script)
         
-        f.write(f"\necho $? > /tmp/exit_code_{job_id}")
+        f.write(f"\necho $? > /tmp/exit_code_{job_hash}")
     
     # Make the script executable
     os.chmod(script_path, 0o755)
@@ -212,16 +212,19 @@ def prepare_job_script(job_id: str, job: JobSubmission) -> str:
     return script_path
 
 def create_job(job: JobSubmission) -> Tuple[str, Dict[str, Any]]:
-    """Create a new job in the database and return its ID and document."""
-    # Generate a unique job ID
-    job_id = str(uuid.uuid4())
+    """Create a new job in the database and return its hash and document."""
+    # Use the pre-computed job hash from dshpc_api
+    if not job.job_hash:
+        raise ValueError("job_hash must be provided by dshpc_api")
+    
+    job_hash = job.job_hash
     
     # Sort parameters to ensure consistent ordering
     sorted_params = sort_parameters(job.parameters)
     
     # Create job document
     job_doc = {
-        "job_id": job_id,
+        "job_hash": job_hash,
         "slurm_id": None,
         "function_hash": job.function_hash,
         "parameters": sorted_params,
@@ -248,11 +251,11 @@ def create_job(job: JobSubmission) -> Tuple[str, Dict[str, Any]]:
     # Insert job document
     jobs_collection.insert_one(job_doc)
     
-    return job_id, job_doc
+    return job_hash, job_doc
 
-def get_job_info(job_id: str) -> Dict[str, Any]:
+def get_job_info(job_hash: str) -> Dict[str, Any]:
     """Get job information from MongoDB, retrieving large outputs from GridFS if needed."""
-    job = jobs_collection.find_one({"job_id": job_id})
+    job = jobs_collection.find_one({"job_hash": job_hash})
     if job:
         # Convert MongoDB ObjectId to string for JSON serialization
         job["_id"] = str(job["_id"])
@@ -275,7 +278,7 @@ def get_job_info(job_id: str) -> Dict[str, Any]:
                 # Convert GridFS ID to string for JSON serialization
                 job["output_gridfs_id"] = str(job["output_gridfs_id"])
             except Exception as e:
-                logger.error(f"Error retrieving output from GridFS for job {job_id}: {e}")
+                logger.error(f"Error retrieving output from GridFS for job {job_hash}: {e}")
                 job["output"] = f"[Error retrieving output from GridFS: {str(e)}]"
         
         # Check if error is stored in GridFS
@@ -296,16 +299,16 @@ def get_job_info(job_id: str) -> Dict[str, Any]:
                 # Convert GridFS ID to string for JSON serialization
                 job["error_gridfs_id"] = str(job["error_gridfs_id"])
             except Exception as e:
-                logger.error(f"Error retrieving error from GridFS for job {job_id}: {e}")
+                logger.error(f"Error retrieving error from GridFS for job {job_hash}: {e}")
                 job["error"] = f"[Error retrieving error from GridFS: {str(e)}]"
     
     return job
 
-def process_job_output(job_id: str, slurm_id: str, final_state: str) -> bool:
+def process_job_output(job_hash: str, slurm_id: str, final_state: str) -> bool:
     """Process job output files and update job status."""
-    output_path = f"/tmp/output_{job_id}.txt"
-    error_path = f"/tmp/error_{job_id}.txt"
-    exit_code_path = f"/tmp/exit_code_{job_id}"
+    output_path = f"/tmp/output_{job_hash}.txt"
+    error_path = f"/tmp/error_{job_hash}.txt"
+    exit_code_path = f"/tmp/exit_code_{job_hash}"
     exit_code = 1 # Default to error if exit code file not found or invalid
     output = None
     stderr_content = None
@@ -318,16 +321,16 @@ def process_job_output(job_id: str, slurm_id: str, final_state: str) -> bool:
             with open(exit_code_path) as f:
                 exit_code_str = f.read().strip()
                 exit_code = int(exit_code_str)
-                logger.info(f"Job {job_id}: Read exit code {exit_code} from file")
+                logger.info(f"Job {job_hash}: Read exit code {exit_code} from file")
         except ValueError:
             error = "Invalid exit code format."
-            logger.warning(f"Invalid exit code format for job {job_id}: {exit_code_str}")
+            logger.warning(f"Invalid exit code format for job {job_hash}: {exit_code_str}")
         except Exception as e:
             error = f"Error reading exit code: {str(e)}"
-            logger.error(f"Error reading exit code for job {job_id}: {e}")
+            logger.error(f"Error reading exit code for job {job_hash}: {e}")
     else:
         error = "Exit code file not found."
-        logger.warning(f"Exit code file not found for job {job_id}")
+        logger.warning(f"Exit code file not found for job {job_hash}")
 
     # Read stdout (output) file if exists
     if os.path.exists(output_path):
@@ -337,7 +340,7 @@ def process_job_output(job_id: str, slurm_id: str, final_state: str) -> bool:
             
             # For files larger than 100MB, read in chunks to avoid memory issues
             if file_size > 100 * 1024 * 1024:
-                logger.info(f"Large output file detected for job {job_id}: {file_size / (1024*1024):.1f} MB")
+                logger.info(f"Large output file detected for job {job_hash}: {file_size / (1024*1024):.1f} MB")
                 # Read file in chunks and build the string
                 output = ""
                 chunk_size = 10 * 1024 * 1024  # 10MB chunks
@@ -347,17 +350,17 @@ def process_job_output(job_id: str, slurm_id: str, final_state: str) -> bool:
                         if not chunk:
                             break
                         output += chunk
-                logger.info(f"Successfully read large output file for job {job_id}")
+                logger.info(f"Successfully read large output file for job {job_hash}")
             else:
                 # For smaller files, read normally
                 with open(output_path) as f:
                     output = f.read()
         except Exception as e:
             error = f"{(error + ' ') if error else ''}Error reading output file: {str(e)}"
-            logger.error(f"Error reading output file for job {job_id}: {e}")
+            logger.error(f"Error reading output file for job {job_hash}: {e}")
     else:
         error = f"{(error + ' ') if error else ''}Output file not found."
-        logger.warning(f"Output file not found for job {job_id}")
+        logger.warning(f"Output file not found for job {job_hash}")
     
     # Read stderr file if exists (only use it for errors)
     if os.path.exists(error_path):
@@ -365,7 +368,7 @@ def process_job_output(job_id: str, slurm_id: str, final_state: str) -> bool:
             with open(error_path) as f:
                 stderr_content = f.read().strip()
         except Exception as e:
-            logger.error(f"Error reading stderr file for job {job_id}: {e}")
+            logger.error(f"Error reading stderr file for job {job_hash}: {e}")
 
     # Parse output JSON to check for internal errors (if output exists and is JSON)
     output_has_error = False
@@ -377,7 +380,7 @@ def process_job_output(job_id: str, slurm_id: str, final_state: str) -> bool:
                 output_has_error = True
                 # Extract error message from output
                 output_error_msg = output_data.get('error') or output_data.get('message') or 'Unknown error from script'
-                logger.warning(f"Job {job_id}: Output indicates internal error: {output_error_msg[:100]}")
+                logger.warning(f"Job {job_hash}: Output indicates internal error: {output_error_msg[:100]}")
         except:
             # Output is not JSON or can't be parsed - that's OK
             pass
@@ -387,7 +390,7 @@ def process_job_output(job_id: str, slurm_id: str, final_state: str) -> bool:
         # If output explicitly says "error", mark as FAILED regardless of exit code
         job_status = JobStatus.FAILED
         error = f"Script reported error status: {output_error_msg}"
-        logger.info(f"Job {job_id} marked as FAILED due to error status in output")
+        logger.info(f"Job {job_hash} marked as FAILED due to error status in output")
     elif exit_code == 0:
         try:
             # If exit code is 0, use the Slurm final state if it's terminal
@@ -404,7 +407,7 @@ def process_job_output(job_id: str, slurm_id: str, final_state: str) -> bool:
                 job_status = JobStatus.COMPLETED
         except ValueError:
             # If Slurm state is unknown but exit code 0, mark COMPLETED
-            logger.warning(f"Unknown Slurm state: {final_state} for job {job_id}, using COMPLETED due to exit code 0.")
+            logger.warning(f"Unknown Slurm state: {final_state} for job {job_hash}, using COMPLETED due to exit code 0.")
             job_status = JobStatus.COMPLETED
     else:
         # If exit code is non-zero, always mark as FAILED
@@ -413,25 +416,25 @@ def process_job_output(job_id: str, slurm_id: str, final_state: str) -> bool:
         # Add stderr content to error message only if job failed
         if stderr_content:
             error = f"{error} Stderr: {stderr_content}"
-        logger.info(f"Job {job_id} marked as FAILED due to non-zero exit code: {exit_code}")
+        logger.info(f"Job {job_hash} marked as FAILED due to non-zero exit code: {exit_code}")
 
     # Update the job status in the database
     try:
-        update_job_status(job_id, job_status, output=output, error=error)
+        update_job_status(job_hash, job_status, output=output, error=error)
         
         # If job completed successfully and has output, upload it as a new file
         if job_status == JobStatus.COMPLETED and output:
             try:
-                output_file_hash = upload_job_output_as_file(job_id, output)
+                output_file_hash = upload_job_output_as_file(job_hash, output)
                 if output_file_hash:
                     # Update job record with output file hash
                     jobs_collection.update_one(
-                        {"job_id": job_id},
+                        {"job_hash": job_hash},
                         {"$set": {"output_file_hash": output_file_hash}}
                     )
-                    logger.info(f"Job {job_id} output uploaded as file with hash: {output_file_hash}")
+                    logger.info(f"Job {job_hash} output uploaded as file with hash: {output_file_hash}")
             except Exception as e:
-                logger.error(f"Error uploading job output as file for {job_id}: {e}")
+                logger.error(f"Error uploading job output as file for {job_hash}: {e}")
                 # Don't fail the job processing if output upload fails
         
         # Clean up temporary files only after successful update
@@ -443,16 +446,16 @@ def process_job_output(job_id: str, slurm_id: str, final_state: str) -> bool:
             os.remove(exit_code_path)
         return True
     except Exception as e:
-        logger.error(f"Error updating job status for {job_id} after processing output: {e}")
+        logger.error(f"Error updating job status for {job_hash} after processing output: {e}")
         return False
 
 
-def upload_job_output_as_file(job_id: str, output: str) -> Optional[str]:
+def upload_job_output_as_file(job_hash: str, output: str) -> Optional[str]:
     """
     Upload job output as a new file in the files database.
     
     Args:
-        job_id: The job ID that produced this output
+        job_hash: The job hash that produced this output
         output: The output content to store
         
     Returns:
@@ -468,7 +471,7 @@ def upload_job_output_as_file(job_id: str, output: str) -> Optional[str]:
         # Check if file with this hash already exists
         existing_file = files_collection.find_one({"file_hash": file_hash})
         if existing_file:
-            logger.info(f"Output for job {job_id} already exists as file {file_hash}")
+            logger.info(f"Output for job {job_hash} already exists as file {file_hash}")
             return file_hash
         
         # Base64 encode for storage
@@ -486,9 +489,9 @@ def upload_job_output_as_file(job_id: str, output: str) -> Optional[str]:
             
             # Store in GridFS
             grid_id = fs.put(output_bytes,
-                           filename=f"job_output_{job_id}",
+                           filename=f"job_output_{job_hash}",
                            metadata={
-                               "source_job_id": job_id,
+                               "source_job_hash": job_hash,
                                "file_hash": file_hash,
                                "content_type": "application/json",
                                "upload_date": datetime.utcnow()
@@ -497,7 +500,7 @@ def upload_job_output_as_file(job_id: str, output: str) -> Optional[str]:
             # Create metadata document
             file_doc = {
                 "file_hash": file_hash,
-                "filename": f"job_output_{job_id}.json",
+                "filename": f"job_output_{job_hash}.json",
                 "content_type": "application/json",
                 "storage_type": "gridfs",
                 "gridfs_id": grid_id,
@@ -507,7 +510,7 @@ def upload_job_output_as_file(job_id: str, output: str) -> Optional[str]:
                 "last_checked": datetime.utcnow(),
                 "metadata": {
                     "source": "job_output",
-                    "job_id": job_id
+                    "job_hash": job_hash
                 }
             }
         else:
@@ -515,7 +518,7 @@ def upload_job_output_as_file(job_id: str, output: str) -> Optional[str]:
             file_doc = {
                 "file_hash": file_hash,
                 "content": content_base64,
-                "filename": f"job_output_{job_id}.json",
+                "filename": f"job_output_{job_hash}.json",
                 "content_type": "application/json",
                 "storage_type": "inline",
                 "file_size": file_size,
@@ -524,13 +527,13 @@ def upload_job_output_as_file(job_id: str, output: str) -> Optional[str]:
                 "last_checked": datetime.utcnow(),
                 "metadata": {
                     "source": "job_output",
-                    "job_id": job_id
+                    "job_hash": job_hash
                 }
             }
         
         # Insert into files collection
         files_collection.insert_one(file_doc)
-        logger.info(f"Successfully uploaded job {job_id} output as file {file_hash}")
+        logger.info(f"Successfully uploaded job {job_hash} output as file {file_hash}")
         
         return file_hash
         

@@ -294,18 +294,18 @@ async def update_running_nodes(pipeline_hash: str, pipeline_doc: Dict[str, Any])
         # Check if meta-job completed
         if meta_job_info.status == "completed":
             # Extract final output hash (the hash of the final job's output)
-            # This is the job_id of the final job, which contains the output
-            final_job_id = meta_job_info.final_job_id
+            # This is the job_hash of the final job, which contains the output
+            final_job_hash = meta_job_info.final_job_hash
             
             # Query the final job to get its output_file_hash
             jobs_db = await get_jobs_db()
-            final_job = await jobs_db.jobs.find_one({"job_id": final_job_id})
+            final_job = await jobs_db.jobs.find_one({"job_hash": final_job_hash})
             
             if final_job and final_job.get("output_file_hash"):
                 output_hash = final_job["output_file_hash"]
             else:
-                # Fallback: use final_job_id as hash
-                output_hash = final_job_id
+                # Fallback: use final_job_hash as hash
+                output_hash = final_job_hash
             
             await db.pipelines.update_one(
                 {"pipeline_hash": pipeline_hash},

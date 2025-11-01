@@ -150,14 +150,14 @@ class MonitorWorker:
             
             for job in jobs:
                 slurm_id = job.get('slurm_id')
-                job_id = job.get('job_id')
+                job_hash = job.get('job_hash')
                 
                 if not slurm_id:
                     continue
                 
                 log_entry = {
                     'slurm_id': slurm_id,
-                    'job_id': job_id,
+                    'job_hash': job_hash,
                     'timestamp': datetime.utcnow()
                 }
                 
@@ -178,7 +178,7 @@ class MonitorWorker:
                 
                 # Try to read system output (last 500 lines)
                 try:
-                    result = container.exec_run(['bash', '-c', f'tail -n 500 /tmp/output_{job_id}.txt 2>/dev/null || echo ""'])
+                    result = container.exec_run(['bash', '-c', f'tail -n 500 /tmp/output_{job_hash}.txt 2>/dev/null || echo ""'])
                     if result.exit_code == 0:
                         output = result.output.decode('utf-8', errors='replace').strip()
                         if output:
@@ -189,11 +189,11 @@ class MonitorWorker:
                             log_entry['system_output'] = output
                             log_entry['system_output_lines'] = len(output.split('\n'))
                 except Exception as e:
-                    logger.debug(f"Could not read system output for {job_id}: {e}")
+                    logger.debug(f"Could not read system output for {job_hash}: {e}")
                 
                 # Try to read system error (last 500 lines)
                 try:
-                    result = container.exec_run(['bash', '-c', f'tail -n 500 /tmp/error_{job_id}.txt 2>/dev/null || echo ""'])
+                    result = container.exec_run(['bash', '-c', f'tail -n 500 /tmp/error_{job_hash}.txt 2>/dev/null || echo ""'])
                     if result.exit_code == 0:
                         output = result.output.decode('utf-8', errors='replace').strip()
                         if output:
@@ -204,7 +204,7 @@ class MonitorWorker:
                             log_entry['system_error'] = output
                             log_entry['system_error_lines'] = len(output.split('\n'))
                 except Exception as e:
-                    logger.debug(f"Could not read system error for {job_id}: {e}")
+                    logger.debug(f"Could not read system error for {job_hash}: {e}")
                 
                 # Only add if we got some logs
                 if 'slurm_output' in log_entry or 'system_output' in log_entry or 'system_error' in log_entry:
@@ -322,7 +322,7 @@ class MonitorWorker:
                     if slurm_id:
                         job_doc = self.db.jobs.find_one({'slurm_id': slurm_id})
                         if job_doc:
-                            slurm_job['db_job_id'] = str(job_doc.get('job_id', ''))
+                            slurm_job['db_job_hash'] = str(job_doc.get('job_hash', ''))
                             slurm_job['db_status'] = job_doc.get('status')
                             slurm_job['created_at'] = job_doc.get('created_at')
                             slurm_job['function_hash'] = job_doc.get('function_hash')
@@ -516,9 +516,9 @@ class MonitorWorker:
                                 # Enrich chain steps with job data (including outputs)
                                 chain = meta_job.get('chain', [])
                                 for step in chain:
-                                    job_id = step.get('job_id')
-                                    if job_id:
-                                        job = self.db.jobs.find_one({'job_id': job_id})
+                                    job_hash = step.get('job_hash')
+                                    if job_hash:
+                                        job = self.db.jobs.find_one({'job_hash': job_hash})
                                         if job:
                                             # Remove _id from job
                                             if '_id' in job:
@@ -535,7 +535,7 @@ class MonitorWorker:
                                                     job['output'] = output_content
                                                     job['output_truncated'] = True
                                                 except Exception as e:
-                                                    logger.debug(f"Could not load GridFS output for {job_id}: {e}")
+                                                    logger.debug(f"Could not load GridFS output for {job_hash}: {e}")
                                             
                                             # Truncate very long outputs that are directly in the document
                                             if job.get('output') and len(job['output']) > 10240:
@@ -565,7 +565,7 @@ class MonitorWorker:
                                             
                                             # Debug logging to see what we have
                                             has_output = 'output' in job and job['output']
-                                            logger.debug(f"Job {job_id}: status={job.get('status')}, has_output={has_output}, output_length={len(job.get('output', ''))}")
+                                            logger.debug(f"Job {job_hash}: status={job.get('status')}, has_output={has_output}, output_length={len(job.get('output', ''))}")
                                 
                                 # Add enriched meta_job_info to node
                                 node_data['meta_job_info'] = meta_job

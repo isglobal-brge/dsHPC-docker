@@ -147,8 +147,8 @@ async def simulate_job_endpoint(job_data: JobRequest, api_key: str = Security(ge
             job_data.parameters
         )
         
-        # Handle cases where no job_id was returned and it's not an internal error
-        if not result.get("job_id") and not result.get("message", "").startswith("Error"):
+        # Handle cases where no job_hash was returned and it's not an internal error
+        if not result.get("job_hash") and not result.get("message", "").startswith("Error"):
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail={
@@ -172,7 +172,7 @@ async def simulate_job_endpoint(job_data: JobRequest, api_key: str = Security(ge
                     "message": f"Job execution failed with non-retriable status: {job_status}",
                     "status_detail": status_detail,
                     "error_details": error_details,
-                    "job_id": result.get("job_id")
+                    "job_hash": result.get("job_hash")
                 }
             )
         

@@ -1,11 +1,14 @@
 import aiohttp
+import asyncio
 import requests
 import logging
+import hashlib
+import json
 from typing import Dict, Any, Optional, Tuple
 from datetime import datetime
 
 from dshpc_api.config.settings import get_settings
-from dshpc_api.services.db_service import get_jobs_db, get_files_db, get_job_by_id
+from dshpc_api.services.db_service import get_jobs_db, get_files_db, get_job_by_hash
 from dshpc_api.services.method_service import check_method_functionality
 from dshpc_api.utils.parameter_utils import sort_parameters
 from dshpc_api.utils.sorting_utils import sort_file_inputs
@@ -42,6 +45,59 @@ STATUS_DESCRIPTIONS = {
     "CF": "Job is in the process of configuring",
     "PR": "Job was preempted by another job"
 }
+
+
+def compute_job_hash(
+    file_hash: Optional[str] = None,
+    file_inputs: Optional[Dict[str, str]] = None,
+    function_hash: str = None,
+    parameters: Dict[str, Any] = None
+) -> str:
+    """
+    Compute a deterministic hash for a job based on its inputs.
+    
+    Args:
+        file_hash: The hash of the input file (single file)
+        file_inputs: Dict of input name → hash (multi-file)
+        function_hash: The hash of the method
+        parameters: The job parameters (should already be sorted)
+        
+    Returns:
+        SHA256 hash as hex string
+    """
+    hash_components = []
+    
+    # Component 1: File input (single or multi)
+    if file_inputs:
+        # Multi-file: sort by key for determinism
+        sorted_inputs = sort_file_inputs(file_inputs)
+        for name, fhash in sorted_inputs.items():
+            hash_components.append(f"file_input:{name}:{fhash}")
+    else:
+        # Single file (or None/PARAMS_ONLY)
+        if file_hash:
+            hash_components.append(f"file_hash:{file_hash}")
+        else:
+            hash_components.append("file_hash:none")
+    
+    # Component 2: Function hash
+    hash_components.append(f"function:{function_hash}")
+    
+    # Component 3: Parameters (already sorted)
+    sorted_params = sort_parameters(parameters)
+    params_json = json.dumps(sorted_params, sort_keys=True)
+    hash_components.append(f"params:{params_json}")
+    
+    # Combine all components
+    hash_input = "|".join(hash_components)
+    hash_bytes = hash_input.encode('utf-8')
+    
+    # Compute SHA256
+    job_hash = hashlib.sha256(hash_bytes).hexdigest()
+    
+    logger.debug(f"Computed job hash: {job_hash[:12]}... from {len(hash_components)} components")
+    return job_hash
+
 
 async def get_latest_method_hash(method_name: str) -> Optional[str]:
     """
@@ -148,12 +204,13 @@ async def find_existing_job(
         job = await jobs_db.jobs.find_one(query, sort=[("created_at", -1)])
         
         if job:
-            job_id = job.get("job_id")
+            job_hash = job.get("job_hash")
             status = job.get("status")
-            logger.info(f"✅ FOUND existing job: {job_id} (status: {status})")
-            # Use get_job_by_id to retrieve the full job data including GridFS output if needed
-            if job_id:
-                job = await get_job_by_id(job_id)
+            logger.info(f"✅ FOUND existing job: {job_hash} (status: {status})")
+            # Use get_job_by_hash to retrieve the full job data including GridFS output if needed
+            if job_hash:
+                from dshpc_api.services.db_service import get_job_by_hash
+                job = await get_job_by_hash(job_hash)
         else:
             logger.info(f"❌ NO existing job found for this combination")
         
@@ -189,8 +246,17 @@ async def submit_job(
         # Sort parameters to ensure consistent ordering
         sorted_params = sort_parameters(parameters)
         
+        # Compute job hash
+        job_hash = compute_job_hash(
+            file_hash=file_hash,
+            file_inputs=file_inputs,
+            function_hash=function_hash,
+            parameters=sorted_params
+        )
+        
         # Prepare job submission payload
         payload = {
+            "job_hash": job_hash,
             "function_hash": function_hash,
             "parameters": sorted_params
         }
@@ -208,7 +274,7 @@ async def submit_job(
             # If PARAMS_ONLY or None, omit file_hash (params-only job)
         
         # Submit job to slurm_api
-        logger.info(f"Submitting to slurm_api with payload: {payload}")
+        logger.info(f"Submitting to slurm_api with job_hash: {job_hash}, payload: {payload}")
         async with aiohttp.ClientSession() as session:
             async with session.post(
                 f"{settings.SLURM_API_URL}/submit",
@@ -220,25 +286,39 @@ async def submit_job(
                     return False, f"Error submitting job: {response_data.get('detail', 'Unknown error')}", None
                 
                 # Get job details
-                job_id = response_data.get("job_id")
-                if not job_id:
-                    return False, "No job ID returned from slurm_api", None
+                job_hash_returned = response_data.get("job_hash")
+                if not job_hash_returned:
+                    return False, "No job hash returned from slurm_api", None
                 
-                # Get job status
-                job_data = await get_job_status(job_id)
+                # Get job status with retries (job might not be immediately available)
+                job_data = None
+                for attempt in range(3):
+                    job_data = await get_job_status(job_hash_returned)
+                    if job_data:
+                        break
+                    if attempt < 2:
+                        await asyncio.sleep(0.5)  # Wait 500ms before retry
+                
                 if not job_data:
-                    return False, f"Could not get status for job {job_id}", None
+                    logger.warning(f"Could not get status for job {job_hash_returned} after 3 attempts")
+                    # Return minimal job data so we don't fail completely
+                    return True, "Job submitted successfully (status pending)", {
+                        "job_hash": job_hash_returned,
+                        "status": "SD",  # Submitted
+                        "output": None,
+                        "output_file_hash": None
+                    }
                 
                 return True, "Job submitted successfully", job_data
     except Exception as e:
         return False, f"Error submitting job: {str(e)}", None
 
-async def get_job_status(job_id: str) -> Optional[Dict[str, Any]]:
+async def get_job_status(job_hash: str) -> Optional[Dict[str, Any]]:
     """
     Get the status of a job from the slurm_api.
     
     Args:
-        job_id: The ID of the job
+        job_hash: The hash of the job
         
     Returns:
         The job data if available, None otherwise
@@ -248,7 +328,7 @@ async def get_job_status(job_id: str) -> Optional[Dict[str, Any]]:
     try:
         async with aiohttp.ClientSession() as session:
             async with session.get(
-                f"{settings.SLURM_API_URL}/job/{job_id}"
+                f"{settings.SLURM_API_URL}/job/{job_hash}"
             ) as response:
                 if response.status != 200:
                     return None
@@ -306,7 +386,7 @@ async def simulate_job(file_hash: str, method_name: str, parameters: Optional[Di
         is_functional, message = await check_method_functionality(method_name)
         if not is_functional:
             return {
-                "job_id": None,
+                "job_hash": None,
                 "status": None,
                 "message": f"Method check failed: {message}",
                 "status_detail": "Method validation failed",
@@ -317,7 +397,7 @@ async def simulate_job(file_hash: str, method_name: str, parameters: Optional[Di
         function_hash = await get_latest_method_hash(method_name)
         if not function_hash:
             return {
-                "job_id": None,
+                "job_hash": None,
                 "status": None,
                 "message": f"Method '{method_name}' not found or is not active",
                 "status_detail": "Method not available",
@@ -333,7 +413,7 @@ async def simulate_job(file_hash: str, method_name: str, parameters: Optional[Di
         # Only validate file if file_hash was provided
         if file_hash and not file_doc:
             return {
-                "job_id": None,
+                "job_hash": None,
                 "status": None,
                 "message": f"File with hash '{file_hash}' not found",
                 "status_detail": "Input file not found",
@@ -344,7 +424,7 @@ async def simulate_job(file_hash: str, method_name: str, parameters: Optional[Di
         if file_hash and file_doc and file_doc.get("status") != "completed":
             file_status = file_doc.get("status", "unknown")
             return {
-                "job_id": None,
+                "job_hash": None,
                 "status": None,
                 "message": f"File with hash '{file_hash}' is not ready (status: {file_status})",
                 "status_detail": "Input file not ready",
@@ -369,7 +449,7 @@ async def simulate_job(file_hash: str, method_name: str, parameters: Optional[Di
             
             if not success:
                 return {
-                    "job_id": None,
+                    "job_hash": None,
                     "status": None,
                     "output_file_hash": None,
                     "message": message,
@@ -380,7 +460,7 @@ async def simulate_job(file_hash: str, method_name: str, parameters: Optional[Di
             # Use "SD" as status code for newly submitted jobs
             status_code = job_data.get("status", "SD")
             return {
-                "job_id": job_data.get("job_id"),
+                "job_hash": job_data.get("job_hash"),
                 "status": status_code,
                 "output_file_hash": None,
                 "message": "New job submitted",
@@ -390,12 +470,12 @@ async def simulate_job(file_hash: str, method_name: str, parameters: Optional[Di
         
         # Check the status of the existing job
         job_status = existing_job.get("status")
-        job_id = existing_job.get("job_id")
+        job_hash = existing_job.get("job_hash")
         
         if job_status in COMPLETED_STATUSES:
             # Job completed successfully, return status and output
             return {
-                "job_id": job_id,
+                "job_hash": job_hash,
                 "status": job_status,
                 "output": existing_job.get("output"),
                 "output_file_hash": existing_job.get("output_file_hash"),
@@ -407,7 +487,7 @@ async def simulate_job(file_hash: str, method_name: str, parameters: Optional[Di
         elif job_status in IN_PROGRESS_STATUSES:
             # Job is in progress, return status without output
             return {
-                "job_id": job_id,
+                "job_hash": job_hash,
                 "status": job_status,
                 "output_file_hash": existing_job.get("output_file_hash"),
                 "message": "Job in progress",
@@ -421,7 +501,7 @@ async def simulate_job(file_hash: str, method_name: str, parameters: Optional[Di
             
             if not success:
                 return {
-                    "job_id": job_id,
+                    "job_hash": job_hash,
                     "status": None,
                     "output_file_hash": None,
                     "old_status": job_status,
@@ -433,7 +513,7 @@ async def simulate_job(file_hash: str, method_name: str, parameters: Optional[Di
             
             new_status = job_data.get("status")
             return {
-                "job_id": job_data.get("job_id"),
+                "job_hash": job_data.get("job_hash"),
                 "status": new_status,
                 "output_file_hash": None,
                 "old_status": job_status,
@@ -447,7 +527,7 @@ async def simulate_job(file_hash: str, method_name: str, parameters: Optional[Di
             # Job failed in a way that shouldn't be retried
             error_message = existing_job.get("error", "No error details available")
             return {
-                "job_id": job_id,
+                "job_hash": job_hash,
                 "status": job_status,
                 "output_file_hash": existing_job.get("output_file_hash"),
                 "message": f"Job previously failed with status: {job_status} (non-retriable)",
@@ -460,7 +540,7 @@ async def simulate_job(file_hash: str, method_name: str, parameters: Optional[Di
             # Unknown status, log it but don't resubmit
             print(f"Unknown job status: {job_status}")
             return {
-                "job_id": job_id,
+                "job_hash": job_hash,
                 "status": job_status,
                 "output_file_hash": existing_job.get("output_file_hash"),
                 "message": f"Unknown job status: {job_status}",
@@ -470,7 +550,7 @@ async def simulate_job(file_hash: str, method_name: str, parameters: Optional[Di
             
     except Exception as e:
         return {
-            "job_id": None,
+            "job_hash": None,
             "status": None,
             "output_file_hash": None,
             "message": f"Error simulating job: {str(e)}",

@@ -88,7 +88,7 @@
                                 {% endif %}
                             </div>
                             <div class="small text-muted">
-                                <code style="max-width: 150px; display: inline-block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: bottom;">{{ job.job_id }}</code>
+                                <code style="max-width: 150px; display: inline-block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: bottom;">{{ job.job_hash }}</code>
                                 {% if job.duration_seconds %}
                                     <span class="ms-2">{{ job.duration_seconds|duration_format }}</span>
                     {% endif %}
@@ -116,13 +116,13 @@
                         <h6 class="mb-3"><i class="bi bi-info-circle"></i> Job Information</h6>
                         
                         <div class="info-row">
-                            <div class="label">Job ID</div>
+                            <div class="label">Job Hash</div>
                             <div class="value">
                                 <div class="hash-display">
                                     <div class="hash-scroll">
-                                        <code class="small">{{ job.job_id }}</code>
+                                        <code class="small">{{ job.job_hash }}</code>
                                     </div>
-                                    <button class="btn btn-sm btn-outline-secondary" onclick="copyToClipboard('{{ job.job_id }}')">
+                                    <button class="btn btn-sm btn-outline-secondary" onclick="copyToClipboard('{{ job.job_hash }}')">
                                         <i class="bi bi-clipboard"></i>
                                     </button>
                                 </div>
