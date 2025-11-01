@@ -8,7 +8,7 @@ from typing import Dict, List, Any, Optional, Tuple, Set
 from pymongo.database import Database
 
 from dshpc_api.config.logging_config import logger
-from dshpc_api.services.db_service import get_jobs_db
+from dshpc_api.services.db_service import get_jobs_db, get_files_db
 from dshpc_api.models.pipeline import (
     PipelineStatus, PipelineNodeStatus, PipelineNodeInfo, PipelineInfo
 )
@@ -230,6 +230,7 @@ async def get_pipeline_status(pipeline_id: str) -> Optional[Dict[str, Any]]:
     
     # Find final node (highest depth level with no dependent nodes)
     final_node_id = None
+    final_output = None
     if pipeline["status"] == PipelineStatus.COMPLETED.value:
         # Find node(s) that no other node depends on
         all_dependencies = set()
@@ -242,11 +243,21 @@ async def get_pipeline_status(pipeline_id: str) -> Optional[Dict[str, Any]]:
         if terminal_nodes:
             # Use the one with highest depth level
             final_node_id = max(terminal_nodes, key=lambda nid: nodes[nid]["depth_level"])
-            final_output = nodes[final_node_id].get("output_hash")
-        else:
-            final_output = None
-    else:
-        final_output = None
+            final_meta_job_id = nodes[final_node_id].get("meta_job_id")
+            
+            # Retrieve actual output content from the meta-job (same as meta_job_service does)
+            if final_meta_job_id:
+                try:
+                    from dshpc_api.services.meta_job_service import get_meta_job_info
+                    
+                    # Get the meta-job info which includes final_output
+                    meta_job_info = await get_meta_job_info(final_meta_job_id)
+                    if meta_job_info:
+                        final_output = meta_job_info.final_output
+                except Exception as e:
+                    logger.error(f"Error retrieving final output for pipeline {pipeline_id}: {e}")
+                    # Don't fail, just return None
+                    final_output = None
     
     return {
         "pipeline_id": pipeline_id,
