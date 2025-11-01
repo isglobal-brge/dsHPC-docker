@@ -434,69 +434,102 @@
         const modal = new bootstrap.Modal(document.getElementById('dagModal'));
         modal.show();
         
-        // Render DAG
-        setTimeout(() => renderDAG(pipeline), 100);
+        // Render DAG immediately (mermaid.render() is async anyway)
+        renderDAG(pipeline);
+    }
+    
+    // Wait for Mermaid to be available with retry
+    function waitForMermaid(maxAttempts = 20, interval = 100) {
+        return new Promise((resolve, reject) => {
+            let attempts = 0;
+            
+            const checkMermaid = () => {
+                if (window.mermaid) {
+                    resolve(window.mermaid);
+                    return;
+                }
+                
+                attempts++;
+                if (attempts >= maxAttempts) {
+                    reject(new Error('Mermaid library failed to load after ' + maxAttempts + ' attempts'));
+                    return;
+                }
+                
+                setTimeout(checkMermaid, interval);
+            };
+            
+            checkMermaid();
+        });
     }
     
     function renderDAG(pipeline) {
         const nodes = pipeline.nodes || {};
         const layers = pipeline.layers || [];
-        
-        // Build Mermaid diagram
-        let mermaidCode = 'graph TD\n';
-        
-        // Add nodes with styling based on status
-        for (const [nodeId, nodeData] of Object.entries(nodes)) {
-            const status = nodeData.status || 'waiting';
-            const chain = nodeData.chain || [];
-            const methods = chain.map(s => s.method_name).join('→');
-            const label = `${nodeId}<br/>${methods}`;
-            
-            // Style based on status
-            let styleClass = '';
-            switch (status) {
-                case 'completed':
-                    styleClass = 'success';
-                    break;
-                case 'running':
-                    styleClass = 'primary';
-                    break;
-                case 'failed':
-                    styleClass = 'danger';
-                    break;
-                case 'cancelled':
-                    styleClass = 'secondary';
-                    break;
-                default:
-                    styleClass = 'warning';
-            }
-            
-            mermaidCode += `    ${nodeId}["${label}"]:::${styleClass}\n`;
-        }
-        
-        // Add edges (dependencies)
-        for (const [nodeId, nodeData] of Object.entries(nodes)) {
-            const dependencies = nodeData.dependencies || [];
-            for (const dep of dependencies) {
-                mermaidCode += `    ${dep} --> ${nodeId}\n`;
-            }
-        }
-        
-        // Add style definitions
-        mermaidCode += `\n`;
-        mermaidCode += `    classDef success fill:#198754,stroke:#146c43,color:#fff,stroke-width:3px\n`;
-        mermaidCode += `    classDef primary fill:#0d6efd,stroke:#0a58ca,color:#fff,stroke-width:3px\n`;
-        mermaidCode += `    classDef danger fill:#dc3545,stroke:#b02a37,color:#fff,stroke-width:3px\n`;
-        mermaidCode += `    classDef warning fill:#ffc107,stroke:#cc9a06,color:#000,stroke-width:3px\n`;
-        mermaidCode += `    classDef secondary fill:#6c757d,stroke:#565e64,color:#fff,stroke-width:3px\n`;
-        
-        // Render with Mermaid
         const dagViewer = document.getElementById('dagViewer');
-        dagViewer.innerHTML = `<div class="mermaid">${mermaidCode}</div>`;
         
-        // Re-initialize Mermaid for this specific diagram
-        if (window.mermaid) {
-            window.mermaid.init(undefined, dagViewer.querySelector('.mermaid'));
+        // Show loading message
+        dagViewer.innerHTML = `<div class="text-center text-muted py-4">
+            <div class="spinner-border spinner-border-sm" role="status"></div>
+            <div class="small mt-2">Loading DAG visualization...</div>
+        </div>`;
+        
+        // Wait for Mermaid to be available
+        waitForMermaid().then(mermaid => {
+            // Build Mermaid diagram
+            let mermaidCode = 'graph TD\n';
+            
+            // Add nodes with styling based on status
+            for (const [nodeId, nodeData] of Object.entries(nodes)) {
+                const status = nodeData.status || 'waiting';
+                const chain = nodeData.chain || [];
+                const methods = chain.map(s => s.method_name).join('→');
+                const label = `${nodeId}<br/>${methods}`;
+                
+                // Style based on status
+                let styleClass = '';
+                switch (status) {
+                    case 'completed':
+                        styleClass = 'success';
+                        break;
+                    case 'running':
+                        styleClass = 'primary';
+                        break;
+                    case 'failed':
+                        styleClass = 'danger';
+                        break;
+                    case 'cancelled':
+                        styleClass = 'secondary';
+                        break;
+                    default:
+                        styleClass = 'warning';
+                }
+                
+                mermaidCode += `    ${nodeId}["${label}"]:::${styleClass}\n`;
+            }
+            
+            // Add edges (dependencies)
+            for (const [nodeId, nodeData] of Object.entries(nodes)) {
+                const dependencies = nodeData.dependencies || [];
+                for (const dep of dependencies) {
+                    mermaidCode += `    ${dep} --> ${nodeId}\n`;
+                }
+            }
+            
+            // Add style definitions
+            mermaidCode += `\n`;
+            mermaidCode += `    classDef success fill:#198754,stroke:#146c43,color:#fff,stroke-width:3px\n`;
+            mermaidCode += `    classDef primary fill:#0d6efd,stroke:#0a58ca,color:#fff,stroke-width:3px\n`;
+            mermaidCode += `    classDef danger fill:#dc3545,stroke:#b02a37,color:#fff,stroke-width:3px\n`;
+            mermaidCode += `    classDef warning fill:#ffc107,stroke:#cc9a06,color:#000,stroke-width:3px\n`;
+            mermaidCode += `    classDef secondary fill:#6c757d,stroke:#565e64,color:#fff,stroke-width:3px\n`;
+            
+            // Generate unique ID for this diagram
+            const diagramId = `dag-${Date.now()}`;
+            
+            // Use mermaid.render() which is more reliable
+            return mermaid.render(diagramId, mermaidCode);
+        }).then(({ svg }) => {
+            dagViewer.innerHTML = svg;
             
             // Add click handlers to nodes
             setTimeout(() => {
@@ -506,8 +539,14 @@
                     node.style.cursor = 'pointer';
                     node.addEventListener('click', () => showNodeDetails(pipeline, nodeId));
                 });
-            }, 500);
-        }
+            }, 100);
+        }).catch(err => {
+            console.error('Mermaid rendering error:', err);
+            dagViewer.innerHTML = `<div class="alert alert-danger">
+                <i class="bi bi-exclamation-triangle-fill"></i> Error rendering DAG visualization
+                <pre class="small mt-2 mb-0">${err.message || err}</pre>
+            </div>`;
+        });
     }
     
     function showNodeDetails(pipeline, nodeId) {
