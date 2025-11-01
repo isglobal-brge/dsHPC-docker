@@ -419,7 +419,7 @@
                                         <small class="text-muted">Drag to pan • Scroll to zoom</small>
                                     </div>
                                     <!-- DAG Canvas -->
-                                    <div id="dagCanvas" style="flex: 1; overflow: hidden; cursor: grab; position: relative; height: 100%;">
+                                    <div id="dagCanvas" style="flex: 1; overflow: hidden; cursor: grab; position: relative; height: 100%; user-select: none; -webkit-user-select: none; -moz-user-select: none; -ms-user-select: none;">
                                         <div id="dagViewer" style="transform-origin: 0 0; transition: transform 0.1s ease-out;">
                                             <div class="text-center py-5">
                                                 <div class="spinner-border" role="status"></div>
@@ -538,6 +538,7 @@
         
         // Mouse drag pan
         canvas.addEventListener('mousedown', (e) => {
+            e.preventDefault(); // Prevent text selection
             isDragging = true;
             startX = e.clientX - panX;
             startY = e.clientY - panY;
