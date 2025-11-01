@@ -79,18 +79,16 @@
                 <div class="d-flex w-100 justify-content-between align-items-center pe-3">
                     <div class="d-flex align-items-center gap-3 flex-grow-1">
                         <div style="min-width: 0; flex: 1;">
-                            <div style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
+                            <div style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 700px;">
                                 <strong>{{ job.method_name|default:"Unknown Method" }}</strong>
                                 {% if job.input_filename %}
                                     <span class="text-muted">→ {{ job.input_filename }}</span>
                                 {% elif job.file_info %}
-                                    <span class="text-muted">→ 
-                                    {% for name, info in job.file_info.items %}{{ info.filename }}{% if not forloop.last %}, {% endif %}{% endfor %}
-                                    </span>
+                                    <span class="text-muted">→ {{ job.file_info|join_filenames }}</span>
                                 {% endif %}
                             </div>
                             <div class="small text-muted">
-                                <code>{{ job.job_id }}</code>
+                                <code style="max-width: 150px; display: inline-block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: bottom;">{{ job.job_id }}</code>
                                 {% if job.duration_seconds %}
                                     <span class="ms-2">{{ job.duration_seconds|duration_format }}</span>
                     {% endif %}

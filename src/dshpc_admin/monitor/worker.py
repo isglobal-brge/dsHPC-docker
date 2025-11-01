@@ -457,6 +457,28 @@ class MonitorWorker:
         
         return methods_source
     
+    def collect_pipelines(self):
+        """Collect pipeline data from MongoDB."""
+        pipelines_data = []
+        
+        try:
+            # Get all pipelines (limit to recent 200 for snapshot efficiency)
+            pipelines = list(self.db.pipelines.find({}).sort('created_at', -1).limit(200))
+            
+            for pipeline in pipelines:
+                # Convert ObjectId to string for JSON serialization
+                if '_id' in pipeline:
+                    del pipeline['_id']
+                
+                pipelines_data.append(pipeline)
+                
+            logger.debug(f"Collected {len(pipelines_data)} pipelines")
+            
+        except Exception as e:
+            logger.error(f"Error collecting pipelines: {e}")
+        
+        return pipelines_data
+    
     def store_snapshot(self):
         """Collect all data and store a snapshot in MongoDB."""
         try:
@@ -467,7 +489,8 @@ class MonitorWorker:
                 'job_logs': self.collect_slurm_job_logs(),
                 'environment': self.collect_environment_info(),
                 'slurm_queue': self.collect_slurm_queue(),
-                'method_sources': self.collect_method_sources()
+                'method_sources': self.collect_method_sources(),
+                'pipelines': self.collect_pipelines()
             }
             
             # Store snapshot

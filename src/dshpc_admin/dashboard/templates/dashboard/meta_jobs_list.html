@@ -75,7 +75,7 @@
                 <div class="d-flex w-100 justify-content-between align-items-center pe-3">
                     <div class="d-flex align-items-center gap-3 flex-grow-1">
                         <div style="min-width: 0; flex: 1;">
-                            <div style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
+                            <div style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 700px;">
                                 <strong>
                                 {% for step in meta_job.chain %}
                                     {{ step.method_name }}{% if not forloop.last %} → {% endif %}
@@ -90,7 +90,7 @@
                                 {% endif %}
                             </div>
                             <div class="small text-muted">
-                                <code>{{ meta_job.meta_job_id }}</code>
+                                <code style="max-width: 150px; display: inline-block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: bottom;">{{ meta_job.meta_job_id }}</code>
                                 <span class="ms-2">{{ meta_job.chain|length }} step(s)</span>
                             </div>
                         </div>

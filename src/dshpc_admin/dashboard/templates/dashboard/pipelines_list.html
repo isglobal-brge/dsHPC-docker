@@ -1,0 +1,637 @@
+{% extends "base.html" %}
+{% load dashboard_filters %}
+
+{% block extra_css %}
+<!-- Mermaid.js for DAG visualization -->
+<script type="module">
+  import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.esm.min.mjs';
+  mermaid.initialize({ 
+    startOnLoad: true,
+    theme: 'default',
+    flowchart: {
+      curve: 'basis',
+      padding: 20,
+      nodeSpacing: 100,
+      rankSpacing: 80
+    }
+  });
+  window.mermaid = mermaid;
+</script>
+{% endblock %}
+
+{% block page_actions %}
+<div class="d-flex gap-2 align-items-center">
+    <div class="btn-group btn-group-sm">
+        <a href="{% url 'pipelines_list' %}?per_page={{ per_page }}" class="btn {% if not status_filter %}btn-dark{% else %}btn-outline-secondary{% endif %}">
+            All
+        </a>
+        <a href="{% url 'pipelines_list' %}?status=running&per_page={{ per_page }}" class="btn {% if status_filter == 'running' %}btn-info{% else %}btn-outline-secondary{% endif %}">
+            Running
+        </a>
+        <a href="{% url 'pipelines_list' %}?status=completed&per_page={{ per_page }}" class="btn {% if status_filter == 'completed' %}btn-success{% else %}btn-outline-secondary{% endif %}">
+            Completed
+        </a>
+        <a href="{% url 'pipelines_list' %}?status=failed&per_page={{ per_page }}" class="btn {% if status_filter == 'failed' %}btn-danger{% else %}btn-outline-secondary{% endif %}">
+            Failed
+        </a>
+    </div>
+    <button class="btn btn-sm btn-outline-secondary" type="button" data-bs-toggle="collapse" data-bs-target="#filterPanel">
+        <i class="bi bi-funnel"></i> Advanced Filters
+    </button>
+    <button class="btn btn-sm btn-outline-secondary" onclick="manualRefresh()" id="refreshBtn" disabled>
+        <i class="bi bi-arrow-clockwise spin"></i>
+    </button>
+</div>
+{% endblock %}
+
+{% block content %}
+<!-- Info Bar -->
+<div class="d-flex justify-content-between align-items-center mb-2">
+    <small class="text-muted">{{ total_pipelines }} pipeline(s)</small>
+    <small class="text-muted">
+        <i class="bi bi-clock-history"></i> Last update: {{ snapshot_time|date:"Y-m-d H:i:s" }}
+    </small>
+</div>
+
+<!-- Filter Panel -->
+<div class="collapse {% if search or date_from or date_to %}show{% endif %}" id="filterPanel">
+    <div class="filter-panel">
+        <form method="get" id="filterForm">
+            <input type="hidden" name="status" value="{{ status_filter }}">
+            <div class="row g-3">
+                <div class="col-md-4">
+                    <label class="form-label">Search (Pipeline ID or Name)</label>
+                    <input type="text" name="search" class="form-control" placeholder="Search..." value="{{ search|default:'' }}">
+                </div>
+                <div class="col-md-3">
+                    <label class="form-label">Date From</label>
+                    <input type="date" name="date_from" class="form-control" value="{{ date_from|default:'' }}">
+                </div>
+                <div class="col-md-3">
+                    <label class="form-label">Date To</label>
+                    <input type="date" name="date_to" class="form-control" value="{{ date_to|default:'' }}">
+                </div>
+                <div class="col-md-2 d-flex align-items-end gap-2">
+                    <button type="submit" class="btn btn-dark flex-grow-1">
+                        <i class="bi bi-search"></i>
+                    </button>
+                    <a href="{% url 'pipelines_list' %}" class="btn btn-outline-secondary">
+                        <i class="bi bi-x"></i>
+                    </a>
+                </div>
+            </div>
+        </form>
+    </div>
+</div>
+
+<!-- Pipelines Accordion -->
+<div class="accordion accordion-modern" id="pipelinesAccordion">
+    {% for pipeline in pipelines %}
+    <div class="accordion-item">
+        <h2 class="accordion-header">
+            <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#pipeline{{ forloop.counter }}">
+                <div class="d-flex w-100 justify-content-between align-items-center pe-3">
+                    <div class="d-flex align-items-center gap-3 flex-grow-1">
+                        <div style="min-width: 0; flex: 1;">
+                            <div style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 700px;">
+                                <strong>{{ pipeline.name|default:"Unnamed Pipeline" }}</strong>
+                            </div>
+                            <div class="small text-muted">
+                                <code style="max-width: 150px; display: inline-block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: bottom;">{{ pipeline.pipeline_id }}</code>
+                                <span class="ms-2">{{ pipeline.total_nodes }} node(s)</span>
+                                {% if pipeline.max_depth %}
+                                    <span class="ms-2">{{ pipeline.max_depth }} layer(s)</span>
+                                {% endif %}
+                            </div>
+                        </div>
+                    </div>
+                    <div class="d-flex gap-2 align-items-center">
+                        {% if pipeline.error %}
+                        <span class="badge bg-danger">
+                            <i class="bi bi-exclamation-triangle-fill"></i> Error
+                        </span>
+                        {% endif %}
+                        <span class="badge {{ pipeline.status|status_badge_class }}">
+                            <i class="{{ pipeline.status|status_icon }}"></i> {{ pipeline.status }}
+                        </span>
+                        {% if pipeline.completed_nodes > 0 %}
+                        <span class="badge bg-info">
+                            {{ pipeline.completed_nodes }}/{{ pipeline.total_nodes }} completed
+                        </span>
+                        {% endif %}
+                        <small class="text-muted">{{ pipeline.created_at|date:"Y-m-d H:i" }}</small>
+                    </div>
+                </div>
+            </button>
+        </h2>
+        <div id="pipeline{{ forloop.counter }}" class="accordion-collapse collapse" data-bs-parent="#pipelinesAccordion">
+            <div class="accordion-body">
+                <!-- Pipeline Info -->
+                <div class="row mb-4">
+                    <div class="col-md-6">
+                        <h6 class="mb-3"><i class="bi bi-info-circle"></i> Pipeline Information</h6>
+                        
+                        <div class="info-row">
+                            <div class="label">Pipeline ID</div>
+                            <div class="value">
+                                <div class="hash-display">
+                                    <div class="hash-scroll">
+                                        <code class="small">{{ pipeline.pipeline_id }}</code>
+                                    </div>
+                                    <button class="btn btn-sm btn-outline-secondary" onclick="copyToClipboard('{{ pipeline.pipeline_id }}')">
+                                        <i class="bi bi-clipboard"></i>
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        {% if pipeline.name %}
+                        <div class="info-row">
+                            <div class="label">Name</div>
+                            <div class="value"><strong>{{ pipeline.name }}</strong></div>
+                        </div>
+                        {% endif %}
+                        
+                        <div class="info-row">
+                            <div class="label">Status</div>
+                            <div class="value">
+                                <span class="badge {{ pipeline.status|status_badge_class }}">
+                                    <i class="{{ pipeline.status|status_icon }}"></i> {{ pipeline.status }}
+                                </span>
+                            </div>
+                        </div>
+                        
+                        <div class="info-row">
+                            <div class="label">Progress</div>
+                            <div class="value">
+                                <div class="d-flex align-items-center gap-2">
+                                    <span>{{ pipeline.completed_nodes }}/{{ pipeline.total_nodes }} nodes</span>
+                                    <div class="progress flex-grow-1" style="height: 8px; max-width: 150px;">
+                                        <div class="progress-bar bg-success" role="progressbar" 
+                                             style="width: {% widthratio pipeline.completed_nodes pipeline.total_nodes 100 %}%"></div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <div class="info-row">
+                            <div class="label">Created</div>
+                            <div class="value">{{ pipeline.created_at|date:"Y-m-d H:i:s" }}</div>
+                        </div>
+                        
+                        {% if pipeline.completed_at %}
+                        <div class="info-row">
+                            <div class="label">Completed</div>
+                            <div class="value">{{ pipeline.completed_at|date:"Y-m-d H:i:s" }}</div>
+                        </div>
+                        {% endif %}
+                    </div>
+                    
+                    <div class="col-md-6">
+                        <h6 class="mb-3"><i class="bi bi-diagram-3"></i> Graph Structure</h6>
+                        
+                        <div class="info-row">
+                            <div class="label">Total Nodes</div>
+                            <div class="value">{{ pipeline.total_nodes }}</div>
+                        </div>
+                        
+                        <div class="info-row">
+                            <div class="label">Depth (Layers)</div>
+                            <div class="value">{{ pipeline.max_depth|default:"N/A" }}</div>
+                        </div>
+                        
+                        <div class="info-row">
+                            <div class="label">Node Status</div>
+                            <div class="value">
+                                <div class="d-flex flex-wrap gap-1">
+                                    {% if pipeline.waiting_nodes > 0 %}
+                                    <span class="badge bg-warning text-dark">{{ pipeline.waiting_nodes }} waiting</span>
+                                    {% endif %}
+                                    {% if pipeline.running_nodes > 0 %}
+                                    <span class="badge bg-primary">{{ pipeline.running_nodes }} running</span>
+                                    {% endif %}
+                                    {% if pipeline.completed_nodes > 0 %}
+                                    <span class="badge bg-success">{{ pipeline.completed_nodes }} completed</span>
+                                    {% endif %}
+                                    {% if pipeline.failed_nodes > 0 %}
+                                    <span class="badge bg-danger">{{ pipeline.failed_nodes }} failed</span>
+                                    {% endif %}
+                                    {% if pipeline.cancelled_nodes > 0 %}
+                                    <span class="badge bg-secondary">{{ pipeline.cancelled_nodes }} cancelled</span>
+                                    {% endif %}
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- Error Alert -->
+                {% if pipeline.error %}
+                <div class="alert alert-danger mb-4">
+                    <h6 class="alert-heading"><i class="bi bi-exclamation-triangle-fill"></i> Pipeline Error</h6>
+                    <pre class="mb-0" style="white-space: pre-wrap; font-size: 0.85rem;">{{ pipeline.error }}</pre>
+                </div>
+                {% endif %}
+                
+                <!-- Pipeline Data (JSON) -->
+                <script type="application/json" id="pipeline-data-{{ pipeline.pipeline_id }}">
+{{ pipeline|jsonify_safe }}
+                </script>
+                
+                <!-- DAG Visualization Button -->
+                <div class="mb-4">
+                    <button class="btn btn-primary" 
+                            onclick="viewPipelineDAG('{{ pipeline.pipeline_id }}', '{{ pipeline.name|default:"Unnamed Pipeline"|escapejs }}')">
+                        <i class="bi bi-diagram-3-fill"></i> View Pipeline DAG
+                    </button>
+                    <small class="text-muted ms-2">{{ pipeline.max_depth|default:1 }} layer{{ pipeline.max_depth|pluralize }}, {{ pipeline.total_nodes }} node{{ pipeline.total_nodes|pluralize }}</small>
+                </div>
+                
+                <!-- Final Output -->
+                {% if pipeline.final_output %}
+                <div class="mt-4">
+                    <h6 class="mb-3"><i class="bi bi-file-check"></i> Final Output</h6>
+                    <div class="info-row">
+                        <div class="label">Output Hash</div>
+                        <div class="value">
+                            <div class="hash-display">
+                                <div class="hash-scroll">
+                                    <code>{{ pipeline.final_output }}</code>
+                                </div>
+                                <button class="btn btn-sm btn-outline-secondary" onclick="copyToClipboard('{{ pipeline.final_output }}')">
+                                    <i class="bi bi-clipboard"></i>
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+    {% empty %}
+    <div class="alert alert-info">
+        <i class="bi bi-inbox fs-1 d-block text-center mb-3" style="opacity: 0.3;"></i>
+        <p class="text-center mb-0">No pipelines found</p>
+        {% if search or status_filter %}
+        <p class="text-center small text-muted">Try adjusting your filters</p>
+        {% endif %}
+    </div>
+    {% endfor %}
+</div>
+
+<!-- Pagination -->
+{% if total_pages > 1 %}
+<nav aria-label="Page navigation" class="mt-4">
+    <div class="d-flex justify-content-between align-items-center mb-3">
+        <div class="text-muted small">
+            Page {{ page }} of {{ total_pages }} | Showing {{ pipelines|length }} of {{ total_pipelines }} pipelines
+        </div>
+        <div>
+            <label class="small me-2">Per page:</label>
+            <select id="perPageSelect" class="form-select form-select-sm d-inline-block" style="width: auto;">
+                <option value="25" {% if per_page == 25 %}selected{% endif %}>25</option>
+                <option value="50" {% if per_page == 50 %}selected{% endif %}>50</option>
+                <option value="100" {% if per_page == 100 %}selected{% endif %}>100</option>
+                <option value="200" {% if per_page == 200 %}selected{% endif %}>200</option>
+            </select>
+        </div>
+    </div>
+    
+    <ul class="pagination pagination-modern justify-content-center">
+        <li class="page-item {% if page <= 1 %}disabled{% endif %}">
+            <a class="page-link" href="?page=1{% if status_filter %}&status={{ status_filter }}{% endif %}{% if search %}&search={{ search }}{% endif %}{% if date_from %}&date_from={{ date_from }}{% endif %}{% if date_to %}&date_to={{ date_to }}{% endif %}&per_page={{ per_page }}">
+                <i class="bi bi-chevron-double-left"></i>
+            </a>
+        </li>
+        <li class="page-item {% if page <= 1 %}disabled{% endif %}">
+            <a class="page-link" href="?page={{ page|add:"-1" }}{% if status_filter %}&status={{ status_filter }}{% endif %}{% if search %}&search={{ search }}{% endif %}{% if date_from %}&date_from={{ date_from }}{% endif %}{% if date_to %}&date_to={{ date_to }}{% endif %}&per_page={{ per_page }}">
+                <i class="bi bi-chevron-left"></i> Previous
+            </a>
+        </li>
+        
+        {% for p in page_range %}
+            {% if p == '...' %}
+            <li class="page-item disabled"><span class="page-link">...</span></li>
+            {% else %}
+            <li class="page-item {% if page == p %}active{% endif %}">
+                <a class="page-link" href="?page={{ p }}{% if status_filter %}&status={{ status_filter }}{% endif %}{% if search %}&search={{ search }}{% endif %}{% if date_from %}&date_from={{ date_from }}{% endif %}{% if date_to %}&date_to={{ date_to }}{% endif %}&per_page={{ per_page }}">{{ p }}</a>
+            </li>
+            {% endif %}
+        {% endfor %}
+        
+        <li class="page-item {% if page >= total_pages %}disabled{% endif %}">
+            <a class="page-link" href="?page={{ page|add:"1" }}{% if status_filter %}&status={{ status_filter }}{% endif %}{% if search %}&search={{ search }}{% endif %}{% if date_from %}&date_from={{ date_from }}{% endif %}{% if date_to %}&date_to={{ date_to }}{% endif %}&per_page={{ per_page }}">
+                Next <i class="bi bi-chevron-right"></i>
+            </a>
+        </li>
+        <li class="page-item {% if page >= total_pages %}disabled{% endif %}">
+            <a class="page-link" href="?page={{ total_pages }}{% if status_filter %}&status={{ status_filter }}{% endif %}{% if search %}&search={{ search }}{% endif %}{% if date_from %}&date_from={{ date_from }}{% endif %}{% if date_to %}&date_to={{ date_to }}{% endif %}&per_page={{ per_page }}">
+                <i class="bi bi-chevron-double-right"></i>
+            </a>
+        </li>
+    </ul>
+</nav>
+{% endif %}
+
+{% endblock %}
+
+{% block extra_js %}
+<script>
+    const currentSnapshotTime = new Date('{{ snapshot_time|date:"c" }}').getTime();
+    let checkInterval = null;
+    
+    function manualRefresh() {
+        const btn = document.getElementById('refreshBtn');
+        btn.disabled = true;
+        btn.innerHTML = '<i class="bi bi-arrow-clockwise spin"></i>';
+        checkInterval = setInterval(checkForUpdate, 2000);
+        location.reload();
+    }
+    
+    function checkForUpdate() {
+        fetch('/api/snapshot-timestamp/')
+            .then(r => r.json())
+            .then(data => {
+                const newTime = new Date(data.timestamp).getTime();
+                if (newTime > currentSnapshotTime) {
+                    clearInterval(checkInterval);
+                    const btn = document.getElementById('refreshBtn');
+                    if (btn) {
+                        btn.disabled = false;
+                        btn.innerHTML = '<i class="bi bi-arrow-clockwise"></i>';
+                    }
+                }
+            })
+            .catch(e => console.error('Error:', e));
+    }
+    
+    // Always start checking for updates
+    checkInterval = setInterval(checkForUpdate, 2000);
+    
+    document.getElementById('perPageSelect')?.addEventListener('change', function() {
+        const params = getUrlParams();
+        params.per_page = this.value;
+        params.page = 1;
+        window.location.href = '?' + buildQueryString(params);
+    });
+    
+    // DAG Visualization
+    function viewPipelineDAG(pipelineId, pipelineName) {
+        // Get pipeline data from script tag
+        const scriptElem = document.getElementById(`pipeline-data-${pipelineId}`);
+        if (!scriptElem) {
+            alert('Pipeline data not found');
+            return;
+        }
+        
+        let pipeline;
+        try {
+            pipeline = JSON.parse(scriptElem.textContent);
+        } catch (e) {
+            alert('Error parsing pipeline data: ' + e.message);
+            console.error('Parse error:', e);
+            console.error('Data:', scriptElem.textContent);
+            return;
+        }
+        
+        // Create modal HTML
+        const modalHtml = `
+            <div class="modal fade" id="dagModal" tabindex="-1">
+                <div class="modal-dialog modal-fullscreen">
+                    <div class="modal-content">
+                        <div class="modal-header bg-dark text-white">
+                            <h5 class="modal-title">
+                                <i class="bi bi-diagram-3-fill"></i> ${pipelineName} - Pipeline DAG
+                            </h5>
+                            <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                        </div>
+                        <div class="modal-body p-0">
+                            <div class="row g-0" style="height: calc(100vh - 56px);">
+                                <div class="col-md-9" style="overflow: auto; background: #f8f9fa;">
+                                    <div id="dagViewer" class="p-4">
+                                        <div class="text-center py-5">
+                                            <div class="spinner-border" role="status"></div>
+                                            <p class="text-muted mt-2">Rendering DAG...</p>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div class="col-md-3 border-start" style="overflow-y: auto; background: white;">
+                                    <div id="nodeDetails" class="p-3">
+                                        <div class="text-center text-muted py-5">
+                                            <i class="bi bi-arrow-left fs-3"></i>
+                                            <p class="mt-2">Click on a node to view details</p>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        `;
+        
+        // Remove existing modal
+        document.querySelectorAll('#dagModal').forEach(el => el.remove());
+        
+        // Add modal to body
+        document.body.insertAdjacentHTML('beforeend', modalHtml);
+        
+        // Show modal
+        const modal = new bootstrap.Modal(document.getElementById('dagModal'));
+        modal.show();
+        
+        // Render DAG
+        setTimeout(() => renderDAG(pipeline), 100);
+    }
+    
+    function renderDAG(pipeline) {
+        const nodes = pipeline.nodes || {};
+        const layers = pipeline.layers || [];
+        
+        // Build Mermaid diagram
+        let mermaidCode = 'graph TD\n';
+        
+        // Add nodes with styling based on status
+        for (const [nodeId, nodeData] of Object.entries(nodes)) {
+            const status = nodeData.status || 'waiting';
+            const chain = nodeData.chain || [];
+            const methods = chain.map(s => s.method_name).join('→');
+            const label = `${nodeId}<br/>${methods}`;
+            
+            // Style based on status
+            let styleClass = '';
+            switch (status) {
+                case 'completed':
+                    styleClass = 'success';
+                    break;
+                case 'running':
+                    styleClass = 'primary';
+                    break;
+                case 'failed':
+                    styleClass = 'danger';
+                    break;
+                case 'cancelled':
+                    styleClass = 'secondary';
+                    break;
+                default:
+                    styleClass = 'warning';
+            }
+            
+            mermaidCode += `    ${nodeId}["${label}"]:::${styleClass}\n`;
+        }
+        
+        // Add edges (dependencies)
+        for (const [nodeId, nodeData] of Object.entries(nodes)) {
+            const dependencies = nodeData.dependencies || [];
+            for (const dep of dependencies) {
+                mermaidCode += `    ${dep} --> ${nodeId}\n`;
+            }
+        }
+        
+        // Add style definitions
+        mermaidCode += `\n`;
+        mermaidCode += `    classDef success fill:#198754,stroke:#146c43,color:#fff,stroke-width:3px\n`;
+        mermaidCode += `    classDef primary fill:#0d6efd,stroke:#0a58ca,color:#fff,stroke-width:3px\n`;
+        mermaidCode += `    classDef danger fill:#dc3545,stroke:#b02a37,color:#fff,stroke-width:3px\n`;
+        mermaidCode += `    classDef warning fill:#ffc107,stroke:#cc9a06,color:#000,stroke-width:3px\n`;
+        mermaidCode += `    classDef secondary fill:#6c757d,stroke:#565e64,color:#fff,stroke-width:3px\n`;
+        
+        // Render with Mermaid
+        const dagViewer = document.getElementById('dagViewer');
+        dagViewer.innerHTML = `<div class="mermaid">${mermaidCode}</div>`;
+        
+        // Re-initialize Mermaid for this specific diagram
+        if (window.mermaid) {
+            window.mermaid.init(undefined, dagViewer.querySelector('.mermaid'));
+            
+            // Add click handlers to nodes
+            setTimeout(() => {
+                const svgNodes = dagViewer.querySelectorAll('.node');
+                svgNodes.forEach(node => {
+                    const nodeId = node.id.replace('flowchart-', '').replace(/-\d+$/, '');
+                    node.style.cursor = 'pointer';
+                    node.addEventListener('click', () => showNodeDetails(pipeline, nodeId));
+                });
+            }, 500);
+        }
+    }
+    
+    function showNodeDetails(pipeline, nodeId) {
+        const nodes = pipeline.nodes || {};
+        const nodeData = nodes[nodeId];
+        
+        if (!nodeData) {
+            return;
+        }
+        
+        const chain = nodeData.chain || [];
+        const dependencies = nodeData.dependencies || [];
+        const status = nodeData.status || 'waiting';
+        
+        // Status badge
+        let statusBadge = '';
+        switch (status) {
+            case 'completed':
+                statusBadge = '<span class="badge bg-success"><i class="bi bi-check-circle-fill"></i> Completed</span>';
+                break;
+            case 'running':
+                statusBadge = '<span class="badge bg-primary"><i class="bi bi-play-circle-fill"></i> Running</span>';
+                break;
+            case 'failed':
+                statusBadge = '<span class="badge bg-danger"><i class="bi bi-x-circle-fill"></i> Failed</span>';
+                break;
+            case 'cancelled':
+                statusBadge = '<span class="badge bg-secondary"><i class="bi bi-slash-circle"></i> Cancelled</span>';
+                break;
+            default:
+                statusBadge = '<span class="badge bg-warning text-dark"><i class="bi bi-clock-fill"></i> Waiting</span>';
+        }
+        
+        let html = `
+            <div class="mb-3">
+                <h6 class="mb-3"><i class="bi bi-node-plus"></i> Node: ${nodeId}</h6>
+                
+                <div class="mb-3">
+                    <small class="text-muted d-block mb-1">Status</small>
+                    ${statusBadge}
+                </div>
+                
+                ${dependencies.length > 0 ? `
+                <div class="mb-3">
+                    <small class="text-muted d-block mb-1">Dependencies</small>
+                    ${dependencies.map(d => `<span class="badge bg-secondary">${d}</span>`).join(' ')}
+                </div>
+                ` : ''}
+                
+                <div class="mb-3">
+                    <small class="text-muted d-block mb-1">Method Chain</small>
+                    <div class="list-group list-group-flush">
+                        ${chain.map((step, idx) => `
+                            <div class="list-group-item px-0 py-2">
+                                <div class="d-flex align-items-center gap-2">
+                                    <span class="badge bg-secondary">${idx + 1}</span>
+                                    <strong>${step.method_name}</strong>
+                                </div>
+                                ${step.parameters && Object.keys(step.parameters).length > 0 ? `
+                                    <div class="mt-1 small text-muted">
+                                        ${Object.keys(step.parameters).length} parameter(s)
+                                    </div>
+                                ` : ''}
+                            </div>
+                        `).join('')}
+                    </div>
+                </div>
+                
+                ${nodeData.meta_job_id ? `
+                <div class="mb-3">
+                    <small class="text-muted d-block mb-1">Meta-Job ID</small>
+                    <div class="input-group input-group-sm">
+                        <input type="text" class="form-control" value="${nodeData.meta_job_id}" readonly>
+                        <button class="btn btn-outline-secondary" onclick="copyToClipboard('${nodeData.meta_job_id}')">
+                            <i class="bi bi-clipboard"></i>
+                        </button>
+                    </div>
+                </div>
+                ` : ''}
+                
+                ${nodeData.output_hash ? `
+                <div class="mb-3">
+                    <small class="text-muted d-block mb-1">Output Hash</small>
+                    <div class="input-group input-group-sm">
+                        <input type="text" class="form-control" value="${nodeData.output_hash}" readonly>
+                        <button class="btn btn-outline-secondary" onclick="copyToClipboard('${nodeData.output_hash}')">
+                            <i class="bi bi-clipboard"></i>
+                        </button>
+                    </div>
+                </div>
+                ` : ''}
+                
+                ${nodeData.submitted_at ? `
+                <div class="mb-3">
+                    <small class="text-muted d-block mb-1">Submitted</small>
+                    <div class="small">${new Date(nodeData.submitted_at).toLocaleString()}</div>
+                </div>
+                ` : ''}
+                
+                ${nodeData.completed_at ? `
+                <div class="mb-3">
+                    <small class="text-muted d-block mb-1">Completed</small>
+                    <div class="small">${new Date(nodeData.completed_at).toLocaleString()}</div>
+                </div>
+                ` : ''}
+                
+                ${nodeData.error ? `
+                <div class="alert alert-danger small">
+                    <strong><i class="bi bi-exclamation-triangle-fill"></i> Error:</strong>
+                    <pre class="mb-0 mt-2" style="white-space: pre-wrap; font-size: 0.8rem;">${nodeData.error}</pre>
+                </div>
+                ` : ''}
+            </div>
+        `;
+        
+        document.getElementById('nodeDetails').innerHTML = html;
+    }
+</script>
+{% endblock %}
+

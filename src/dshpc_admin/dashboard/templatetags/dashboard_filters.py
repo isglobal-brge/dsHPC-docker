@@ -33,6 +33,33 @@ def jsonify(value, indent=2):
         return str(value)
 
 
+@register.filter(name='jsonify_safe')
+def jsonify_safe(value, indent=2):
+    """
+    Convert a Python object to a beautified JSON string marked as safe (no HTML escaping).
+    Handles datetime objects properly.
+    
+    Usage in template:
+        {{ my_dict|jsonify_safe }}
+    """
+    if value is None:
+        return mark_safe('')
+    
+    def json_serial(obj):
+        """JSON serializer for objects not serializable by default json code"""
+        from datetime import datetime, date
+        if isinstance(obj, (datetime, date)):
+            return obj.isoformat()
+        raise TypeError(f"Type {type(obj)} not serializable")
+    
+    try:
+        json_str = json.dumps(value, indent=indent, sort_keys=True, ensure_ascii=False, default=json_serial)
+        return mark_safe(json_str)
+    except (TypeError, ValueError) as e:
+        return mark_safe(f'{{"error": "Serialization failed: {str(e)}"}}')
+
+
+
 @register.filter(name='jsonify_html')
 def jsonify_html(value, indent=2):
     """
@@ -224,6 +251,21 @@ def lookup(dictionary, key):
         return dictionary.get(key)
     except (AttributeError, TypeError):
         return None
+
+
+@register.filter(name='join_filenames')
+def join_filenames(file_info):
+    """
+    Join filenames from file_info dict.
+    
+    Usage in template:
+        {{ job.file_info|join_filenames }}
+    """
+    if not file_info:
+        return ""
+    
+    filenames = [info.get('filename', '') for info in file_info.values() if info]
+    return ", ".join(filenames)
 
 
 @register.filter(name='format_timestamp')

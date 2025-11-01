@@ -749,6 +749,196 @@ def meta_jobs_list(request):
 
 
 @login_required_simple
+def pipelines_list(request):
+    """Show pipelines list from snapshot."""
+    snapshot_data = get_latest_snapshot()
+    
+    if not snapshot_data or 'pipelines' not in snapshot_data:
+        context = {
+            'pipelines': [],
+            'total_pipelines': 0,
+            'snapshot_time': None,
+            'page': 1,
+            'total_pages': 1,
+            'page_range': [],
+            'per_page': 25,
+            'env_config': get_env_config(),
+            'page_title': 'Pipelines'
+        }
+        return render(request, 'dashboard/pipelines_list.html', context)
+    
+    pipelines_data = snapshot_data['pipelines']
+    
+    # Parse filters
+    status_filter = request.GET.get('status', '')
+    search = request.GET.get('search', '')
+    date_from = request.GET.get('date_from', '')
+    date_to = request.GET.get('date_to', '')
+    page = int(request.GET.get('page', 1))
+    per_page = int(request.GET.get('per_page', 25))
+    
+    # Filter pipelines
+    filtered_pipelines = []
+    for pipeline in pipelines_data:
+        # Status filter
+        if status_filter and pipeline.get('status') != status_filter:
+            continue
+        
+        # Search filter
+        if search:
+            search_lower = search.lower()
+            if not (search_lower in pipeline.get('pipeline_id', '').lower() or
+                    search_lower in pipeline.get('name', '').lower()):
+                continue
+        
+        # Date filters
+        if date_from or date_to:
+            from datetime import datetime
+            created_at = pipeline.get('created_at')
+            if isinstance(created_at, str):
+                try:
+                    created_at = datetime.fromisoformat(created_at.replace('Z', '+00:00'))
+                except:
+                    continue
+            
+            if date_from:
+                try:
+                    date_from_obj = datetime.strptime(date_from, '%Y-%m-%d')
+                    if created_at.replace(tzinfo=None) < date_from_obj:
+                        continue
+                except:
+                    pass
+            
+            if date_to:
+                try:
+                    from datetime import timedelta
+                    date_to_obj = datetime.strptime(date_to, '%Y-%m-%d') + timedelta(days=1)
+                    if created_at.replace(tzinfo=None) > date_to_obj:
+                        continue
+                except:
+                    pass
+        
+        # Calculate pipeline statistics and organize by layers
+        pipeline = process_pipeline_for_display(pipeline)
+        filtered_pipelines.append(pipeline)
+    
+    # Sort by created_at descending
+    filtered_pipelines.sort(
+        key=lambda x: x.get('created_at') or '',
+        reverse=True
+    )
+    
+    # Pagination
+    total_pipelines = len(filtered_pipelines)
+    total_pages = (total_pipelines + per_page - 1) // per_page
+    page = max(1, min(page, total_pages)) if total_pages > 0 else 1
+    
+    start_idx = (page - 1) * per_page
+    end_idx = start_idx + per_page
+    pipelines_page = filtered_pipelines[start_idx:end_idx]
+    
+    # Generate page range for pagination
+    page_range = []
+    if total_pages <= 7:
+        page_range = list(range(1, total_pages + 1))
+    else:
+        if page <= 4:
+            page_range = list(range(1, 6)) + ['...', total_pages]
+        elif page >= total_pages - 3:
+            page_range = [1, '...'] + list(range(total_pages - 4, total_pages + 1))
+        else:
+            page_range = [1, '...'] + list(range(page - 1, page + 2)) + ['...', total_pages]
+    
+    context = {
+        'pipelines': pipelines_page,
+        'total_pipelines': total_pipelines,
+        'snapshot_time': snapshot_data.get('timestamp'),
+        'page': page,
+        'total_pages': total_pages,
+        'page_range': page_range,
+        'per_page': per_page,
+        'status_filter': status_filter,
+        'search': search,
+        'date_from': date_from,
+        'date_to': date_to,
+        'env_config': get_env_config(),
+        'page_title': 'Pipelines'
+    }
+    
+    return render(request, 'dashboard/pipelines_list.html', context)
+
+
+def process_pipeline_for_display(pipeline):
+    """Process a pipeline to calculate statistics and organize nodes by layers."""
+    nodes = pipeline.get('nodes', {})
+    
+    # Count node statuses
+    status_counts = {
+        'waiting': 0,
+        'running': 0,
+        'completed': 0,
+        'failed': 0,
+        'cancelled': 0
+    }
+    
+    for node_id, node_data in nodes.items():
+        status = node_data.get('status', 'waiting')
+        if status in status_counts:
+            status_counts[status] += 1
+    
+    pipeline['total_nodes'] = len(nodes)
+    pipeline['waiting_nodes'] = status_counts['waiting']
+    pipeline['running_nodes'] = status_counts['running']
+    pipeline['completed_nodes'] = status_counts['completed']
+    pipeline['failed_nodes'] = status_counts['failed']
+    pipeline['cancelled_nodes'] = status_counts['cancelled']
+    
+    # Calculate depth levels (layers) for DAG visualization
+    # This is a topological sort that groups nodes by depth
+    depths = {}
+    
+    def calculate_depth(node_id):
+        if node_id in depths:
+            return depths[node_id]
+        
+        node = nodes.get(node_id, {})
+        dependencies = node.get('dependencies', [])
+        
+        if not dependencies:
+            depths[node_id] = 0
+            return 0
+        
+        max_dep_depth = max((calculate_depth(dep) for dep in dependencies), default=-1)
+        depths[node_id] = max_dep_depth + 1
+        return depths[node_id]
+    
+    # Calculate depth for all nodes
+    for node_id in nodes.keys():
+        calculate_depth(node_id)
+    
+    # Organize nodes by layers
+    max_depth = max(depths.values()) if depths else 0
+    layers = []
+    
+    for layer_num in range(max_depth + 1):
+        layer_nodes = []
+        for node_id, depth in depths.items():
+            if depth == layer_num:
+                node_data = nodes[node_id].copy()
+                node_data['node_id'] = node_id
+                layer_nodes.append(node_data)
+        
+        # Sort nodes in layer by node_id for consistency
+        layer_nodes.sort(key=lambda x: x['node_id'])
+        layers.append({'layer': layer_num, 'nodes': layer_nodes})
+    
+    pipeline['max_depth'] = max_depth + 1
+    pipeline['layers'] = layers
+    
+    return pipeline
+
+
+@login_required_simple
 def methods_list(request):
     """List all methods with filtering and pagination."""
     from django.utils import timezone

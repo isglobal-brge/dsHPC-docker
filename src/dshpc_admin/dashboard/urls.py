@@ -15,6 +15,7 @@ urlpatterns = [
     path('files/', views.files_list, name='files_list'),
     path('jobs/', views.jobs_list, name='jobs_list'),
     path('meta-jobs/', views.meta_jobs_list, name='meta_jobs_list'),
+    path('pipelines/', views.pipelines_list, name='pipelines_list'),
     path('methods/', views.methods_list, name='methods_list'),
     path('slurm/', views.slurm_queue, name='slurm_queue'),
     path('slurm/job-logs/<str:slurm_id>/', views.slurm_job_logs, name='slurm_job_logs'),

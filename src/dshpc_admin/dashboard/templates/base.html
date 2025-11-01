@@ -696,6 +696,11 @@
                     </a>
                 </li>
                 <li class="nav-item">
+                    <a class="nav-link {% if request.resolver_match.url_name == 'pipelines_list' %}active{% endif %}" href="{% url 'pipelines_list' %}">
+                        <i class="bi bi-diagram-3-fill"></i> Pipelines
+                    </a>
+                </li>
+                <li class="nav-item">
                     <a class="nav-link {% if request.resolver_match.url_name == 'files_list' %}active{% endif %}" href="{% url 'files_list' %}">
                         <i class="bi bi-folder2-open"></i> Files
                     </a>
