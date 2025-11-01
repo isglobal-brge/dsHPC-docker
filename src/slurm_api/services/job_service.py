@@ -58,18 +58,21 @@ def prepare_job_script(job_id: str, job: JobSubmission) -> str:
             file_paths[input_name] = file_path
     else:
         # Single file: use "input" folder (unified approach)
-        file_doc = find_file_by_hash(job.file_hash)
-        if not file_doc:
-            raise ValueError(f"File with hash {job.file_hash} not found in database")
-        
-        file_folder = os.path.join(workspace_dir, "input")
-        os.makedirs(file_folder, exist_ok=True)
-        
-        success, message, file_path = download_file(job.file_hash, file_folder)
-        if not success:
-            raise ValueError(f"Failed to download file: {message}")
-        
-        file_paths["input"] = file_path
+        # Handle case where there's no input file (params-only job)
+        if job.file_hash:
+            file_doc = find_file_by_hash(job.file_hash)
+            if not file_doc:
+                raise ValueError(f"File with hash {job.file_hash} not found in database")
+            
+            file_folder = os.path.join(workspace_dir, "input")
+            os.makedirs(file_folder, exist_ok=True)
+            
+            success, message, file_path = download_file(job.file_hash, file_folder)
+            if not success:
+                raise ValueError(f"Failed to download file: {message}")
+            
+            file_paths["input"] = file_path
+        # If no file_hash, leave file_paths empty (params-only job)
     
     # Create metadata.json with file paths and workspace info
     metadata = {
@@ -147,9 +150,16 @@ def prepare_job_script(job_id: str, job: JobSubmission) -> str:
             env_var_name = f"INPUT_FILE_{input_name.upper()}"
             f.write(f"export {env_var_name}=\"{input_path}\"\n")
         
-        # For backward compatibility: also export INPUT_FILE for first file
-        first_file_key = sorted(file_paths.keys())[0]
-        f.write(f"export INPUT_FILE=\"{file_paths[first_file_key]}\"\n")
+        # For backward compatibility: also export INPUT_FILE for first file (if any)
+        if file_paths:
+            first_file_key = sorted(file_paths.keys())[0]
+            f.write(f"export INPUT_FILE=\"{file_paths[first_file_key]}\"\n")
+        else:
+            # Params-only job: create empty input file for scripts that expect it
+            empty_input_file = os.path.join(workspace_dir, "empty_input.json")
+            with open(empty_input_file, 'w') as ef:
+                ef.write("{}")
+            f.write(f"export INPUT_FILE=\"{empty_input_file}\"\n")
         
         if method_execution_data:
             # Add method-specific environment variables
@@ -168,11 +178,16 @@ def prepare_job_script(job_id: str, job: JobSubmission) -> str:
             command = method_execution_data['command']
             script_filename = os.path.basename(method_execution_data['script_path'])
             
-            # For args[1] (backward compat): use first file
+            # For args[1] (backward compat): use first file or empty file if params-only
             # Single file: file_paths["input"]
             # Multi-file: file_paths[first_key] (sorted alphabetically)
-            first_file_key = sorted(file_paths.keys())[0]
-            first_file_path = file_paths[first_file_key]
+            # Params-only: use empty_input.json
+            if file_paths:
+                first_file_key = sorted(file_paths.keys())[0]
+                first_file_path = file_paths[first_file_key]
+            else:
+                # Params-only: use the empty input file we created earlier
+                first_file_path = os.path.join(workspace_dir, "empty_input.json")
             
             # Use relative paths for input file, metadata, and params
             relative_input_file = os.path.relpath(first_file_path, method_dir)

@@ -201,7 +201,10 @@ async def submit_job(
             payload["file_inputs"] = sorted_inputs
         else:
             # Single file (legacy)
-            payload["file_hash"] = file_hash
+            # Don't send PARAMS_ONLY_ hashes - they're placeholders
+            if file_hash and not file_hash.startswith("PARAMS_ONLY_"):
+                payload["file_hash"] = file_hash
+            # If PARAMS_ONLY or None, omit file_hash (params-only job)
         
         # Submit job to slurm_api
         logger.info(f"Submitting to slurm_api with payload: {payload}")

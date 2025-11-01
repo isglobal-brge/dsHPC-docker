@@ -5,13 +5,98 @@ import asyncio
 from datetime import datetime
 from typing import Dict, Any, List
 import copy
+import json
+import hashlib
 
-from dshpc_api.services.db_service import get_jobs_db
+from dshpc_api.services.db_service import get_jobs_db, get_files_db
 from dshpc_api.config.logging_config import logger
 from dshpc_api.models.pipeline import PipelineStatus, PipelineNodeStatus
 from dshpc_api.services.pipeline_service import resolve_references
 from dshpc_api.services.meta_job_service import get_meta_job_info
 from dshpc_api.models.meta_job import MetaJobRequest
+
+
+async def extract_and_store_path(source_hash: str, path: str, pipeline_node: str, param_name: str) -> str:
+    """
+    Extract a value from a JSON file using a path and store it as a new file.
+    
+    Args:
+        source_hash: Hash of the source file containing JSON
+        path: Slash-separated path to extract (e.g., "data/text")
+        pipeline_node: Node ID (for logging)
+        param_name: Parameter name (for logging)
+        
+    Returns:
+        Hash of the newly created file with extracted value
+    """
+    files_db = await get_files_db()
+    
+    # Get source file
+    source_doc = await files_db.files.find_one({"file_hash": source_hash})
+    if not source_doc:
+        raise ValueError(f"Source file {source_hash} not found for path extraction")
+    
+    # Decode content
+    import base64
+    content_bytes = base64.b64decode(source_doc["content"])
+    content_str = content_bytes.decode('utf-8')
+    
+    # Parse JSON
+    try:
+        data = json.loads(content_str)
+    except json.JSONDecodeError as e:
+        raise ValueError(f"Failed to parse JSON from {source_hash}: {e}")
+    
+    # Navigate path (slash-separated)
+    path_parts = path.split("/")
+    result = data
+    for part in path_parts:
+        if isinstance(result, dict) and part in result:
+            result = result[part]
+        else:
+            raise ValueError(f"Path '{path}' not found in source file {source_hash}")
+    
+    # Create new JSON with extracted value
+    # Wrap in a simple structure that scripts can easily read
+    extracted_data = {
+        "value": result,
+        "extracted_from": source_hash,
+        "path": path
+    }
+    
+    extracted_json = json.dumps(extracted_data, indent=2)
+    extracted_bytes = extracted_json.encode('utf-8')
+    extracted_b64 = base64.b64encode(extracted_bytes).decode('utf-8')
+    
+    # Calculate hash
+    extracted_hash = hashlib.sha256(extracted_bytes).hexdigest()
+    
+    # Store in database
+    await files_db.files.update_one(
+        {"file_hash": extracted_hash},
+        {"$set": {
+            "file_hash": extracted_hash,
+            "content": extracted_b64,
+            "filename": f"extracted_{pipeline_node}_{param_name}.json",
+            "content_type": "application/json",
+            "storage_type": "inline",
+            "file_size": len(extracted_bytes),
+            "upload_date": datetime.utcnow(),
+            "last_checked": datetime.utcnow(),
+            "metadata": {
+                "source": "path_extraction",
+                "source_hash": source_hash,
+                "path": path,
+                "pipeline_node": pipeline_node,
+                "parameter": param_name
+            }
+        }},
+        upsert=True
+    )
+    
+    logger.info(f"Extracted path '{path}' from {source_hash[:16]}... → {extracted_hash[:16]}...")
+    
+    return extracted_hash
 
 
 async def check_and_submit_ready_nodes(pipeline_id: str, pipeline_doc: Dict[str, Any]) -> bool:
@@ -50,16 +135,59 @@ async def check_and_submit_ready_nodes(pipeline_id: str, pipeline_doc: Dict[str,
                 # Resolve chain with references
                 chain = copy.deepcopy(node_data["chain"])
                 
-                # For each step in chain, resolve parameter references
+                # Detect references in parameters and convert to file inputs
+                # If path extraction is needed, create temporary files with extracted values
+                file_inputs = None
                 for step in chain:
                     if "parameters" in step and isinstance(step["parameters"], dict):
-                        step["parameters"] = resolve_references(step["parameters"], completed_outputs)
+                        refs_found = {}
+                        resolved_params = {}
+                        
+                        for key, value in step["parameters"].items():
+                            if isinstance(value, str) and value.startswith("$ref:"):
+                                ref_full = value[5:]  # Remove "$ref:" prefix
+                                
+                                # Check if it's a path reference: node_1/data/text
+                                if "/" in ref_full:
+                                    # Extract node_id (before first slash) and path (after)
+                                    ref_node = ref_full.split("/")[0]
+                                    ref_path = ref_full[len(ref_node)+1:]  # Everything after node_id/
+                                else:
+                                    ref_node = ref_full
+                                    ref_path = None
+                                
+                                if ref_node in completed_outputs:
+                                    output_hash = completed_outputs[ref_node]
+                                    
+                                    # If path extraction needed, create a new file with extracted value
+                                    if ref_path:
+                                        # Extract value from source file and create new temporary file
+                                        extracted_hash = await extract_and_store_path(output_hash, ref_path, node_id, key)
+                                        refs_found[key] = extracted_hash
+                                    else:
+                                        # Use full output
+                                        refs_found[key] = output_hash
+                                    
+                                    # Replace param with marker to read from input file
+                                    resolved_params[key] = f"__FILE_INPUT_{key}__"
+                                else:
+                                    raise ValueError(f"Reference to incomplete node: {ref_node}")
+                            else:
+                                resolved_params[key] = value
+                        
+                        step["parameters"] = resolved_params
+                        
+                        # If we found references, use multi-file input
+                        if refs_found:
+                            file_inputs = refs_found
                 
                 # Determine input file hash
-                # If node has dependencies, use output from first dependency
-                # If no dependencies, use input_file_hash if provided
-                # If no input_file_hash and no dependencies, create empty placeholder
-                if dependencies:
+                # If we have file_inputs (from refs), use those; otherwise use traditional approach
+                input_hash = None
+                if file_inputs:
+                    # Multi-input case - will use initial_file_inputs
+                    pass
+                elif dependencies:
                     # Use output from first completed dependency
                     input_hash = completed_outputs[dependencies[0]]
                 else:
@@ -87,10 +215,17 @@ async def check_and_submit_ready_nodes(pipeline_id: str, pipeline_doc: Dict[str,
                 # Convert chain to MethodChainStep objects
                 method_steps = [MethodChainStep(**step) for step in chain]
                 
-                request = MetaJobRequest(
-                    initial_file_hash=input_hash,
-                    method_chain=method_steps
-                )
+                # Create request with either file_inputs (multi) or file_hash (single)
+                if file_inputs:
+                    request = MetaJobRequest(
+                        initial_file_inputs=file_inputs,
+                        method_chain=method_steps
+                    )
+                else:
+                    request = MetaJobRequest(
+                        initial_file_hash=input_hash,
+                        method_chain=method_steps
+                    )
                 success, message, response = await submit_meta_job(request)
                 
                 if not success:

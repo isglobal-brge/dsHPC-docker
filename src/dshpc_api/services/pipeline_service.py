@@ -100,7 +100,7 @@ def resolve_references(params: Dict[str, Any], completed_nodes: Dict[str, str]) 
     Resolve $ref:node_id references in parameters.
     
     Args:
-        params: Parameters dict that may contain {"$ref": "node_1"} or {"$ref": "node_1.data.field"}
+        params: Parameters dict that may contain {"$ref": "node_1"} or {"$ref": "node_1/data/field"}
         completed_nodes: Mapping of node_id -> output_hash
         
     Returns:
@@ -110,13 +110,13 @@ def resolve_references(params: Dict[str, Any], completed_nodes: Dict[str, str]) 
     
     for key, value in params.items():
         if isinstance(value, str) and value.startswith("$ref:"):
-            # Extract reference: "$ref:node_1" or "$ref:node_1.data.text"
+            # Extract reference: "$ref:node_1" or "$ref:node_1/data/text"
             ref = value[5:]  # Remove "$ref:" prefix
             
-            if "." in ref:
-                # Path-based reference: node_1.data.text
-                # For now, just use the node output (path extraction happens in method)
-                node_id = ref.split(".")[0]
+            if "/" in ref:
+                # Path-based reference: node_1/data/text
+                # For now, just use the node output (path extraction happens in orchestrator)
+                node_id = ref.split("/")[0]
                 if node_id in completed_nodes:
                     resolved[key] = completed_nodes[node_id]
                 else:
