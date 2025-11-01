@@ -15,6 +15,7 @@ from dshpc_api.models.pipeline import (
     PipelineStatus, PipelineNodeStatus, PipelineNodeInfo, PipelineInfo
 )
 from dshpc_api.utils.parameter_utils import sort_parameters
+from dshpc_api.utils.sorting_utils import sort_nodes, sort_dependencies, sort_chain, sort_file_inputs
 
 
 def compute_pipeline_hash(nodes: Dict[str, Any], function_hashes: Dict[str, List[str]]) -> str:
@@ -42,7 +43,7 @@ def compute_pipeline_hash(nodes: Dict[str, Any], function_hashes: Dict[str, List
             hash_components.append(f"input_file:{node['input_file_hash']}")
         
         # Add dependencies (sorted)
-        deps = sorted(node.get("dependencies", []))
+        deps = sort_dependencies(node.get("dependencies", []))
         if deps:
             hash_components.append(f"deps:{','.join(deps)}")
         

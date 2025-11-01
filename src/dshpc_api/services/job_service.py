@@ -8,6 +8,7 @@ from dshpc_api.config.settings import get_settings
 from dshpc_api.services.db_service import get_jobs_db, get_files_db, get_job_by_id
 from dshpc_api.services.method_service import check_method_functionality
 from dshpc_api.utils.parameter_utils import sort_parameters
+from dshpc_api.utils.sorting_utils import sort_file_inputs
 
 logger = logging.getLogger(__name__)
 
@@ -127,7 +128,7 @@ async def find_existing_job(
         # Build query based on input type
         if file_inputs:
             # Multi-file: sort file_inputs by key for deterministic comparison
-            sorted_inputs = dict(sorted(file_inputs.items()))
+            sorted_inputs = sort_file_inputs(file_inputs)
             query = {
                 "file_inputs": sorted_inputs,
                 "function_hash": function_hash,
@@ -197,7 +198,7 @@ async def submit_job(
         # Add file input (single or multi)
         if file_inputs:
             # Multi-file: sort by key for deterministic submission
-            sorted_inputs = dict(sorted(file_inputs.items()))
+            sorted_inputs = sort_file_inputs(file_inputs)
             payload["file_inputs"] = sorted_inputs
         else:
             # Single file (legacy)

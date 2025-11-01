@@ -73,7 +73,8 @@ async def submit_job(job: JobSubmission):
         # Check for duplicate jobs
         # Find any existing job with the same core identifiers
         if job.file_inputs:
-            sorted_inputs = dict(sorted(job.file_inputs.items()))
+            from slurm_api.utils.sorting_utils import sort_file_inputs
+            sorted_inputs = sort_file_inputs(job.file_inputs)
             query = {
                 "function_hash": job.function_hash,
                 "file_inputs": sorted_inputs,

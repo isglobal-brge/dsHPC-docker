@@ -24,6 +24,7 @@ from dshpc_api.services.job_service import (
 )
 from dshpc_api.services.method_service import check_method_functionality
 from dshpc_api.utils.parameter_utils import sort_parameters
+from dshpc_api.utils.sorting_utils import sort_file_inputs, sort_chain
 import asyncio
 import logging
 
@@ -46,8 +47,8 @@ def compute_meta_job_hash(request: MetaJobRequest, chain_function_hashes: List[s
     # Component 1: Initial file hash(es)
     if request.initial_file_inputs:
         # Multi-file: sort by key for determinism
-        sorted_inputs = sorted(request.initial_file_inputs.items())
-        for name, file_hash in sorted_inputs:
+        sorted_inputs = sort_file_inputs(request.initial_file_inputs)
+        for name, file_hash in sorted_inputs.items():
             hash_components.append(f"file_input:{name}:{file_hash}")
     else:
         # Single file (or PARAMS_ONLY)

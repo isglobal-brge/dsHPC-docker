@@ -17,6 +17,7 @@ from slurm_api.services.file_service import find_file_by_hash, download_file, cr
 from slurm_api.services.method_service import find_method_by_hash, prepare_method_execution
 from slurm_api.models.method import MethodExecution
 from slurm_api.utils.parameter_utils import sort_parameters
+from slurm_api.utils.sorting_utils import sort_file_inputs
 
 def prepare_job_script(job_id: str, job: JobSubmission) -> str:
     """Prepare a job script file and return its path."""
@@ -236,7 +237,7 @@ def create_job(job: JobSubmission) -> Tuple[str, Dict[str, Any]]:
     # Add file information (single or multi)
     if job.file_inputs:
         # Multi-file: sort by key for deterministic storage
-        sorted_inputs = dict(sorted(job.file_inputs.items()))
+        sorted_inputs = sort_file_inputs(job.file_inputs)
         job_doc["file_inputs"] = sorted_inputs
         job_doc["file_hash"] = None  # Explicitly None for multi-file
     else:
