@@ -483,8 +483,24 @@
             for (const [nodeId, nodeData] of Object.entries(nodes)) {
                 const status = nodeData.status || 'waiting';
                 const chain = nodeData.chain || [];
-                const methods = chain.map(s => s.method_name).join('→');
-                const label = `${nodeId}<br/>${methods}`;
+                
+                // Abbreviate methods if chain is long
+                let methodsLabel = '';
+                const methodNames = chain.map(s => s.method_name);
+                if (methodNames.length === 0) {
+                    methodsLabel = 'empty';
+                } else if (methodNames.length === 1) {
+                    methodsLabel = methodNames[0];
+                } else if (methodNames.length === 2) {
+                    methodsLabel = methodNames.join('→');
+                } else if (methodNames.length === 3) {
+                    methodsLabel = methodNames.join('→');
+                } else {
+                    // More than 3 methods: show first → ... → last
+                    methodsLabel = `${methodNames[0]}→...→${methodNames[methodNames.length - 1]}`;
+                }
+                
+                const label = `${nodeId}<br/>${methodsLabel}`;
                 
                 // Style based on status
                 let styleClass = '';
