@@ -501,6 +501,7 @@ def upload_job_output_as_file(job_id: str, output: str) -> Optional[str]:
                 "storage_type": "gridfs",
                 "gridfs_id": grid_id,
                 "file_size": file_size,
+                "status": "completed",
                 "upload_date": datetime.utcnow(),
                 "last_checked": datetime.utcnow(),
                 "metadata": {
@@ -517,6 +518,7 @@ def upload_job_output_as_file(job_id: str, output: str) -> Optional[str]:
                 "content_type": "application/json",
                 "storage_type": "inline",
                 "file_size": file_size,
+                "status": "completed",
                 "upload_date": datetime.utcnow(),
                 "last_checked": datetime.utcnow(),
                 "metadata": {

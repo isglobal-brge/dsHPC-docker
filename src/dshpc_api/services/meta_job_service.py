@@ -466,12 +466,12 @@ async def process_meta_job_chain(meta_job_hash: str):
                 await update_meta_job_current_step(meta_job_hash, i, existing_job['job_id'], 
                                                    existing_job['status'], False)
                 
-                # Get output hash from existing job
-                # The output_hash represents the hash of the job's output content
-                output_hash = existing_job.get("output_hash")
+                # Get output_file_hash from existing job
+                # This is the hash of the file in the files collection
+                output_hash = existing_job.get("output_file_hash")
                 
                 if not output_hash:
-                    # Calculate hash from output content
+                    # Fallback: calculate hash from output content
                     job_output = existing_job.get("output")
                     output_gridfs_id = existing_job.get("output_gridfs_id")
                     
@@ -481,10 +481,11 @@ async def process_meta_job_chain(meta_job_hash: str):
                         output_hash = hashlib.sha256(job_output.encode('utf-8')).hexdigest()
                     elif output_gridfs_id:
                         # Large output in GridFS - use gridfs_id as proxy for hash
-                        # In future, we should calculate actual hash when storing
                         output_hash = str(output_gridfs_id)
                     else:
                         raise Exception(f"Cached job {existing_job['job_id']} has no output")
+                
+                logger.info(f"  Using output_file_hash for next step: {output_hash[:16] if output_hash else 'None'}...")
                 
                 step["job_id"] = existing_job["job_id"]
                 step["output_hash"] = output_hash
@@ -547,11 +548,12 @@ async def process_meta_job_chain(meta_job_hash: str):
                     # Should not happen as wait_for_job_completion_with_retry raises exception for failures
                     raise Exception(f"Job {job_id} failed with status {job_result['status']}: {job_result.get('error', 'Unknown error')}")
                 
-                # Get output hash from job result
-                output_hash = job_result.get("output_hash")
+                # Get output_file_hash from job result
+                # This is the hash of the file in the files collection
+                output_hash = job_result.get("output_file_hash")
                 
                 if not output_hash:
-                    # Calculate hash from output content
+                    # Fallback: calculate hash from output content
                     job_output = job_result.get("output")
                     output_gridfs_id = job_result.get("output_gridfs_id")
                     
@@ -564,6 +566,8 @@ async def process_meta_job_chain(meta_job_hash: str):
                         output_hash = str(output_gridfs_id)
                     else:
                         raise Exception(f"Job {job_id} has no output")
+                
+                logger.info(f"  Job completed, output_file_hash for next step: {output_hash[:16] if output_hash else 'None'}...")
                 
                 step["output_hash"] = output_hash
                 step["status"] = "completed"
