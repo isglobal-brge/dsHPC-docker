@@ -23,9 +23,17 @@ async def startup_event():
     from dshpc_api.background.cleanup_task import start_cleanup_task
     start_cleanup_task()
     
+    # Start pipeline orchestrator
+    from dshpc_api.background.pipeline_orchestrator import pipeline_orchestrator
+    asyncio.create_task(pipeline_orchestrator())
+    logger.info("\033[1;36mPipeline orchestrator started\033[0m")
+    
     # Log only important messages at API startup
     logger.info("\033[1;32mdsHPC API service started successfully!\033[0m")
 
 # Include API routes
 from dshpc_api.api.router import router
+from dshpc_api.api.pipeline import router as pipeline_router
+
 app.include_router(router) 
+app.include_router(pipeline_router) 

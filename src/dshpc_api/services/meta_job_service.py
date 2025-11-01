@@ -68,16 +68,18 @@ async def submit_meta_job(request: MetaJobRequest) -> Tuple[bool, str, Optional[
                     return False, f"File '{name}' is not ready (status: {file_status}). Please wait for upload to complete.", None
         else:
             # Single file (legacy)
-            file_doc = await files_db.files.find_one({"file_hash": request.initial_file_hash})
-            
-            if not file_doc:
-                logger.error(f"Initial file {request.initial_file_hash} not found")
-                return False, f"Initial file with hash {request.initial_file_hash} not found", None
-            
-            if file_doc.get("status") != "completed":
-                file_status = file_doc.get("status", "unknown")
-                logger.error(f"Initial file {request.initial_file_hash} not completed (status: {file_status})")
-                return False, f"Initial file with hash {request.initial_file_hash} is not ready (status: {file_status}). Please wait for upload to complete.", None
+            # Special case: PARAMS_ONLY_ hash means no actual input file needed
+            if not request.initial_file_hash.startswith("PARAMS_ONLY_"):
+                file_doc = await files_db.files.find_one({"file_hash": request.initial_file_hash})
+                
+                if not file_doc:
+                    logger.error(f"Initial file {request.initial_file_hash} not found")
+                    return False, f"Initial file with hash {request.initial_file_hash} not found", None
+                
+                if file_doc.get("status") != "completed":
+                    file_status = file_doc.get("status", "unknown")
+                    logger.error(f"Initial file {request.initial_file_hash} not completed (status: {file_status})")
+                    return False, f"Initial file with hash {request.initial_file_hash} is not ready (status: {file_status}). Please wait for upload to complete.", None
         
         # Validate all methods exist and are functional
         for step in request.method_chain:

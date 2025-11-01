@@ -43,13 +43,15 @@ async def submit_job(job: JobSubmission):
                         detail=f"File '{name}' with hash {file_hash} not found in database"
                     )
         else:
-            # Single file
-            file_doc = find_file_by_hash(job.file_hash)
-            if not file_doc:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"File with hash {job.file_hash} not found in database"
-                )
+            # Single file (optional for params-only jobs)
+            if job.file_hash:
+                file_doc = find_file_by_hash(job.file_hash)
+                if not file_doc:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"File with hash {job.file_hash} not found in database"
+                    )
+            # If no file_hash, it's a params-only job (valid)
         
         # Validate function_hash exists if provided
         if job.function_hash:
