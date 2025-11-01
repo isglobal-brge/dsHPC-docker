@@ -90,7 +90,7 @@
                                 {% endif %}
                             </div>
                             <div class="small text-muted">
-                                <code style="max-width: 150px; display: inline-block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: bottom;">{{ meta_job.meta_job_id }}</code>
+                                <code style="max-width: 150px; display: inline-block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: bottom;">{{ meta_job.meta_job_hash }}</code>
                                 <span class="ms-2">{{ meta_job.chain|length }} step(s)</span>
                             </div>
                         </div>
@@ -126,9 +126,9 @@
                             <div class="value">
                                 <div class="hash-display">
                                     <div class="hash-scroll">
-                                        <code class="small">{{ meta_job.meta_job_id }}</code>
+                                        <code class="small">{{ meta_job.meta_job_hash }}</code>
                                     </div>
-                                    <button class="btn btn-sm btn-outline-secondary" onclick="copyToClipboard('{{ meta_job.meta_job_id }}')">
+                                    <button class="btn btn-sm btn-outline-secondary" onclick="copyToClipboard('{{ meta_job.meta_job_hash }}')">
                                         <i class="bi bi-clipboard"></i>
                                     </button>
                                 </div>

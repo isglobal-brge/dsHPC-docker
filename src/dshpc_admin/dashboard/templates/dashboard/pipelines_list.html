@@ -98,7 +98,7 @@
                                 <strong>{{ pipeline.display_name }}</strong>
                             </div>
                             <div class="small text-muted">
-                                <code style="max-width: 150px; display: inline-block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: bottom;">{{ pipeline.pipeline_id }}</code>
+                                <code style="max-width: 150px; display: inline-block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: bottom;">{{ pipeline.pipeline_hash }}</code>
                                 <span class="ms-2">{{ pipeline.total_nodes }} node(s)</span>
                                 {% if pipeline.max_depth %}
                                     <span class="ms-2">{{ pipeline.max_depth }} layer(s)</span>
@@ -137,9 +137,9 @@
                             <div class="value">
                                 <div class="hash-display">
                                     <div class="hash-scroll">
-                                        <code class="small">{{ pipeline.pipeline_id }}</code>
+                                        <code class="small">{{ pipeline.pipeline_hash }}</code>
                                     </div>
-                                    <button class="btn btn-sm btn-outline-secondary" onclick="copyToClipboard('{{ pipeline.pipeline_id }}')">
+                                    <button class="btn btn-sm btn-outline-secondary" onclick="copyToClipboard('{{ pipeline.pipeline_hash }}')">
                                         <i class="bi bi-clipboard"></i>
                                     </button>
                                 </div>
@@ -228,14 +228,14 @@
                 {% endif %}
                 
                 <!-- Pipeline Data (JSON) -->
-                <script type="application/json" id="pipeline-data-{{ pipeline.pipeline_id }}">
+                <script type="application/json" id="pipeline-data-{{ pipeline.pipeline_hash }}">
 {{ pipeline|jsonify_safe }}
                 </script>
                 
                 <!-- DAG Visualization Button -->
                 <div class="mb-4">
                     <button class="btn btn-primary" 
-                            onclick="viewPipelineDAG('{{ pipeline.pipeline_id }}', '{{ pipeline.display_name|escapejs }}')">
+                            onclick="viewPipelineDAG('{{ pipeline.pipeline_hash }}', '{{ pipeline.display_name|escapejs }}')">
                         <i class="bi bi-diagram-3-fill"></i> View Pipeline DAG
                     </button>
                     <small class="text-muted ms-2">{{ pipeline.max_depth|default:1 }} layer{{ pipeline.max_depth|pluralize }}, {{ pipeline.total_nodes }} node{{ pipeline.total_nodes|pluralize }}</small>

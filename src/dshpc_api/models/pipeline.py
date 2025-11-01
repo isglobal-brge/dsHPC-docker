@@ -42,7 +42,7 @@ class PipelineNodeInfo(BaseModel):
     """Information about a pipeline node"""
     node_id: str
     status: PipelineNodeStatus
-    meta_job_id: Optional[str] = None
+    meta_job_hash: Optional[str] = None
     dependencies: List[str]
     depth_level: int
     submitted_at: Optional[datetime] = None
@@ -55,7 +55,7 @@ class PipelineNodeInfo(BaseModel):
 
 class PipelineInfo(BaseModel):
     """Complete pipeline information"""
-    pipeline_id: str
+    pipeline_hash: str
     status: PipelineStatus
     nodes: List[PipelineNodeInfo]
     created_at: datetime
@@ -75,7 +75,7 @@ class PipelineInfo(BaseModel):
 
 class PipelineResponse(BaseModel):
     """Response after submitting pipeline"""
-    pipeline_id: str
+    pipeline_hash: str
     status: PipelineStatus
     total_nodes: int
     message: str

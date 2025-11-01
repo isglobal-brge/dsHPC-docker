@@ -99,7 +99,7 @@ async def extract_and_store_path(source_hash: str, path: str, pipeline_node: str
     return extracted_hash
 
 
-async def check_and_submit_ready_nodes(pipeline_id: str, pipeline_doc: Dict[str, Any]) -> bool:
+async def check_and_submit_ready_nodes(pipeline_hash: str, pipeline_doc: Dict[str, Any]) -> bool:
     """
     Check for nodes whose dependencies are met and submit them.
     
@@ -129,7 +129,7 @@ async def check_and_submit_ready_nodes(pipeline_id: str, pipeline_doc: Dict[str,
         )
         
         if all_deps_met:
-            logger.info(f"Pipeline {pipeline_id}: Node {node_id} dependencies met, submitting...")
+            logger.info(f"Pipeline {pipeline_hash}: Node {node_id} dependencies met, submitting...")
             
             try:
                 # Resolve chain with references
@@ -234,26 +234,26 @@ async def check_and_submit_ready_nodes(pipeline_id: str, pipeline_doc: Dict[str,
                 if not success:
                     raise Exception(f"Failed to submit meta-job: {message}")
                 
-                meta_job_id = response.meta_job_id
+                meta_job_hash = response.meta_job_hash
                 
                 # Update node status
                 await db.pipelines.update_one(
-                    {"pipeline_id": pipeline_id, f"nodes.{node_id}.status": PipelineNodeStatus.WAITING.value},
+                    {"pipeline_hash": pipeline_hash, f"nodes.{node_id}.status": PipelineNodeStatus.WAITING.value},
                     {"$set": {
                         f"nodes.{node_id}.status": PipelineNodeStatus.RUNNING.value,
-                        f"nodes.{node_id}.meta_job_id": meta_job_id,
+                        f"nodes.{node_id}.meta_job_hash": meta_job_hash,
                         f"nodes.{node_id}.submitted_at": datetime.utcnow()
                     }}
                 )
                 
                 changes_made = True
-                logger.info(f"Pipeline {pipeline_id}: Submitted node {node_id} as meta-job {meta_job_id}")
+                logger.info(f"Pipeline {pipeline_hash}: Submitted node {node_id} as meta-job {meta_job_hash}")
                 
             except Exception as e:
-                logger.error(f"Pipeline {pipeline_id}: Failed to submit node {node_id}: {e}")
+                logger.error(f"Pipeline {pipeline_hash}: Failed to submit node {node_id}: {e}")
                 # Mark node as failed
                 await db.pipelines.update_one(
-                    {"pipeline_id": pipeline_id},
+                    {"pipeline_hash": pipeline_hash},
                     {"$set": {
                         f"nodes.{node_id}.status": PipelineNodeStatus.FAILED.value,
                         f"nodes.{node_id}.error": str(e),
@@ -265,7 +265,7 @@ async def check_and_submit_ready_nodes(pipeline_id: str, pipeline_doc: Dict[str,
     return changes_made
 
 
-async def update_running_nodes(pipeline_id: str, pipeline_doc: Dict[str, Any]) -> bool:
+async def update_running_nodes(pipeline_hash: str, pipeline_doc: Dict[str, Any]) -> bool:
     """
     Update status of running nodes by checking their meta-jobs.
     
@@ -280,15 +280,15 @@ async def update_running_nodes(pipeline_id: str, pipeline_doc: Dict[str, Any]) -
         if node_data["status"] != PipelineNodeStatus.RUNNING.value:
             continue
         
-        meta_job_id = node_data.get("meta_job_id")
-        if not meta_job_id:
+        meta_job_hash = node_data.get("meta_job_hash")
+        if not meta_job_hash:
             continue
         
         # Get meta-job status
-        meta_job_info = await get_meta_job_info(meta_job_id)
+        meta_job_info = await get_meta_job_info(meta_job_hash)
         
         if not meta_job_info:
-            logger.warning(f"Pipeline {pipeline_id}: Meta-job {meta_job_id} not found for node {node_id}")
+            logger.warning(f"Pipeline {pipeline_hash}: Meta-job {meta_job_hash} not found for node {node_id}")
             continue
         
         # Check if meta-job completed
@@ -308,7 +308,7 @@ async def update_running_nodes(pipeline_id: str, pipeline_doc: Dict[str, Any]) -
                 output_hash = final_job_id
             
             await db.pipelines.update_one(
-                {"pipeline_id": pipeline_id},
+                {"pipeline_hash": pipeline_hash},
                 {"$set": {
                     f"nodes.{node_id}.status": PipelineNodeStatus.COMPLETED.value,
                     f"nodes.{node_id}.output_hash": output_hash,
@@ -316,7 +316,7 @@ async def update_running_nodes(pipeline_id: str, pipeline_doc: Dict[str, Any]) -
                 }}
             )
             changes_made = True
-            logger.info(f"Pipeline {pipeline_id}: Node {node_id} completed with output_hash {output_hash[:16]}...")
+            logger.info(f"Pipeline {pipeline_hash}: Node {node_id} completed with output_hash {output_hash[:16]}...")
             # Trigger immediate pipeline check for dependent nodes
             trigger_pipeline_check()
             
@@ -324,7 +324,7 @@ async def update_running_nodes(pipeline_id: str, pipeline_doc: Dict[str, Any]) -
             error_msg = meta_job_info.error or "Unknown error"
             
             await db.pipelines.update_one(
-                {"pipeline_id": pipeline_id},
+                {"pipeline_hash": pipeline_hash},
                 {"$set": {
                     f"nodes.{node_id}.status": PipelineNodeStatus.FAILED.value,
                     f"nodes.{node_id}.error": error_msg,
@@ -332,19 +332,19 @@ async def update_running_nodes(pipeline_id: str, pipeline_doc: Dict[str, Any]) -
                 }}
             )
             changes_made = True
-            logger.warning(f"Pipeline {pipeline_id}: Node {node_id} failed: {error_msg}")
+            logger.warning(f"Pipeline {pipeline_hash}: Node {node_id} failed: {error_msg}")
             # Trigger immediate pipeline check to propagate failure
             trigger_pipeline_check()
     
     return changes_made
 
 
-async def update_pipeline_overall_status(pipeline_id: str) -> None:
+async def update_pipeline_overall_status(pipeline_hash: str) -> None:
     """
     Update overall pipeline status based on node statuses.
     """
     db = await get_jobs_db()
-    pipeline = await db.pipelines.find_one({"pipeline_id": pipeline_id})
+    pipeline = await db.pipelines.find_one({"pipeline_hash": pipeline_hash})
     
     if not pipeline:
         return
@@ -357,32 +357,47 @@ async def update_pipeline_overall_status(pipeline_id: str) -> None:
         new_status = PipelineStatus.COMPLETED.value
         completed_at = datetime.utcnow()
         
+        # Find final node (terminal node with highest depth level)
+        all_dependencies = set()
+        for node in nodes.values():
+            all_dependencies.update(node["dependencies"])
+        terminal_nodes = [nid for nid in nodes.keys() if nid not in all_dependencies]
+        
+        # Get output hash from final node
+        final_output_hash = None
+        if terminal_nodes:
+            final_node_id = max(terminal_nodes, key=lambda nid: nodes[nid]["depth_level"])
+            final_node = nodes.get(final_node_id)
+            if final_node:
+                final_output_hash = final_node.get("output_hash")
+        
         await db.pipelines.update_one(
-            {"pipeline_id": pipeline_id},
+            {"pipeline_hash": pipeline_hash},
             {"$set": {
                 "status": new_status,
-                "completed_at": completed_at
+                "completed_at": completed_at,
+                "final_output_hash": final_output_hash  # Store reference to output
             }}
         )
-        logger.info(f"Pipeline {pipeline_id} completed successfully")
+        logger.info(f"Pipeline {pipeline_hash} completed successfully")
         
     elif any(s == PipelineNodeStatus.FAILED.value for s in statuses):
         # At least one node failed
         if pipeline["status"] != PipelineStatus.FAILED.value:
             await db.pipelines.update_one(
-                {"pipeline_id": pipeline_id},
+                {"pipeline_hash": pipeline_hash},
                 {"$set": {
                     "status": PipelineStatus.FAILED.value,
                     "completed_at": datetime.utcnow()
                 }}
             )
-            logger.warning(f"Pipeline {pipeline_id} marked as failed")
+            logger.warning(f"Pipeline {pipeline_hash} marked as failed")
     
     elif any(s == PipelineNodeStatus.RUNNING.value for s in statuses):
         # At least one running
         if pipeline["status"] == PipelineStatus.PENDING.value:
             await db.pipelines.update_one(
-                {"pipeline_id": pipeline_id},
+                {"pipeline_hash": pipeline_hash},
                 {"$set": {
                     "status": PipelineStatus.RUNNING.value,
                     "started_at": datetime.utcnow()
@@ -390,12 +405,12 @@ async def update_pipeline_overall_status(pipeline_id: str) -> None:
             )
 
 
-async def process_pipeline_once(pipeline_id: str) -> None:
+async def process_pipeline_once(pipeline_hash: str) -> None:
     """
     Process a single pipeline iteration.
     """
     db = await get_jobs_db()
-    pipeline = await db.pipelines.find_one({"pipeline_id": pipeline_id})
+    pipeline = await db.pipelines.find_one({"pipeline_hash": pipeline_hash})
     
     if not pipeline:
         return
@@ -405,16 +420,16 @@ async def process_pipeline_once(pipeline_id: str) -> None:
         return
     
     # Update running nodes
-    await update_running_nodes(pipeline_id, pipeline)
+    await update_running_nodes(pipeline_hash, pipeline)
     
     # Reload pipeline after updates
-    pipeline = await db.pipelines.find_one({"pipeline_id": pipeline_id})
+    pipeline = await db.pipelines.find_one({"pipeline_hash": pipeline_hash})
     
     # Submit ready nodes
-    await check_and_submit_ready_nodes(pipeline_id, pipeline)
+    await check_and_submit_ready_nodes(pipeline_hash, pipeline)
     
     # Update overall status
-    await update_pipeline_overall_status(pipeline_id)
+    await update_pipeline_overall_status(pipeline_hash)
 
 
 # Global event for immediate pipeline processing trigger
@@ -448,9 +463,9 @@ async def pipeline_orchestrator():
             
             async for pipeline in active_pipelines:
                 try:
-                    await process_pipeline_once(pipeline["pipeline_id"])
+                    await process_pipeline_once(pipeline["pipeline_hash"])
                 except Exception as e:
-                    logger.error(f"Error processing pipeline {pipeline['pipeline_id']}: {e}")
+                    logger.error(f"Error processing pipeline {pipeline['pipeline_hash']}: {e}")
             
         except Exception as e:
             logger.error(f"Error in pipeline orchestrator loop: {e}")

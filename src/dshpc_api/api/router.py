@@ -253,8 +253,8 @@ async def submit_meta_job_endpoint(request: MetaJobRequest, api_key: str = Secur
             detail=f"Error submitting meta-job: {str(e)}"
         )
 
-@router.get("/meta-job/{meta_job_id}", response_model=MetaJobInfo)
-async def get_meta_job_status_endpoint(meta_job_id: str, api_key: str = Security(get_api_key)):
+@router.get("/meta-job/{meta_job_hash}", response_model=MetaJobInfo)
+async def get_meta_job_status_endpoint(meta_job_hash: str, api_key: str = Security(get_api_key)):
     """
     Get the current status and results of a meta-job.
     
@@ -262,12 +262,12 @@ async def get_meta_job_status_endpoint(meta_job_id: str, api_key: str = Security
     including which steps used cached results.
     """
     try:
-        meta_job_info = await get_meta_job_info(meta_job_id)
+        meta_job_info = await get_meta_job_info(meta_job_hash)
         
         if not meta_job_info:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Meta-job {meta_job_id} not found"
+                detail=f"Meta-job {meta_job_hash} not found"
             )
         
         return meta_job_info

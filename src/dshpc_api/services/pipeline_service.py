@@ -3,6 +3,8 @@ Pipeline service for DAG orchestration of meta-jobs
 """
 import uuid
 import asyncio
+import hashlib
+import json
 from datetime import datetime
 from typing import Dict, List, Any, Optional, Tuple, Set
 from pymongo.database import Database
@@ -12,6 +14,59 @@ from dshpc_api.services.db_service import get_jobs_db, get_files_db
 from dshpc_api.models.pipeline import (
     PipelineStatus, PipelineNodeStatus, PipelineNodeInfo, PipelineInfo
 )
+from dshpc_api.utils.parameter_utils import sort_parameters
+
+
+def compute_pipeline_hash(nodes: Dict[str, Any], function_hashes: Dict[str, List[str]]) -> str:
+    """
+    Compute a deterministic hash for a pipeline based on its complete DAG structure.
+    
+    Args:
+        nodes: Dictionary of node_id -> node definition
+        function_hashes: Dictionary of node_id -> list of function hashes for that node's chain
+        
+    Returns:
+        SHA256 hash as hex string
+    """
+    hash_components = []
+    
+    # Sort nodes by node_id for determinism
+    sorted_node_ids = sorted(nodes.keys())
+    
+    for node_id in sorted_node_ids:
+        node = nodes[node_id]
+        hash_components.append(f"node:{node_id}")
+        
+        # Add input file hash if present
+        if node.get("input_file_hash"):
+            hash_components.append(f"input_file:{node['input_file_hash']}")
+        
+        # Add dependencies (sorted)
+        deps = sorted(node.get("dependencies", []))
+        if deps:
+            hash_components.append(f"deps:{','.join(deps)}")
+        
+        # Add method chain with function hashes
+        node_function_hashes = function_hashes.get(node_id, [])
+        for i, (step, func_hash) in enumerate(zip(node["chain"], node_function_hashes)):
+            hash_components.append(f"step:{i}")
+            hash_components.append(f"method:{step['method_name']}")
+            hash_components.append(f"function:{func_hash}")
+            
+            # Sort parameters for determinism
+            sorted_params = sort_parameters(step.get("parameters", {}))
+            params_json = json.dumps(sorted_params, sort_keys=True)
+            hash_components.append(f"params:{params_json}")
+    
+    # Combine all components
+    hash_input = "|".join(hash_components)
+    hash_bytes = hash_input.encode('utf-8')
+    
+    # Compute SHA256
+    pipeline_hash = hashlib.sha256(hash_bytes).hexdigest()
+    
+    logger.debug(f"Computed pipeline hash: {pipeline_hash[:12]}... from {len(sorted_node_ids)} nodes")
+    return pipeline_hash
 
 
 # Detect circular dependencies in DAG
@@ -151,13 +206,13 @@ def resolve_references(params: Dict[str, Any], completed_nodes: Dict[str, str]) 
 
 async def create_pipeline(pipeline_data: Dict[str, Any]) -> Tuple[str, str]:
     """
-    Create a new pipeline in the database.
+    Create a new pipeline in the database with hash-based deduplication.
     
     Args:
         pipeline_data: Pipeline definition with nodes and dependencies
         
     Returns:
-        Tuple of (pipeline_id, message)
+        Tuple of (pipeline_hash, message)
     """
     # Validate nodes exist
     nodes = pipeline_data.get("nodes", {})
@@ -172,12 +227,65 @@ async def create_pipeline(pipeline_data: Dict[str, Any]) -> Tuple[str, str]:
     # Calculate depth levels
     depth_levels = calculate_depth_levels(nodes)
     
-    # Generate pipeline ID
-    pipeline_id = str(uuid.uuid4())
+    # Get function hashes for all nodes to compute pipeline hash
+    from dshpc_api.services.job_service import get_latest_method_hash
+    function_hashes = {}
     
-    # Create pipeline document
+    for node_id, node_def in nodes.items():
+        node_function_hashes = []
+        for step in node_def["chain"]:
+            func_hash = await get_latest_method_hash(step["method_name"])
+            if not func_hash:
+                raise ValueError(f"Method '{step['method_name']}' not found or not active")
+            node_function_hashes.append(func_hash)
+        function_hashes[node_id] = node_function_hashes
+    
+    # Compute pipeline hash for deduplication
+    pipeline_hash = compute_pipeline_hash(nodes, function_hashes)
+    logger.info(f"Computed pipeline hash: {pipeline_hash[:16]}...")
+    
+    # Check if this exact pipeline already exists
+    db = await get_jobs_db()
+    existing_pipeline = await db.pipelines.find_one({"pipeline_hash": pipeline_hash})
+    
+    if existing_pipeline:
+        existing_status = existing_pipeline.get("status")
+        logger.info(f"♻️  Found existing pipeline with status: {existing_status}")
+        
+        if existing_status in [PipelineStatus.COMPLETED.value, PipelineStatus.RUNNING.value, PipelineStatus.PENDING.value]:
+            # Return existing pipeline (transparent caching)
+            logger.info(f"✓ Returning cached pipeline: {pipeline_hash[:16]}...")
+            return pipeline_hash, f"Existing pipeline returned (status: {existing_status}, {len(nodes)} nodes)"
+        elif existing_status == PipelineStatus.FAILED.value:
+            # Check if methods have changed
+            methods_changed = False
+            for node_id, node_def in nodes.items():
+                if node_id in existing_pipeline["nodes"]:
+                    existing_chain = existing_pipeline["nodes"][node_id]["chain"]
+                    if len(existing_chain) != len(node_def["chain"]):
+                        methods_changed = True
+                        break
+                    # Compare function hashes would be ideal, but we don't store them in nodes
+                    # For now, just allow retry on failed pipelines
+                else:
+                    methods_changed = True
+                    break
+            
+            if not methods_changed:
+                # Same pipeline, same inputs -> would likely fail again
+                logger.info(f"✗ Pipeline previously failed with same configuration")
+                error_msg = existing_pipeline.get("error", "Unknown error")
+                raise ValueError(f"Pipeline previously failed: {error_msg}")
+            else:
+                # Methods may have changed, allow recomputation
+                logger.info(f"↻ Pipeline structure changed, will recompute")
+                await db.pipelines.delete_one({"pipeline_hash": pipeline_hash})
+    
+    # Create new pipeline document with hash as primary ID
+    logger.info(f"Creating new pipeline with hash: {pipeline_hash[:16]}...")
+    
     pipeline_doc = {
-        "pipeline_id": pipeline_id,
+        "pipeline_hash": pipeline_hash,
         "status": PipelineStatus.PENDING.value,
         "nodes": {},
         "created_at": datetime.utcnow(),
@@ -190,7 +298,7 @@ async def create_pipeline(pipeline_data: Dict[str, Any]) -> Tuple[str, str]:
         pipeline_doc["nodes"][node_id] = {
             "node_id": node_id,
             "status": PipelineNodeStatus.WAITING.value,
-            "meta_job_id": None,
+            "meta_job_hash": None,
             "chain": node_def["chain"],
             "dependencies": node_def.get("dependencies", []),
             "depth_level": depth_levels[node_id],
@@ -202,26 +310,25 @@ async def create_pipeline(pipeline_data: Dict[str, Any]) -> Tuple[str, str]:
         }
     
     # Insert into database
-    db = await get_jobs_db()
     await db.pipelines.insert_one(pipeline_doc)
     
-    logger.info(f"Created pipeline {pipeline_id} with {len(nodes)} nodes")
+    logger.info(f"Created pipeline {pipeline_hash[:16]}... with {len(nodes)} nodes")
     
-    return pipeline_id, f"Pipeline created with {len(nodes)} nodes"
+    return pipeline_hash, f"Pipeline created with {len(nodes)} nodes"
 
 
-async def get_pipeline_status(pipeline_id: str) -> Optional[Dict[str, Any]]:
+async def get_pipeline_status(pipeline_hash: str) -> Optional[Dict[str, Any]]:
     """
     Get pipeline status and information.
     
     Args:
-        pipeline_id: Pipeline ID
+        pipeline_hash: Pipeline hash
         
     Returns:
         Pipeline information or None if not found
     """
     db = await get_jobs_db()
-    pipeline = await db.pipelines.find_one({"pipeline_id": pipeline_id})
+    pipeline = await db.pipelines.find_one({"pipeline_hash": pipeline_hash})
     
     if not pipeline:
         return None
@@ -249,30 +356,25 @@ async def get_pipeline_status(pipeline_id: str) -> Optional[Dict[str, Any]]:
         if terminal_nodes:
             # Use the one with highest depth level
             final_node_id = max(terminal_nodes, key=lambda nid: nodes[nid]["depth_level"])
-            final_meta_job_id = nodes[final_node_id].get("meta_job_id")
             
-            # Retrieve actual output content from the meta-job (same as meta_job_service does)
-            if final_meta_job_id:
+            # Retrieve output from files database using stored final_output_hash
+            if pipeline.get("final_output_hash"):
                 try:
-                    from dshpc_api.services.meta_job_service import get_meta_job_info
-                    
-                    # Get the meta-job info which includes final_output
-                    meta_job_info = await get_meta_job_info(final_meta_job_id)
-                    if meta_job_info:
-                        final_output = meta_job_info.final_output
+                    from dshpc_api.services.db_service import get_output_from_hash
+                    final_output = await get_output_from_hash(pipeline["final_output_hash"])
                 except Exception as e:
-                    logger.error(f"Error retrieving final output for pipeline {pipeline_id}: {e}")
+                    logger.error(f"Error retrieving final output for pipeline {pipeline_hash}: {e}")
                     # Don't fail, just return None
                     final_output = None
     
     return {
-        "pipeline_id": pipeline_id,
+        "pipeline_hash": pipeline_hash,
         "status": pipeline["status"],
         "nodes": [
             {
                 "node_id": nid,
                 "status": ndata["status"],
-                "meta_job_id": ndata.get("meta_job_id"),
+                "meta_job_hash": ndata.get("meta_job_hash"),
                 "dependencies": ndata["dependencies"],
                 "depth_level": ndata["depth_level"],
                 "submitted_at": ndata.get("submitted_at"),

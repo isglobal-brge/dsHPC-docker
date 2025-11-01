@@ -57,10 +57,10 @@ async def check_stalled_meta_jobs(stall_timeout_minutes: int = 60):
         }).to_list(None)
         
         for job in stalled_jobs:
-            logger.warning(f"Marking stalled meta-job {job['meta_job_id']} as failed")
+            logger.warning(f"Marking stalled meta-job {job['meta_job_hash']} as failed")
             
             await meta_jobs_db.meta_jobs.update_one(
-                {"meta_job_id": job["meta_job_id"]},
+                {"meta_job_hash": job["meta_job_hash"]},
                 {"$set": {
                     "status": MetaJobStatus.FAILED,
                     "error": f"Job stalled - no updates for {stall_timeout_minutes} minutes",

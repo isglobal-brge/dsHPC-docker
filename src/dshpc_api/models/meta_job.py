@@ -86,7 +86,7 @@ class CurrentStepInfo(BaseModel):
 
 class MetaJobResponse(BaseModel):
     """Response model for meta-job submission."""
-    meta_job_id: str
+    meta_job_hash: str
     status: MetaJobStatus
     estimated_steps: int
     message: Optional[str] = None
@@ -94,7 +94,7 @@ class MetaJobResponse(BaseModel):
 
 class MetaJobInfo(BaseModel):
     """Full status information for a meta-job."""
-    meta_job_id: str
+    meta_job_hash: str
     initial_file_hash: Optional[str] = None  # Single file (can be None for multi-file)
     initial_file_inputs: Optional[Dict[str, str]] = None  # Multi-file inputs
     chain: List[MetaJobStepInfo]

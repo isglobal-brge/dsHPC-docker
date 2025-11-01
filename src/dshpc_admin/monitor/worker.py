@@ -473,11 +473,11 @@ class MonitorWorker:
                 # Enrich nodes with full meta-job information
                 nodes = pipeline.get('nodes', {})
                 for node_id, node_data in nodes.items():
-                    meta_job_id = node_data.get('meta_job_id')
-                    if meta_job_id:
+                    meta_job_hash = node_data.get('meta_job_hash')
+                    if meta_job_hash:
                         try:
                             # Fetch meta-job data
-                            meta_job = self.db.meta_jobs.find_one({'meta_job_id': meta_job_id})
+                            meta_job = self.db.meta_jobs.find_one({'meta_job_hash': meta_job_hash})
                             if meta_job:
                                 # Remove _id from meta_job
                                 if '_id' in meta_job:
@@ -570,7 +570,7 @@ class MonitorWorker:
                                 # Add enriched meta_job_info to node
                                 node_data['meta_job_info'] = meta_job
                         except Exception as e:
-                            logger.error(f"Error enriching node {node_id} with meta-job {meta_job_id}: {e}")
+                            logger.error(f"Error enriching node {node_id} with meta-job {meta_job_hash}: {e}")
                 
                 pipelines_data.append(pipeline)
                 

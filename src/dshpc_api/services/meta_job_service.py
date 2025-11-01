@@ -11,7 +11,7 @@ from dshpc_api.models.meta_job import (
     MetaJobInfo, MetaJobStepInfo, CurrentStepInfo
 )
 from dshpc_api.services.db_service import (
-    get_meta_jobs_db, get_files_db, get_job_by_id, get_file_by_hash
+    get_meta_jobs_db, get_files_db, get_jobs_db, get_job_by_id, get_file_by_hash
 )
 from dshpc_api.services.job_service import (
     submit_job, find_existing_job, get_job_status,
@@ -30,7 +30,51 @@ import logging
 logger = logging.getLogger(__name__)
 
 
-async def extract_and_store_path_from_hash(source_hash: str, path: str, files_db, meta_job_id: str, step_idx: int, param_name: str) -> str:
+def compute_meta_job_hash(request: MetaJobRequest, chain_function_hashes: List[str]) -> str:
+    """
+    Compute a deterministic hash for a meta-job based on its inputs and chain.
+    
+    Args:
+        request: Meta-job request
+        chain_function_hashes: List of function hashes for each step in chain (in order)
+        
+    Returns:
+        SHA256 hash as hex string
+    """
+    hash_components = []
+    
+    # Component 1: Initial file hash(es)
+    if request.initial_file_inputs:
+        # Multi-file: sort by key for determinism
+        sorted_inputs = sorted(request.initial_file_inputs.items())
+        for name, file_hash in sorted_inputs:
+            hash_components.append(f"file_input:{name}:{file_hash}")
+    else:
+        # Single file (or PARAMS_ONLY)
+        hash_components.append(f"initial_file:{request.initial_file_hash}")
+    
+    # Component 2: Each step in the chain
+    for i, (step, function_hash) in enumerate(zip(request.method_chain, chain_function_hashes)):
+        hash_components.append(f"step:{i}")
+        hash_components.append(f"function:{function_hash}")
+        
+        # Sort parameters for determinism
+        sorted_params = sort_parameters(step.parameters)
+        params_json = json.dumps(sorted_params, sort_keys=True)
+        hash_components.append(f"params:{params_json}")
+    
+    # Combine all components
+    hash_input = "|".join(hash_components)
+    hash_bytes = hash_input.encode('utf-8')
+    
+    # Compute SHA256
+    meta_job_hash = hashlib.sha256(hash_bytes).hexdigest()
+    
+    logger.debug(f"Computed meta-job hash: {meta_job_hash[:12]}... from {len(hash_components)} components")
+    return meta_job_hash
+
+
+async def extract_and_store_path_from_hash(source_hash: str, path: str, files_db, meta_job_hash: str, step_idx: int, param_name: str) -> str:
     """
     Extract a value from a JSON output file using a path and store it as a new file.
     
@@ -38,7 +82,7 @@ async def extract_and_store_path_from_hash(source_hash: str, path: str, files_db
         source_hash: Hash of the source file containing JSON
         path: Slash-separated path to extract (e.g., "data/text")
         files_db: Database connection
-        meta_job_id: Meta-job ID (for logging/metadata)
+        meta_job_hash: Meta-job hash (for logging/metadata)
         step_idx: Step index (for logging/metadata)
         param_name: Parameter name (for logging/metadata)
         
@@ -95,7 +139,7 @@ async def extract_and_store_path_from_hash(source_hash: str, path: str, files_db
             "source": "path_extraction",
             "source_hash": source_hash,
             "extracted_path": path,
-            "source_node": f"{meta_job_id}_step_{step_idx}"
+            "source_node": f"{meta_job_hash}_step_{step_idx}"
         }
     }
     
@@ -145,9 +189,9 @@ async def submit_meta_job(request: MetaJobRequest) -> Tuple[bool, str, Optional[
                     logger.error(f"File '{name}' not completed (status: {file_status})")
                     return False, f"File '{name}' is not ready (status: {file_status}). Please wait for upload to complete.", None
         else:
-            # Single file (legacy)
-            # Special case: PARAMS_ONLY_ hash means no actual input file needed
-            if not request.initial_file_hash.startswith("PARAMS_ONLY_"):
+            # Single file (legacy) or params-only
+            # Special case: PARAMS_ONLY_ hash or None means no actual input file needed
+            if request.initial_file_hash and not request.initial_file_hash.startswith("PARAMS_ONLY_"):
                 file_doc = await files_db.files.find_one({"file_hash": request.initial_file_hash})
                 
                 if not file_doc:
@@ -162,22 +206,68 @@ async def submit_meta_job(request: MetaJobRequest) -> Tuple[bool, str, Optional[
                     logger.error(f"Initial file {request.initial_file_hash} not completed (status: {file_status})")
                     return False, f"Initial file with hash {request.initial_file_hash} is not ready (status: {file_status}). Please wait for upload to complete.", None
         
-        # Validate all methods exist and are functional
+        # Validate all methods exist and are functional, and collect function hashes
+        chain_function_hashes = []
         for step in request.method_chain:
             is_functional, msg = await check_method_functionality(step.method_name)
             if not is_functional:
                 return False, f"Method '{step.method_name}' validation failed: {msg}", None
-        
-        # Create meta-job record
-        meta_job_id = str(uuid.uuid4())
-        meta_jobs_db = await get_meta_jobs_db()
-        
-        # Initialize chain info
-        chain_info = []
-        for i, step in enumerate(request.method_chain):
+            
+            # Get function hash for this method
             function_hash = await get_latest_method_hash(step.method_name)
             if not function_hash:
                 return False, f"Method '{step.method_name}' not found or not active", None
+            chain_function_hashes.append(function_hash)
+        
+        # Compute meta-job hash for deduplication
+        meta_job_hash = compute_meta_job_hash(request, chain_function_hashes)
+        logger.info(f"  Computed hash: {meta_job_hash[:16]}...")
+        
+        # Check if this exact meta-job already exists
+        meta_jobs_db = await get_meta_jobs_db()
+        existing_meta_job = await meta_jobs_db.meta_jobs.find_one({"meta_job_hash": meta_job_hash})
+        
+        if existing_meta_job:
+            existing_status = existing_meta_job.get("status")
+            logger.info(f"  ♻️  Found existing meta-job with status: {existing_status}")
+            
+            if existing_status in [MetaJobStatus.COMPLETED, MetaJobStatus.RUNNING, MetaJobStatus.PENDING]:
+                # Return existing meta-job (transparent caching)
+                logger.info(f"  ✓ Returning cached meta-job: {meta_job_hash[:16]}...")
+                return True, "Meta-job already exists (cached result)", MetaJobResponse(
+                    meta_job_hash=meta_job_hash,
+                    status=existing_status,
+                    estimated_steps=len(request.method_chain),
+                    message=f"Existing meta-job returned (status: {existing_status})"
+                )
+            elif existing_status == MetaJobStatus.FAILED:
+                # Check if methods have changed (function_hash mismatch)
+                existing_chain = existing_meta_job.get("chain", [])
+                methods_changed = False
+                
+                for i, (existing_step, new_hash) in enumerate(zip(existing_chain, chain_function_hashes)):
+                    if existing_step.get("function_hash") != new_hash:
+                        methods_changed = True
+                        logger.info(f"  Method at step {i} has changed: {existing_step.get('function_hash')[:8]} -> {new_hash[:8]}")
+                        break
+                
+                if not methods_changed:
+                    # Same methods, same inputs -> fail fast
+                    logger.info(f"  ✗ Meta-job previously failed with same configuration")
+                    error_msg = existing_meta_job.get("error", "Unknown error")
+                    return False, f"Meta-job previously failed: {error_msg}", None
+                else:
+                    # Methods changed, allow recomputation
+                    logger.info(f"  ↻ Methods changed, will recompute")
+                    # Delete old failed meta-job and create new one
+                    await meta_jobs_db.meta_jobs.delete_one({"meta_job_hash": meta_job_hash})
+        
+        # Create new meta-job record with hash as ID
+        logger.info(f"  Creating new meta-job with hash: {meta_job_hash[:16]}...")
+        
+        # Initialize chain info
+        chain_info = []
+        for i, (step, function_hash) in enumerate(zip(request.method_chain, chain_function_hashes)):
             
             # For first step: use initial_file_hash or initial_file_inputs
             step_input = None
@@ -202,9 +292,9 @@ async def submit_meta_job(request: MetaJobRequest) -> Tuple[bool, str, Optional[
                 "cached": False
             })
         
-        # Create meta-job document
+        # Create meta-job document with hash as primary ID
         meta_job_doc = {
-            "meta_job_id": meta_job_id,
+            "meta_job_hash": meta_job_hash,  # Hash is the primary identifier
             "initial_file_hash": request.initial_file_hash,  # Can be None
             "initial_file_inputs": request.initial_file_inputs,  # Can be None
             "chain": chain_info,
@@ -220,10 +310,10 @@ async def submit_meta_job(request: MetaJobRequest) -> Tuple[bool, str, Optional[
         await meta_jobs_db.meta_jobs.insert_one(meta_job_doc)
         
         # Start processing asynchronously
-        asyncio.create_task(process_meta_job_chain(meta_job_id))
+        asyncio.create_task(process_meta_job_chain(meta_job_hash))
         
         return True, "Meta-job submitted successfully", MetaJobResponse(
-            meta_job_id=meta_job_id,
+            meta_job_hash=meta_job_hash,
             status=MetaJobStatus.PENDING,
             estimated_steps=len(request.method_chain),
             message="Processing chain asynchronously"
@@ -234,19 +324,19 @@ async def submit_meta_job(request: MetaJobRequest) -> Tuple[bool, str, Optional[
         return False, f"Error submitting meta-job: {str(e)}", None
 
 
-async def process_meta_job_chain(meta_job_id: str):
+async def process_meta_job_chain(meta_job_hash: str):
     """
     Process a meta-job chain asynchronously.
     
     Args:
-        meta_job_id: ID of the meta-job to process
+        meta_job_hash: Hash of the meta-job to process
     """
     meta_jobs_db = await get_meta_jobs_db()
     
     try:
         # Update status to running
         await meta_jobs_db.meta_jobs.update_one(
-            {"meta_job_id": meta_job_id},
+            {"meta_job_hash": meta_job_hash},
             {"$set": {
                 "status": MetaJobStatus.RUNNING,
                 "updated_at": datetime.utcnow()
@@ -254,9 +344,9 @@ async def process_meta_job_chain(meta_job_id: str):
         )
         
         # Get meta-job document
-        meta_job = await meta_jobs_db.meta_jobs.find_one({"meta_job_id": meta_job_id})
+        meta_job = await meta_jobs_db.meta_jobs.find_one({"meta_job_hash": meta_job_hash})
         if not meta_job:
-            logger.error(f"Meta-job {meta_job_id} not found")
+            logger.error(f"Meta-job {meta_job_hash} not found")
             return
         
         # Initialize with initial file hash or file_inputs
@@ -268,7 +358,7 @@ async def process_meta_job_chain(meta_job_id: str):
         for i, step in enumerate(meta_job["chain"]):
             # Update current step
             await meta_jobs_db.meta_jobs.update_one(
-                {"meta_job_id": meta_job_id},
+                {"meta_job_hash": meta_job_hash},
                 {"$set": {
                     "current_step": i,
                     "updated_at": datetime.utcnow()
@@ -363,7 +453,7 @@ async def process_meta_job_chain(meta_job_id: str):
             
             if existing_job and existing_job.get("status") in COMPLETED_STATUSES:
                 # Job already completed, use its output
-                logger.info(f"✅ CACHE HIT - Meta-job {meta_job_id} step {i}:")
+                logger.info(f"✅ CACHE HIT - Meta-job {meta_job_hash} step {i}:")
                 logger.info(f"  Method: {step['method_name']}")
                 if step_file_inputs:
                     logger.info(f"  Input files: {list(step_file_inputs.keys())}")
@@ -373,7 +463,7 @@ async def process_meta_job_chain(meta_job_id: str):
                 logger.info(f"  Skipping execution - using cached output")
                 
                 # Update current step info even for cached jobs
-                await update_meta_job_current_step(meta_job_id, i, existing_job['job_id'], 
+                await update_meta_job_current_step(meta_job_hash, i, existing_job['job_id'], 
                                                    existing_job['status'], False)
                 
                 # Get output hash from existing job
@@ -403,7 +493,7 @@ async def process_meta_job_chain(meta_job_id: str):
                 
                 # Update chain in database
                 await meta_jobs_db.meta_jobs.update_one(
-                    {"meta_job_id": meta_job_id},
+                    {"meta_job_hash": meta_job_hash},
                     {"$set": {
                         f"chain.{i}": step,
                         "updated_at": datetime.utcnow()
@@ -415,7 +505,7 @@ async def process_meta_job_chain(meta_job_id: str):
                 
             else:
                 # Need to submit new job
-                logger.info(f"🔄 CACHE MISS - Meta-job {meta_job_id} step {i}:")
+                logger.info(f"🔄 CACHE MISS - Meta-job {meta_job_hash} step {i}:")
                 logger.info(f"  Method: {step['method_name']}")
                 if lookup_file_inputs:
                     logger.info(f"  Input files: {list(lookup_file_inputs.keys())}")
@@ -443,7 +533,7 @@ async def process_meta_job_chain(meta_job_id: str):
                 
                 # Update chain in database
                 await meta_jobs_db.meta_jobs.update_one(
-                    {"meta_job_id": meta_job_id},
+                    {"meta_job_hash": meta_job_hash},
                     {"$set": {
                         f"chain.{i}": step,
                         "updated_at": datetime.utcnow()
@@ -451,7 +541,7 @@ async def process_meta_job_chain(meta_job_id: str):
                 )
                 
                 # Wait for job to complete with automatic retry on retriable failures
-                job_result = await wait_for_job_completion_with_retry(job_id, meta_job_id, i)
+                job_result = await wait_for_job_completion_with_retry(job_id, meta_job_hash, i)
                 
                 if job_result["status"] not in COMPLETED_STATUSES:
                     # Should not happen as wait_for_job_completion_with_retry raises exception for failures
@@ -480,7 +570,7 @@ async def process_meta_job_chain(meta_job_id: str):
                 
                 # Update chain in database
                 await meta_jobs_db.meta_jobs.update_one(
-                    {"meta_job_id": meta_job_id},
+                    {"meta_job_hash": meta_job_hash},
                     {"$set": {
                         f"chain.{i}": step,
                         "updated_at": datetime.utcnow()
@@ -494,22 +584,25 @@ async def process_meta_job_chain(meta_job_id: str):
         # Get final job ID from the last step
         final_job_id = meta_job["chain"][-1]["job_id"]
         
-        logger.info(f"✅ META-JOB COMPLETED - {meta_job_id}")
+        # Get output_file_hash from the final job
+        jobs_db = await get_jobs_db()
+        final_job = await jobs_db.jobs.find_one({"job_id": final_job_id})
+        final_output_hash = final_job.get("output_file_hash") if final_job else None
+        
+        logger.info(f"✅ META-JOB COMPLETED - {meta_job_hash}")
         logger.info(f"  Total steps: {len(meta_job['chain'])}")
         cached_count = sum(1 for s in meta_job['chain'] if s.get('cached', False))
         logger.info(f"  Cached steps: {cached_count}/{len(meta_job['chain'])}")
         logger.info(f"  Final job ID: {final_job_id}")
+        logger.info(f"  Final output hash: {final_output_hash[:16] if final_output_hash else 'None'}...")
         
-        # NOTE: The final output is stored in the last job's document (jobs collection).
-        # Clients should retrieve it using the final_job_id.
-        # This avoids duplicating data and respects the job-based architecture.
-        
-        # Update meta-job as completed
+        # Update meta-job as completed with reference to output hash
         await meta_jobs_db.meta_jobs.update_one(
-            {"meta_job_id": meta_job_id},
+            {"meta_job_hash": meta_job_hash},
             {"$set": {
                 "status": MetaJobStatus.COMPLETED,
                 "final_job_id": final_job_id,
+                "final_output_hash": final_output_hash,  # Store reference to output
                 "current_step": None,
                 "current_step_info": None,  # Clear current step when completed
                 "updated_at": datetime.utcnow(),
@@ -517,14 +610,14 @@ async def process_meta_job_chain(meta_job_id: str):
             }}
         )
         
-        logger.info(f"Meta-job {meta_job_id} completed successfully")
+        logger.info(f"Meta-job {meta_job_hash} completed successfully")
         
     except Exception as e:
-        logger.error(f"Error processing meta-job {meta_job_id}: {e}")
+        logger.error(f"Error processing meta-job {meta_job_hash}: {e}")
         
         # Update meta-job as failed
         await meta_jobs_db.meta_jobs.update_one(
-            {"meta_job_id": meta_job_id},
+            {"meta_job_hash": meta_job_hash},
             {"$set": {
                 "status": MetaJobStatus.FAILED,
                 "error": str(e),
@@ -534,7 +627,7 @@ async def process_meta_job_chain(meta_job_id: str):
 
 
 async def wait_for_job_completion(job_id: str, timeout: int = None, interval: int = 5, 
-                                  meta_job_id: str = None, step_index: int = None) -> Dict[str, Any]:
+                                  meta_job_hash: str = None, step_index: int = None) -> Dict[str, Any]:
     """
     Wait for a job to complete.
     
@@ -542,7 +635,7 @@ async def wait_for_job_completion(job_id: str, timeout: int = None, interval: in
         job_id: Job ID to wait for
         timeout: Maximum time to wait in seconds (None for no timeout)
         interval: Polling interval in seconds (default: 5)
-        meta_job_id: Optional meta-job ID for tracking updates
+        meta_job_hash: Optional meta-job hash for tracking updates
         step_index: Optional step index for tracking updates
         
     Returns:
@@ -567,8 +660,8 @@ async def wait_for_job_completion(job_id: str, timeout: int = None, interval: in
             status = job_data.get("status")
             
             # Update meta-job step info if tracking is enabled
-            if meta_job_id is not None and step_index is not None:
-                await update_meta_job_current_step(meta_job_id, step_index, job_id, status, False)
+            if meta_job_hash is not None and step_index is not None:
+                await update_meta_job_current_step(meta_job_hash, step_index, job_id, status, False)
             
             # Check if job is completed or failed
             if status in ["CD", "F", "CA", "TO", "NF", "OOM", "BF", "DL", "ER"]:
@@ -578,13 +671,13 @@ async def wait_for_job_completion(job_id: str, timeout: int = None, interval: in
         await asyncio.sleep(interval)
 
 
-async def update_meta_job_current_step(meta_job_id: str, step_index: int, job_id: str, 
+async def update_meta_job_current_step(meta_job_hash: str, step_index: int, job_id: str, 
                                        job_status: str, is_resubmitted: bool):
     """
     Update meta-job with current step information for tracking.
     
     Args:
-        meta_job_id: Meta-job ID
+        meta_job_hash: Meta-job hash
         step_index: Index of the current step (0-based)
         job_id: Current job ID
         job_status: Current job status
@@ -593,9 +686,9 @@ async def update_meta_job_current_step(meta_job_id: str, step_index: int, job_id
     meta_jobs_db = await get_meta_jobs_db()
     
     # Get step details
-    meta_job = await meta_jobs_db.meta_jobs.find_one({"meta_job_id": meta_job_id})
+    meta_job = await meta_jobs_db.meta_jobs.find_one({"meta_job_hash": meta_job_hash})
     if not meta_job:
-        logger.error(f"Meta-job {meta_job_id} not found when updating current step")
+        logger.error(f"Meta-job {meta_job_hash} not found when updating current step")
         return
     
     step = meta_job["chain"][step_index]
@@ -611,7 +704,7 @@ async def update_meta_job_current_step(meta_job_id: str, step_index: int, job_id
     }
     
     await meta_jobs_db.meta_jobs.update_one(
-        {"meta_job_id": meta_job_id},
+        {"meta_job_hash": meta_job_hash},
         {"$set": {
             "current_step": step_index,
             "current_step_info": current_step_info,
@@ -620,7 +713,7 @@ async def update_meta_job_current_step(meta_job_id: str, step_index: int, job_id
     )
 
 
-async def wait_for_job_completion_with_retry(job_id: str, meta_job_id: str, 
+async def wait_for_job_completion_with_retry(job_id: str, meta_job_hash: str, 
                                              step_index: int, max_retries: int = 3) -> Dict[str, Any]:
     """
     Wait for job completion with automatic retry on retriable failures.
@@ -628,7 +721,7 @@ async def wait_for_job_completion_with_retry(job_id: str, meta_job_id: str,
     
     Args:
         job_id: Initial job ID to wait for
-        meta_job_id: Meta-job ID for tracking updates
+        meta_job_hash: Meta-job hash for tracking updates
         step_index: Index of this step in the chain (0-based)
         max_retries: Maximum number of retry attempts
         
@@ -643,24 +736,24 @@ async def wait_for_job_completion_with_retry(job_id: str, meta_job_id: str,
     
     while retry_count <= max_retries:
         # Wait for current job to reach terminal state
-        # Pass meta_job_id and step_index so it updates current_step_info during execution
+        # Pass meta_job_hash and step_index so it updates current_step_info during execution
         job_result = await wait_for_job_completion(current_job_id, 
-                                                    meta_job_id=meta_job_id, 
+                                                    meta_job_hash=meta_job_hash, 
                                                     step_index=step_index)
         job_status = job_result.get("status")
         
         # Final update with resubmission flag if applicable
         if retry_count > 0:
-            await update_meta_job_current_step(meta_job_id, step_index, current_job_id, 
+            await update_meta_job_current_step(meta_job_hash, step_index, current_job_id, 
                                                job_status, True)
         
         if job_status in COMPLETED_STATUSES:
-            logger.info(f"Meta-job {meta_job_id} step {step_index}: Job {current_job_id} completed successfully")
+            logger.info(f"Meta-job {meta_job_hash} step {step_index}: Job {current_job_id} completed successfully")
             return job_result
         
         elif job_status in RETRIABLE_FAILED_STATUSES:
             # Resubmit job automatically
-            logger.warning(f"Meta-job {meta_job_id} step {step_index}: Job {current_job_id} failed with retriable status {job_status}")
+            logger.warning(f"Meta-job {meta_job_hash} step {step_index}: Job {current_job_id} failed with retriable status {job_status}")
             logger.info(f"  Status description: {STATUS_DESCRIPTIONS.get(job_status, 'Unknown')}")
             logger.info(f"  Attempting automatic resubmission (retry {retry_count + 1}/{max_retries})")
             
@@ -685,20 +778,20 @@ async def wait_for_job_completion_with_retry(job_id: str, meta_job_id: str,
         elif job_status in NON_RETRIABLE_FAILED_STATUSES:
             # Non-retriable failure - fail the meta-job
             error_msg = job_result.get("error", "No error details available")
-            logger.error(f"Meta-job {meta_job_id} step {step_index}: Job {current_job_id} failed with non-retriable status {job_status}")
+            logger.error(f"Meta-job {meta_job_hash} step {step_index}: Job {current_job_id} failed with non-retriable status {job_status}")
             logger.error(f"  Error: {error_msg}")
             raise Exception(f"Job failed with non-retriable status {job_status}: {error_msg}")
         
         else:
             # Unknown status - treat as non-retriable
-            logger.error(f"Meta-job {meta_job_id} step {step_index}: Job {current_job_id} has unknown status {job_status}")
+            logger.error(f"Meta-job {meta_job_hash} step {step_index}: Job {current_job_id} has unknown status {job_status}")
             raise Exception(f"Job has unknown status: {job_status}")
     
     # Exceeded max retries
     raise Exception(f"Job failed after {max_retries} retry attempts")
 
 
-async def get_meta_job_info(meta_job_id: str) -> Optional[MetaJobInfo]:
+async def get_meta_job_info(meta_job_hash: str) -> Optional[MetaJobInfo]:
     """
     Get full information about a meta-job.
     
@@ -706,13 +799,13 @@ async def get_meta_job_info(meta_job_id: str) -> Optional[MetaJobInfo]:
     This allows clients to get results without knowing internal file hashes.
     
     Args:
-        meta_job_id: Meta-job ID
+        meta_job_hash: Meta-job hash
         
     Returns:
         MetaJobInfo if found, None otherwise
     """
     meta_jobs_db = await get_meta_jobs_db()
-    meta_job = await meta_jobs_db.meta_jobs.find_one({"meta_job_id": meta_job_id})
+    meta_job = await meta_jobs_db.meta_jobs.find_one({"meta_job_hash": meta_job_hash})
     
     if not meta_job:
         return None
@@ -726,31 +819,20 @@ async def get_meta_job_info(meta_job_id: str) -> Optional[MetaJobInfo]:
         try:
             current_step_info = CurrentStepInfo(**meta_job["current_step_info"])
         except Exception as e:
-            logger.error(f"Error parsing current_step_info for meta-job {meta_job_id}: {e}")
+            logger.error(f"Error parsing current_step_info for meta-job {meta_job_hash}: {e}")
     
-    # If meta-job is completed, get the output from the final job
+    # If meta-job is completed, get the output from files database using final_output_hash
     final_output = None
-    if meta_job["status"] == MetaJobStatus.COMPLETED and meta_job.get("final_job_id"):
+    if meta_job["status"] == MetaJobStatus.COMPLETED and meta_job.get("final_output_hash"):
         try:
-            final_job = await get_job_by_id(meta_job["final_job_id"])
-            if final_job:
-                # Get output from job (could be inline or in GridFS)
-                final_output = final_job.get("output")
-                if not final_output and final_job.get("output_gridfs_id"):
-                    # Large output in GridFS
-                    from dshpc_api.services.db_service import get_jobs_db
-                    import gridfs
-                    
-                    jobs_db = await get_jobs_db()
-                    fs = gridfs.GridFS(jobs_db._database)
-                    grid_out = fs.get(final_job["output_gridfs_id"])
-                    final_output = grid_out.read().decode('utf-8')
+            from dshpc_api.services.db_service import get_output_from_hash
+            final_output = await get_output_from_hash(meta_job["final_output_hash"])
         except Exception as e:
-            logger.error(f"Error retrieving final output for meta-job {meta_job_id}: {e}")
+            logger.error(f"Error retrieving final output for meta-job {meta_job_hash}: {e}")
             # Don't fail, just return without output
     
     return MetaJobInfo(
-        meta_job_id=meta_job["meta_job_id"],
+        meta_job_hash=meta_job["meta_job_hash"],
         initial_file_hash=meta_job["initial_file_hash"],
         chain=chain,
         status=meta_job["status"],

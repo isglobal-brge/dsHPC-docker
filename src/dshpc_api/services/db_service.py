@@ -297,4 +297,47 @@ async def get_file_by_hash(file_hash: str) -> Optional[Dict[str, Any]]:
                 file["content"] = ""  # Empty content on error
                 file["error"] = f"Failed to retrieve content from GridFS: {str(e)}"
     
-    return file 
+    return file
+
+async def get_output_from_hash(file_hash: str) -> Optional[str]:
+    """
+    Retrieve job output content from files database using its hash.
+    Handles both inline and GridFS storage.
+    
+    Args:
+        file_hash: The hash of the output file
+        
+    Returns:
+        The output content as a string, or None if not found
+    """
+    db = await get_files_db()
+    file_doc = await db.files.find_one({"file_hash": file_hash})
+    
+    if not file_doc:
+        return None
+    
+    # Handle inline storage
+    if file_doc.get("storage_type") == "inline":
+        content_base64 = file_doc.get("content", "")
+        if content_base64:
+            try:
+                content_bytes = base64.b64decode(content_base64)
+                return content_bytes.decode('utf-8')
+            except Exception:
+                return None
+        return None
+    
+    # Handle GridFS storage
+    elif file_doc.get("storage_type") == "gridfs":
+        try:
+            bucket = await get_gridfs_bucket()
+            grid_id = file_doc.get("gridfs_id")
+            
+            if grid_id:
+                grid_out = await bucket.open_download_stream(grid_id)
+                content_bytes = await grid_out.read()
+                return content_bytes.decode('utf-8')
+        except Exception:
+            return None
+    
+    return None 

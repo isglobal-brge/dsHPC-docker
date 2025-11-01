@@ -43,10 +43,10 @@ async def submit_pipeline(pipeline: PipelineSubmission, api_key: str = Security(
     """
     try:
         pipeline_dict = pipeline.dict()
-        pipeline_id, message = await create_pipeline(pipeline_dict)
+        pipeline_hash, message = await create_pipeline(pipeline_dict)
         
         return PipelineResponse(
-            pipeline_id=pipeline_id,
+            pipeline_hash=pipeline_hash,
             status="pending",
             total_nodes=len(pipeline_dict["nodes"]),
             message=message
@@ -64,8 +64,8 @@ async def submit_pipeline(pipeline: PipelineSubmission, api_key: str = Security(
         )
 
 
-@router.get("/{pipeline_id}", response_model=Dict[str, Any])
-async def get_pipeline(pipeline_id: str, api_key: str = Security(get_api_key)):
+@router.get("/{pipeline_hash}", response_model=Dict[str, Any])
+async def get_pipeline(pipeline_hash: str, api_key: str = Security(get_api_key)):
     """
     Get pipeline status and detailed information about all nodes.
     
@@ -76,19 +76,19 @@ async def get_pipeline(pipeline_id: str, api_key: str = Security(get_api_key)):
     - Dependencies between nodes
     - Current step information for running nodes
     """
-    pipeline_info = await get_pipeline_status(pipeline_id)
+    pipeline_info = await get_pipeline_status(pipeline_hash)
     
     if not pipeline_info:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Pipeline {pipeline_id} not found"
+            detail=f"Pipeline {pipeline_hash} not found"
         )
     
     return pipeline_info
 
 
-@router.delete("/{pipeline_id}")
-async def cancel_pipeline(pipeline_id: str, api_key: str = Security(get_api_key)):
+@router.delete("/{pipeline_hash}")
+async def cancel_pipeline(pipeline_hash: str, api_key: str = Security(get_api_key)):
     """
     Cancel a running pipeline.
     
@@ -102,7 +102,7 @@ async def cancel_pipeline(pipeline_id: str, api_key: str = Security(get_api_key)
     db = await get_jobs_db()
     
     result = await db.pipelines.update_one(
-        {"pipeline_id": pipeline_id},
+        {"pipeline_hash": pipeline_hash},
         {"$set": {
             "status": PipelineStatus.CANCELLED.value,
             "completed_at": datetime.utcnow()
@@ -112,8 +112,8 @@ async def cancel_pipeline(pipeline_id: str, api_key: str = Security(get_api_key)
     if result.matched_count == 0:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Pipeline {pipeline_id} not found"
+            detail=f"Pipeline {pipeline_hash} not found"
         )
     
-    return {"message": f"Pipeline {pipeline_id} cancelled"}
+    return {"message": f"Pipeline {pipeline_hash} cancelled"}
 
