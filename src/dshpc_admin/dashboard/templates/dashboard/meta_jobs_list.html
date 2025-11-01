@@ -42,7 +42,7 @@
             <input type="hidden" name="status" value="{{ status_filter }}">
             <div class="row g-3">
                 <div class="col-md-4">
-                    <label class="form-label">Search (Meta-Job ID)</label>
+                    <label class="form-label">Search (Meta-Job Hash)</label>
                     <input type="text" name="search" class="form-control" placeholder="Search..." value="{{ search|default:'' }}">
                 </div>
                 <div class="col-md-3">
@@ -122,7 +122,7 @@
                         <h6 class="mb-3"><i class="bi bi-info-circle"></i> Meta-Job Information</h6>
                         
                         <div class="info-row">
-                            <div class="label">Meta-Job ID</div>
+                            <div class="label">Meta-Job Hash</div>
                             <div class="value">
                                 <div class="hash-display">
                                     <div class="hash-scroll">
