@@ -10,10 +10,11 @@
     theme: 'default',
     flowchart: {
       curve: 'basis',
-      padding: 20,
-      nodeSpacing: 100,
-      rankSpacing: 80
-    }
+      padding: 10,
+      nodeSpacing: 50,
+      rankSpacing: 50
+    },
+    fontSize: 12
   });
   window.mermaid = mermaid;
 </script>
@@ -401,16 +402,16 @@
                         </div>
                         <div class="modal-body p-0">
                             <div class="row g-0" style="height: calc(100vh - 56px);">
-                                <div class="col-md-9" style="overflow: auto; background: #f8f9fa;">
-                                    <div id="dagViewer" class="p-4">
+                                <div class="col-md-5" style="overflow: auto; background: #f8f9fa;">
+                                    <div id="dagViewer" class="p-3" style="overflow-x: auto;">
                                         <div class="text-center py-5">
                                             <div class="spinner-border" role="status"></div>
                                             <p class="text-muted mt-2">Rendering DAG...</p>
                                         </div>
                                     </div>
                                 </div>
-                                <div class="col-md-3 border-start" style="overflow-y: auto; background: white;">
-                                    <div id="nodeDetails" class="p-3">
+                                <div class="col-md-7 border-start" style="overflow-y: auto; background: white;">
+                                    <div id="nodeDetails" class="p-4">
                                         <div class="text-center text-muted py-5">
                                             <i class="bi bi-arrow-left fs-3"></i>
                                             <p class="mt-2">Click on a node to view details</p>
@@ -549,6 +550,18 @@
         });
     }
     
+    function escapeHtml(text) {
+        const div = document.createElement('div');
+        div.textContent = text;
+        return div.innerHTML;
+    }
+    
+    function formatJson(obj) {
+        if (!obj) return '';
+        const jsonStr = JSON.stringify(obj, null, 2);
+        return `<pre class="mb-0" style="background: #f8f9fa; padding: 8px; border-radius: 4px; font-size: 0.8rem; max-height: 200px; overflow-y: auto;">${escapeHtml(jsonStr)}</pre>`;
+    }
+    
     function showNodeDetails(pipeline, nodeId) {
         const nodes = pipeline.nodes || {};
         const nodeData = nodes[nodeId];
@@ -557,9 +570,16 @@
             return;
         }
         
+        // Debug: log available data
+        console.log('Node data:', nodeData);
+        
         const chain = nodeData.chain || [];
         const dependencies = nodeData.dependencies || [];
         const status = nodeData.status || 'waiting';
+        const metaJobInfo = nodeData.meta_job_info || {};
+        
+        // Use meta_job_info.chain if available (has more details)
+        const enrichedChain = metaJobInfo.chain || chain;
         
         // Status badge
         let statusBadge = '';
@@ -581,89 +601,245 @@
         }
         
         let html = `
-            <div class="mb-3">
-                <h6 class="mb-3"><i class="bi bi-node-plus"></i> Node: ${nodeId}</h6>
-                
-                <div class="mb-3">
-                    <small class="text-muted d-block mb-1">Status</small>
-                    ${statusBadge}
+            <h5 class="mb-3"><i class="bi bi-node-plus"></i> ${nodeId}</h5>
+            
+            <!-- Node Info -->
+            <div class="mb-4">
+                <h6 class="mb-2"><i class="bi bi-info-circle"></i> Node Information</h6>
+                <div class="info-row">
+                    <div class="label">Status</div>
+                    <div class="value">${statusBadge}</div>
                 </div>
                 
                 ${dependencies.length > 0 ? `
-                <div class="mb-3">
-                    <small class="text-muted d-block mb-1">Dependencies</small>
-                    ${dependencies.map(d => `<span class="badge bg-secondary">${d}</span>`).join(' ')}
+                <div class="info-row">
+                    <div class="label">Dependencies</div>
+                    <div class="value">${dependencies.map(d => `<span class="badge bg-secondary">${d}</span>`).join(' ')}</div>
                 </div>
                 ` : ''}
-                
-                <div class="mb-3">
-                    <small class="text-muted d-block mb-1">Method Chain</small>
-                    <div class="list-group list-group-flush">
-                        ${chain.map((step, idx) => `
-                            <div class="list-group-item px-0 py-2">
-                                <div class="d-flex align-items-center gap-2">
-                                    <span class="badge bg-secondary">${idx + 1}</span>
-                                    <strong>${step.method_name}</strong>
-                                </div>
-                                ${step.parameters && Object.keys(step.parameters).length > 0 ? `
-                                    <div class="mt-1 small text-muted">
-                                        ${Object.keys(step.parameters).length} parameter(s)
-                                    </div>
-                                ` : ''}
-                            </div>
-                        `).join('')}
-                    </div>
-                </div>
                 
                 ${nodeData.meta_job_id ? `
-                <div class="mb-3">
-                    <small class="text-muted d-block mb-1">Meta-Job ID</small>
-                    <div class="hash-display">
-                        <div class="hash-scroll">
-                            <code class="small">${nodeData.meta_job_id}</code>
+                <div class="info-row">
+                    <div class="label">Meta-Job ID</div>
+                    <div class="value">
+                        <div class="hash-display">
+                            <div class="hash-scroll">
+                                <code class="small">${nodeData.meta_job_id}</code>
+                            </div>
+                            <button class="btn btn-sm btn-outline-secondary" onclick="copyToClipboard('${nodeData.meta_job_id}')">
+                                <i class="bi bi-clipboard"></i>
+                            </button>
                         </div>
-                        <button class="btn btn-sm btn-outline-secondary" onclick="copyToClipboard('${nodeData.meta_job_id}')">
-                            <i class="bi bi-clipboard"></i>
-                        </button>
-                    </div>
-                </div>
-                ` : ''}
-                
-                ${nodeData.output_hash ? `
-                <div class="mb-3">
-                    <small class="text-muted d-block mb-1">Output Hash</small>
-                    <div class="hash-display">
-                        <div class="hash-scroll">
-                            <code class="small">${nodeData.output_hash}</code>
-                        </div>
-                        <button class="btn btn-sm btn-outline-secondary" onclick="copyToClipboard('${nodeData.output_hash}')">
-                            <i class="bi bi-clipboard"></i>
-                        </button>
                     </div>
                 </div>
                 ` : ''}
                 
                 ${nodeData.submitted_at ? `
-                <div class="mb-3">
-                    <small class="text-muted d-block mb-1">Submitted</small>
-                    <div class="small">${new Date(nodeData.submitted_at).toLocaleString()}</div>
+                <div class="info-row">
+                    <div class="label">Submitted</div>
+                    <div class="value small">${new Date(nodeData.submitted_at).toLocaleString()}</div>
                 </div>
                 ` : ''}
                 
                 ${nodeData.completed_at ? `
-                <div class="mb-3">
-                    <small class="text-muted d-block mb-1">Completed</small>
-                    <div class="small">${new Date(nodeData.completed_at).toLocaleString()}</div>
-                </div>
-                ` : ''}
-                
-                ${nodeData.error ? `
-                <div class="alert alert-danger small">
-                    <strong><i class="bi bi-exclamation-triangle-fill"></i> Error:</strong>
-                    <pre class="mb-0 mt-2" style="white-space: pre-wrap; font-size: 0.8rem;">${nodeData.error}</pre>
+                <div class="info-row">
+                    <div class="label">Completed</div>
+                    <div class="value small">${new Date(nodeData.completed_at).toLocaleString()}</div>
                 </div>
                 ` : ''}
             </div>
+            
+            <!-- Initial Input Files -->
+            ${metaJobInfo.initial_file_inputs ? `
+            <div class="mb-4">
+                <h6 class="mb-2"><i class="bi bi-folder2-open"></i> Initial Input Files</h6>
+                ${Object.entries(metaJobInfo.initial_file_inputs).map(([name, hash], idx) => {
+                    const fileInfo = metaJobInfo.initial_file_info ? metaJobInfo.initial_file_info[name] : null;
+                    const collapseId = `inputFile_${nodeId}_${idx}`;
+                    const hasPreview = fileInfo && fileInfo.content_preview;
+                    
+                    return `
+                    <div class="info-row">
+                        <div class="label">${name}</div>
+                        <div class="value">
+                            ${fileInfo && fileInfo.filename ? `<div class="small mb-1"><strong>${fileInfo.filename}</strong></div>` : ''}
+                            <div class="hash-display">
+                                <div class="hash-scroll">
+                                    <code class="small">${hash}</code>
+                                </div>
+                                <button class="btn btn-sm btn-outline-secondary" onclick="copyToClipboard('${hash}')">
+                                    <i class="bi bi-clipboard"></i>
+                                </button>
+                            </div>
+                            ${hasPreview ? `
+                            <div class="mt-2">
+                                <button class="btn btn-sm btn-link text-decoration-none p-0" type="button" data-bs-toggle="collapse" data-bs-target="#${collapseId}">
+                                    <i class="bi bi-file-text"></i> Show preview
+                                </button>
+                                <div id="${collapseId}" class="collapse">
+                                    <div class="terminal mt-2" style="max-height: 150px; font-size: 0.75rem;">${escapeHtml(fileInfo.content_preview)}</div>
+                                </div>
+                            </div>
+                            ` : ''}
+                        </div>
+                    </div>
+                    `;
+                }).join('')}
+            </div>
+            ` : ''}
+            
+            <!-- Chain Steps -->
+            <div class="mb-4">
+                <h6 class="mb-3"><i class="bi bi-diagram-3"></i> Chain Steps</h6>
+                ${enrichedChain.map((step, idx) => {
+                    // Get status from job_data if available, otherwise from step
+                    const jobStatus = step.job_data ? step.job_data.status : step.status;
+                    const stepStatusBadge = jobStatus === 'CD' ? '<span class="badge bg-success"><i class="bi bi-check-circle-fill"></i> Completed</span>' :
+                                           jobStatus === 'R' ? '<span class="badge bg-primary"><i class="bi bi-play-circle-fill"></i> Running</span>' :
+                                           jobStatus === 'F' ? '<span class="badge bg-danger"><i class="bi bi-x-circle-fill"></i> Failed</span>' :
+                                           jobStatus === 'PD' || jobStatus === 'pending' ? '<span class="badge bg-secondary"><i class="bi bi-clock"></i> Pending</span>' :
+                                           jobStatus ? `<span class="badge bg-secondary"><i class="bi bi-clock"></i> ${jobStatus}</span>` :
+                                           '<span class="badge bg-secondary"><i class="bi bi-clock"></i> Pending</span>';
+                    
+                    return `
+                    <div class="card mb-2">
+                        <div class="card-header py-2 d-flex justify-content-between align-items-center" style="background: #f8f9fa;">
+                            <div>
+                                <span class="badge bg-secondary me-2">${idx + 1}</span>
+                                <strong>${step.method_name}</strong>
+                            </div>
+                            ${stepStatusBadge}
+                        </div>
+                        <div class="card-body p-2">
+                            ${step.job_id ? `
+                            <div class="mb-2">
+                                <small class="text-muted d-block mb-1">Job ID</small>
+                                <div class="hash-display">
+                                    <div class="hash-scroll">
+                                        <code class="small">${step.job_id}</code>
+                                    </div>
+                                    <button class="btn btn-sm btn-outline-secondary" onclick="copyToClipboard('${step.job_id}')">
+                                        <i class="bi bi-clipboard"></i>
+                                    </button>
+                                </div>
+                            </div>
+                            ` : ''}
+                            
+                            ${step.job_data && step.job_data.file_inputs ? `
+                            <div class="mb-2">
+                                <small class="text-muted d-block mb-1"><i class="bi bi-arrow-down-circle"></i> Inputs from Previous Steps</small>
+                                ${Object.entries(step.job_data.file_inputs).map(([inputName, inputHash]) => {
+                                    // Check if this input comes from another node
+                                    let sourceInfo = '';
+                                    let sourceNode = null;
+                                    let extractPath = null;
+                                    
+                                    // First, try to find extraction path from file_info metadata
+                                    if (step.job_data.file_info && step.job_data.file_info[inputName]) {
+                                        const fileInfo = step.job_data.file_info[inputName];
+                                        if (fileInfo.metadata && fileInfo.metadata.extracted_path) {
+                                            extractPath = fileInfo.metadata.extracted_path;
+                                        }
+                                        if (fileInfo.metadata && fileInfo.metadata.source_node) {
+                                            sourceNode = fileInfo.metadata.source_node;
+                                        }
+                                    }
+                                    
+                                    // Fallback: Look for extraction path info in parameters
+                                    if (!sourceNode && step.parameters) {
+                                        for (const [paramKey, paramValue] of Object.entries(step.parameters)) {
+                                            if (typeof paramValue === 'string' && paramValue.includes('$ref:')) {
+                                                const refMatch = paramValue.match(/\$ref:([^\/]+)(?:\/(.+))?/);
+                                                if (refMatch) {
+                                                    sourceNode = refMatch[1];
+                                                    if (!extractPath && refMatch[2]) {
+                                                        extractPath = refMatch[2];
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                    
+                                    // Only show source info if we have sourceNode
+                                    if (sourceNode) {
+                                        sourceInfo = '<div class="small text-muted mt-1">' +
+                                            '<i class="bi bi-link-45deg"></i> From <code>' + sourceNode + '</code>' +
+                                            (extractPath ? ' → <code>' + extractPath + '</code>' : '') +
+                                            '</div>';
+                                    }
+                                    
+                                    return `
+                                    <div class="mt-1 p-2" style="background: #f8f9fa; border-radius: 4px;">
+                                        <div class="d-flex justify-content-between align-items-start">
+                                            <div class="flex-grow-1" style="min-width: 0;">
+                                                <strong class="small">${inputName}</strong>
+                                                ${sourceInfo}
+                                                <code class="small d-block text-truncate mt-1" style="font-size: 0.7rem;">${inputHash}</code>
+                                            </div>
+                                            <button class="btn btn-sm btn-outline-secondary ms-1" onclick="copyToClipboard('${inputHash}')" style="padding: 0.1rem 0.3rem;">
+                                                <i class="bi bi-clipboard" style="font-size: 0.7rem;"></i>
+                                            </button>
+                                        </div>
+                                    </div>
+                                    `;
+                                }).join('')}
+                            </div>
+                            ` : ''}
+                            
+                            ${step.parameters && Object.keys(step.parameters).length > 0 ? `
+                            <div class="mb-2">
+                                <small class="text-muted d-block mb-1"><i class="bi bi-sliders"></i> Parameters</small>
+                                ${formatJson(step.parameters)}
+                            </div>
+                            ` : ''}
+                            
+                            ${step.job_data && step.job_data.output ? `
+                            <div class="mb-2">
+                                <small class="text-muted d-block mb-1"><i class="bi bi-terminal"></i> Output Preview</small>
+                                ${step.job_data.output_truncated ? '<div class="alert alert-info alert-sm py-1 px-2 mb-1"><i class="bi bi-info-circle"></i> Truncated</div>' : ''}
+                                <div class="terminal" style="max-height: 150px; font-size: 0.75rem;">${escapeHtml(step.job_data.output.substring(0, 2000))}</div>
+                            </div>
+                            ` : ''}
+                            
+                            ${step.job_data && step.job_data.error ? `
+                            <div class="alert alert-danger alert-sm py-1 px-2 mb-0">
+                                <strong class="small"><i class="bi bi-exclamation-triangle-fill"></i> Error:</strong>
+                                <pre class="mb-0 mt-1 small" style="white-space: pre-wrap; font-size: 0.75rem;">${escapeHtml(step.job_data.error.substring(0, 1000))}</pre>
+                            </div>
+                            ` : ''}
+                        </div>
+                    </div>
+                    `;
+                }).join('')}
+            </div>
+            
+            <!-- Output Hash -->
+            ${nodeData.output_hash ? `
+            <div class="mb-4">
+                <h6 class="mb-2"><i class="bi bi-file-check"></i> Final Output</h6>
+                <div class="info-row">
+                    <div class="label">Output Hash</div>
+                    <div class="value">
+                        <div class="hash-display">
+                            <div class="hash-scroll">
+                                <code class="small">${nodeData.output_hash}</code>
+                            </div>
+                            <button class="btn btn-sm btn-outline-secondary" onclick="copyToClipboard('${nodeData.output_hash}')">
+                                <i class="bi bi-clipboard"></i>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            ` : ''}
+            
+            <!-- Error -->
+            ${nodeData.error ? `
+            <div class="alert alert-danger">
+                <h6 class="alert-heading"><i class="bi bi-exclamation-triangle-fill"></i> Node Error</h6>
+                <pre class="mb-0" style="white-space: pre-wrap; font-size: 0.8rem;">${escapeHtml(nodeData.error)}</pre>
+            </div>
+            ` : ''}
         `;
         
         document.getElementById('nodeDetails').innerHTML = html;

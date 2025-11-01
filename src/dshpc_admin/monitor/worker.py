@@ -458,7 +458,7 @@ class MonitorWorker:
         return methods_source
     
     def collect_pipelines(self):
-        """Collect pipeline data from MongoDB."""
+        """Collect pipeline data from MongoDB with enriched meta-job information."""
         pipelines_data = []
         
         try:
@@ -469,6 +469,108 @@ class MonitorWorker:
                 # Convert ObjectId to string for JSON serialization
                 if '_id' in pipeline:
                     del pipeline['_id']
+                
+                # Enrich nodes with full meta-job information
+                nodes = pipeline.get('nodes', {})
+                for node_id, node_data in nodes.items():
+                    meta_job_id = node_data.get('meta_job_id')
+                    if meta_job_id:
+                        try:
+                            # Fetch meta-job data
+                            meta_job = self.db.meta_jobs.find_one({'meta_job_id': meta_job_id})
+                            if meta_job:
+                                # Remove _id from meta_job
+                                if '_id' in meta_job:
+                                    del meta_job['_id']
+                                
+                                # Enrich initial input files with content previews
+                                initial_file_inputs = meta_job.get('initial_file_inputs', {})
+                                if initial_file_inputs:
+                                    initial_file_info = {}
+                                    for name, file_hash in initial_file_inputs.items():
+                                        try:
+                                            file_doc = self.db.files.find_one({'file_hash': file_hash})
+                                            if file_doc:
+                                                import base64
+                                                file_info = {
+                                                    'filename': file_doc.get('filename', 'unknown'),
+                                                    'size': file_doc.get('size', 0)
+                                                }
+                                                
+                                                # Get content preview (first 2000 chars)
+                                                if 'content' in file_doc:
+                                                    try:
+                                                        content_bytes = base64.b64decode(file_doc['content'])
+                                                        content_str = content_bytes.decode('utf-8')[:2000]
+                                                        file_info['content_preview'] = content_str
+                                                    except Exception:
+                                                        file_info['content_preview'] = None
+                                                
+                                                initial_file_info[name] = file_info
+                                        except Exception as e:
+                                            logger.debug(f"Could not load file info for {file_hash}: {e}")
+                                    
+                                    if initial_file_info:
+                                        meta_job['initial_file_info'] = initial_file_info
+                                
+                                # Enrich chain steps with job data (including outputs)
+                                chain = meta_job.get('chain', [])
+                                for step in chain:
+                                    job_id = step.get('job_id')
+                                    if job_id:
+                                        job = self.db.jobs.find_one({'job_id': job_id})
+                                        if job:
+                                            # Remove _id from job
+                                            if '_id' in job:
+                                                del job['_id']
+                                            
+                                            # Load output from GridFS if needed
+                                            if job.get('output_gridfs_id') and not job.get('output'):
+                                                try:
+                                                    import gridfs
+                                                    fs = gridfs.GridFS(self.db._database)
+                                                    grid_out = fs.get(job['output_gridfs_id'])
+                                                    # Get first 10KB as preview
+                                                    output_content = grid_out.read(10240).decode('utf-8')
+                                                    job['output'] = output_content
+                                                    job['output_truncated'] = True
+                                                except Exception as e:
+                                                    logger.debug(f"Could not load GridFS output for {job_id}: {e}")
+                                            
+                                            # Truncate very long outputs that are directly in the document
+                                            if job.get('output') and len(job['output']) > 10240:
+                                                job['output'] = job['output'][:10240]
+                                                job['output_truncated'] = True
+                                            
+                                            # Load file_info for each file input (needed for extraction path metadata)
+                                            if job.get('file_inputs'):
+                                                job['file_info'] = {}
+                                                for input_name, file_hash in job['file_inputs'].items():
+                                                    try:
+                                                        file_doc = self.db.files.find_one({'file_hash': file_hash})
+                                                        if file_doc:
+                                                            file_info = {
+                                                                'filename': file_doc.get('filename', 'unknown'),
+                                                                'size': file_doc.get('size', 0)
+                                                            }
+                                                            # Include metadata if available (contains extraction path info)
+                                                            if 'metadata' in file_doc:
+                                                                file_info['metadata'] = file_doc['metadata']
+                                                            
+                                                            job['file_info'][input_name] = file_info
+                                                    except Exception as e:
+                                                        logger.debug(f"Could not load file_info for {file_hash}: {e}")
+                                            
+                                            step['job_data'] = job
+                                            
+                                            # Debug logging to see what we have
+                                            has_output = 'output' in job and job['output']
+                                            logger.debug(f"Job {job_id}: status={job.get('status')}, has_output={has_output}, output_length={len(job.get('output', ''))}")
+                                
+                                # Add enriched meta_job_info to node
+                                node_data['meta_job_info'] = meta_job
+                        except Exception as e:
+                            logger.error(f"Error enriching node {node_id} with meta-job {meta_job_id}: {e}")
                 
                 pipelines_data.append(pipeline)
                 
