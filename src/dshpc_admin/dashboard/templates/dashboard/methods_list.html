@@ -168,6 +168,75 @@
                         </div>
                     </div>
                     
+                    <!-- Input Modes -->
+                    {% if method.input_modes %}
+                    <div class="mt-4">
+                        <h6 class="mb-3"><i class="bi bi-folder-symlink"></i> Input Modes</h6>
+                        <div class="row">
+                            <div class="col-md-4">
+                                <div class="card border-{% if method.input_modes.supports_no_input %}success{% else %}secondary{% endif %} mb-2">
+                                    <div class="card-body py-2 px-3">
+                                        <div class="d-flex align-items-center">
+                                            <i class="bi bi-{% if method.input_modes.supports_no_input %}check-circle-fill text-success{% else %}x-circle text-secondary{% endif %} me-2"></i>
+                                            <small><strong>No Input</strong></small>
+                                        </div>
+                                        <small class="text-muted d-block mt-1">Parameters only</small>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="col-md-4">
+                                <div class="card border-{% if method.input_modes.supports_single_file %}success{% else %}secondary{% endif %} mb-2">
+                                    <div class="card-body py-2 px-3">
+                                        <div class="d-flex align-items-center">
+                                            <i class="bi bi-{% if method.input_modes.supports_single_file %}check-circle-fill text-success{% else %}x-circle text-secondary{% endif %} me-2"></i>
+                                            <small><strong>Single File</strong></small>
+                                        </div>
+                                        <small class="text-muted d-block mt-1">One file input</small>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="col-md-4">
+                                <div class="card border-{% if method.input_modes.supports_multi_file %}success{% else %}secondary{% endif %} mb-2">
+                                    <div class="card-body py-2 px-3">
+                                        <div class="d-flex align-items-center">
+                                            <i class="bi bi-{% if method.input_modes.supports_multi_file %}check-circle-fill text-success{% else %}x-circle text-secondary{% endif %} me-2"></i>
+                                            <small><strong>Multi File</strong></small>
+                                        </div>
+                                        <small class="text-muted d-block mt-1">Multiple named inputs</small>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <!-- Multi-File Inputs Details -->
+                        {% if method.input_modes.supports_multi_file and method.input_modes.file_inputs %}
+                        <div class="mt-3">
+                            <h6 class="mb-2 small text-muted">Required File Inputs</h6>
+                            <div class="table-responsive">
+                                <table class="table table-sm table-bordered">
+                                    <thead class="table-light">
+                                        <tr>
+                                            <th style="width: 25%;">Input Name</th>
+                                            <th style="width: 20%;">Type</th>
+                                            <th style="width: 55%;">Description</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        {% for file_input in method.input_modes.file_inputs %}
+                                        <tr>
+                                            <td><code>{{ file_input.name }}</code></td>
+                                            <td><span class="badge bg-info">{{ file_input.type|default:"any" }}</span></td>
+                                            <td>{{ file_input.description|default:"-" }}</td>
+                                        </tr>
+                                        {% endfor %}
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                        {% endif %}
+                    </div>
+                    {% endif %}
+                    
                     <!-- Parameters -->
                     {% if method.parameters %}
                     <div class="mt-4">
@@ -319,6 +388,75 @@
                                 {% endif %}
                             </div>
                         </div>
+                        
+                        <!-- Input Modes -->
+                        {% if method.input_modes %}
+                        <div class="mt-4">
+                            <h6 class="mb-3"><i class="bi bi-folder-symlink"></i> Input Modes</h6>
+                            <div class="row">
+                                <div class="col-md-4">
+                                    <div class="card border-{% if method.input_modes.supports_no_input %}success{% else %}secondary{% endif %} mb-2">
+                                        <div class="card-body py-2 px-3">
+                                            <div class="d-flex align-items-center">
+                                                <i class="bi bi-{% if method.input_modes.supports_no_input %}check-circle-fill text-success{% else %}x-circle text-secondary{% endif %} me-2"></i>
+                                                <small><strong>No Input</strong></small>
+                                            </div>
+                                            <small class="text-muted d-block mt-1">Parameters only</small>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div class="col-md-4">
+                                    <div class="card border-{% if method.input_modes.supports_single_file %}success{% else %}secondary{% endif %} mb-2">
+                                        <div class="card-body py-2 px-3">
+                                            <div class="d-flex align-items-center">
+                                                <i class="bi bi-{% if method.input_modes.supports_single_file %}check-circle-fill text-success{% else %}x-circle text-secondary{% endif %} me-2"></i>
+                                                <small><strong>Single File</strong></small>
+                                            </div>
+                                            <small class="text-muted d-block mt-1">One file input</small>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div class="col-md-4">
+                                    <div class="card border-{% if method.input_modes.supports_multi_file %}success{% else %}secondary{% endif %} mb-2">
+                                        <div class="card-body py-2 px-3">
+                                            <div class="d-flex align-items-center">
+                                                <i class="bi bi-{% if method.input_modes.supports_multi_file %}check-circle-fill text-success{% else %}x-circle text-secondary{% endif %} me-2"></i>
+                                                <small><strong>Multi File</strong></small>
+                                            </div>
+                                            <small class="text-muted d-block mt-1">Multiple named inputs</small>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                            
+                            <!-- Multi-File Inputs Details -->
+                            {% if method.input_modes.supports_multi_file and method.input_modes.file_inputs %}
+                            <div class="mt-3">
+                                <h6 class="mb-2 small text-muted">Required File Inputs</h6>
+                                <div class="table-responsive">
+                                    <table class="table table-sm table-bordered">
+                                        <thead class="table-light">
+                                            <tr>
+                                                <th style="width: 25%;">Input Name</th>
+                                                <th style="width: 20%;">Type</th>
+                                                <th style="width: 55%;">Description</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                            {% for file_input in method.input_modes.file_inputs %}
+                                            <tr>
+                                                <td><code>{{ file_input.name }}</code></td>
+                                                <td><span class="badge bg-info">{{ file_input.type|default:"any" }}</span></td>
+                                                <td>{{ file_input.description|default:"-" }}</td>
+                                            </tr>
+                                            {% endfor %}
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </div>
+                            {% endif %}
+                        </div>
+                        {% endif %}
                         
                         <!-- Parameters -->
                         {% if method.parameters %}
