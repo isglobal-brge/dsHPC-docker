@@ -16,6 +16,7 @@ from dshpc_api.models.pipeline import (
 )
 from dshpc_api.utils.parameter_utils import sort_parameters
 from dshpc_api.utils.sorting_utils import sort_nodes, sort_dependencies, sort_chain, sort_file_inputs
+from dshpc_api.services.job_service import is_method_unavailable_error
 
 
 def compute_pipeline_hash(nodes: Dict[str, Any], function_hashes: Dict[str, List[str]]) -> str:
@@ -314,10 +315,36 @@ async def create_pipeline(pipeline_data: Dict[str, Any]) -> Tuple[str, str]:
                     break
             
             if not methods_changed:
-                # Same pipeline, same inputs -> would likely fail again
-                logger.info(f"✗ Pipeline previously failed with same configuration")
-                error_msg = existing_pipeline.get("error", "Unknown error")
-                raise ValueError(f"Pipeline previously failed: {error_msg}")
+                # Check if failure was due to method unavailability
+                error_msg = existing_pipeline.get("error", "")
+                
+                # Check all nodes for method unavailability errors
+                failed_method = is_method_unavailable_error(error_msg)
+                
+                # Also check individual node errors
+                if not failed_method:
+                    for node_id, node_data in existing_pipeline.get("nodes", {}).items():
+                        node_error = node_data.get("error", "")
+                        failed_method = is_method_unavailable_error(node_error)
+                        if failed_method:
+                            break
+                
+                if failed_method:
+                    # Check if method is now available
+                    from dshpc_api.services.job_service import get_latest_method_hash
+                    method_hash = await get_latest_method_hash(failed_method)
+                    if method_hash:
+                        logger.info(f"  ♻️  Method '{failed_method}' now available - deleting failed pipeline for retry")
+                        await db.pipelines.delete_one({"pipeline_hash": pipeline_hash})
+                        # Continue to create new pipeline below
+                    else:
+                        logger.info(f"  ✗ Method '{failed_method}' still not available")
+                        return pipeline_hash, f"Pipeline previously failed: {error_msg}"
+                else:
+                    # Same pipeline, same inputs -> would likely fail again
+                    logger.info(f"✗ Pipeline previously failed with same configuration (not method-related)")
+                    error_msg = existing_pipeline.get("error", "Unknown error")
+                    raise ValueError(f"Pipeline previously failed: {error_msg}")
             else:
                 # Methods may have changed, allow recomputation
                 logger.info(f"↻ Pipeline structure changed, will recompute")

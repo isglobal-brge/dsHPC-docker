@@ -26,6 +26,7 @@ from dshpc_api.services.method_service import check_method_functionality
 from dshpc_api.utils.parameter_utils import sort_parameters
 from dshpc_api.utils.sorting_utils import sort_file_inputs, sort_chain
 from dshpc_api.utils.file_input_resolver import resolve_and_inject_file_inputs
+from dshpc_api.services.job_service import is_method_unavailable_error
 import asyncio
 import logging
 
@@ -254,10 +255,24 @@ async def submit_meta_job(request: MetaJobRequest) -> Tuple[bool, str, Optional[
                         break
                 
                 if not methods_changed:
-                    # Same methods, same inputs -> fail fast
-                    logger.info(f"  ✗ Meta-job previously failed with same configuration")
+                    # Check if failure was due to method unavailability
                     error_msg = existing_meta_job.get("error", "Unknown error")
-                    return False, f"Meta-job previously failed: {error_msg}", None
+                    failed_method = is_method_unavailable_error(error_msg)
+                    
+                    if failed_method:
+                        # Check if method is now available
+                        method_hash = await get_latest_method_hash(failed_method)
+                        if method_hash:
+                            logger.info(f"  ♻️  Method '{failed_method}' now available - deleting failed meta-job for retry")
+                            await meta_jobs_db.meta_jobs.delete_one({"meta_job_hash": meta_job_hash})
+                            # Continue to create new meta-job below
+                        else:
+                            logger.info(f"  ✗ Method '{failed_method}' still not available")
+                            return False, f"Meta-job previously failed: {error_msg}", None
+                    else:
+                        # Not method-related failure - fail fast
+                        logger.info(f"  ✗ Meta-job previously failed with same configuration")
+                        return False, f"Meta-job previously failed: {error_msg}", None
                 else:
                     # Methods changed, allow recomputation
                     logger.info(f"  ↻ Methods changed, will recompute")

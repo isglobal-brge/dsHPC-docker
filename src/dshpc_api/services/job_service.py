@@ -47,6 +47,30 @@ STATUS_DESCRIPTIONS = {
 }
 
 
+def is_method_unavailable_error(error_message: str) -> Optional[str]:
+    """
+    Check if error is due to method unavailability.
+    
+    Args:
+        error_message: Error message to check
+        
+    Returns:
+        Method name if error is method-unavailable, None otherwise
+    """
+    if not error_message:
+        return None
+    
+    # Pattern: "Method 'X' validation failed: Method 'X' is not active"
+    # Pattern: "Method 'X' is not active"
+    # Pattern: "Method 'X' not found"
+    import re
+    match = re.search(r"Method '(\w+)' (validation failed|is not active|not found)", error_message, re.IGNORECASE)
+    if match:
+        return match.group(1)
+    
+    return None
+
+
 def compute_job_hash(
     file_hash: Optional[str] = None,
     file_inputs: Optional[Dict[str, str]] = None,
