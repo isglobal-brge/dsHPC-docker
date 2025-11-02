@@ -331,7 +331,15 @@ async def submit_job(
                 response_data = await response.json()
                 
                 if response.status != 200:
-                    return False, f"Error submitting job: {response_data.get('detail', 'Unknown error')}", None
+                    # Extract error message - FastAPI can return detail as string or dict
+                    detail = response_data.get('detail', 'Unknown error')
+                    if isinstance(detail, dict):
+                        error_msg = detail.get('message', detail.get('detail', str(detail)))
+                    else:
+                        error_msg = str(detail)
+                    
+                    logger.error(f"Slurm API error (status {response.status}): {error_msg}")
+                    return False, f"Error submitting job: {error_msg}", None
                 
                 # Get job details
                 job_hash_returned = response_data.get("job_hash")
