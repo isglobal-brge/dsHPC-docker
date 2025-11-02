@@ -117,6 +117,44 @@ def detect_cycles(nodes: Dict[str, Any]) -> Optional[List[str]]:
     return None
 
 
+def validate_single_terminal_node(nodes: Dict[str, Any]) -> None:
+    """
+    Validate that pipeline has exactly one terminal node (final output node).
+    
+    A terminal node is a node that no other node depends on.
+    
+    Args:
+        nodes: Dictionary of node_id -> node definition
+        
+    Raises:
+        ValueError: If pipeline doesn't have exactly one terminal node
+    """
+    # Find all nodes that are dependencies
+    all_dependencies = set()
+    for node in nodes.values():
+        deps = node.get("dependencies", [])
+        all_dependencies.update(deps)
+    
+    # Terminal nodes = nodes NOT in any dependency list
+    terminal_nodes = [nid for nid in nodes.keys() if nid not in all_dependencies]
+    
+    if len(terminal_nodes) == 0:
+        raise ValueError(
+            "Pipeline validation failed: No terminal node found. "
+            "All nodes are dependencies of other nodes (possible circular dependency)."
+        )
+    
+    if len(terminal_nodes) > 1:
+        raise ValueError(
+            f"Pipeline validation failed: Multiple terminal nodes detected: {terminal_nodes}. "
+            f"Pipelines must converge to exactly ONE final output node. "
+            f"Add a merge node that depends on all terminal nodes: {terminal_nodes}"
+        )
+    
+    # Exactly one terminal node - valid!
+    logger.info(f"Pipeline validation passed: Single terminal node '{terminal_nodes[0]}'")
+
+
 # Calculate depth levels for topological ordering
 def calculate_depth_levels(nodes: Dict[str, Any]) -> Dict[str, int]:
     """
@@ -224,6 +262,9 @@ async def create_pipeline(pipeline_data: Dict[str, Any]) -> Tuple[str, str]:
     cycle = detect_cycles(nodes)
     if cycle:
         raise ValueError(f"Circular dependency detected: {' → '.join(cycle)}")
+    
+    # Validate single terminal node
+    validate_single_terminal_node(nodes)
     
     # Calculate depth levels
     depth_levels = calculate_depth_levels(nodes)
