@@ -78,7 +78,7 @@ class CurrentStepInfo(BaseModel):
     step_number: int  # 1-based for user display
     method_name: str
     parameters: Dict[str, Any]
-    job_id: str
+    job_hash: str
     job_status: str
     status_description: str
     is_resubmitted: bool = False
