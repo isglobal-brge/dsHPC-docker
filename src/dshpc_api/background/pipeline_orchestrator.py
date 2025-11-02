@@ -14,6 +14,7 @@ from dshpc_api.models.pipeline import PipelineStatus, PipelineNodeStatus
 from dshpc_api.services.pipeline_service import resolve_references
 from dshpc_api.services.meta_job_service import get_meta_job_info
 from dshpc_api.models.meta_job import MetaJobRequest
+from dshpc_api.utils.file_input_resolver import resolve_and_inject_file_inputs
 
 
 async def extract_and_store_path(source_hash: str, path: str, pipeline_node: str, param_name: str) -> str:
@@ -132,75 +133,64 @@ async def check_and_submit_ready_nodes(pipeline_hash: str, pipeline_doc: Dict[st
             logger.info(f"Pipeline {pipeline_hash}: Node {node_id} dependencies met, submitting...")
             
             try:
-                # Resolve chain with references
+                # Resolve chain with file_inputs support
                 chain = copy.deepcopy(node_data["chain"])
+                files_db = await get_files_db()
                 
-                # Resolve references in parameters - extract values and pass directly
-                # All resolution happens server-side, no markers or file_inputs needed
+                # Create resolver function for pipeline nodes
+                def get_node_hash(source_id: str) -> str:
+                    # Skip "prev" - that's for meta-job internal use
+                    if source_id == "prev" or source_id.startswith("prev/"):
+                        return None  # Will be handled by meta-job processor
+                    
+                    if source_id in completed_outputs:
+                        return completed_outputs[source_id]
+                    else:
+                        raise ValueError(f"Node '{source_id}' not found or incomplete")
+                
+                # Resolve file_inputs references to actual hashes
                 for step_idx, step in enumerate(chain):
-                    if "parameters" in step and isinstance(step["parameters"], dict):
-                        resolved_params = {}
+                    step_file_inputs = step.get("file_inputs", {})
+                    if step_file_inputs:
+                        resolved_file_inputs = {}
                         
-                        for key, value in step["parameters"].items():
-                            if isinstance(value, str) and value.startswith("$ref:"):
-                                ref_full = value[5:]  # Remove "$ref:" prefix
+                        for input_name, ref_value in step_file_inputs.items():
+                            if isinstance(ref_value, str) and ref_value.startswith("$ref:"):
+                                ref_full = ref_value[5:]  # Remove "$ref:" prefix
                                 
-                                # $ref:prev is an internal meta-job reference (previous step in chain)
-                                # Don't resolve it here - let the meta-job system handle it
+                                # Skip prev refs - meta-job will handle
                                 if ref_full == "prev" or ref_full.startswith("prev/"):
-                                    resolved_params[key] = value  # Keep as-is
+                                    resolved_file_inputs[input_name] = ref_value
                                     continue
                                 
-                                # Check if it's a path reference: node_1/data/text
-                                if "/" in ref_full:
-                                    # Extract node_id (before first slash) and path (after)
-                                    ref_node = ref_full.split("/")[0]
-                                    ref_path = ref_full[len(ref_node)+1:]  # Everything after node_id/
-                                else:
-                                    ref_node = ref_full
-                                    ref_path = None
+                                # Parse node reference
+                                ref_node = ref_full.split("/")[0] if "/" in ref_full else ref_full
+                                ref_path = ref_full[len(ref_node)+1:] if "/" in ref_full else None
                                 
-                                if ref_node in completed_outputs:
-                                    output_hash = completed_outputs[ref_node]
-                                    
-                                    # Extract value from output and pass directly as parameter
-                                    # NO markers - server resolves everything
-                                    files_db = await get_files_db()
-                                    output_doc = await files_db.files.find_one({"file_hash": output_hash})
-                                    if not output_doc:
-                                        raise ValueError(f"Output from {ref_node} not found: {output_hash}")
-                                    
-                                    # Decode content
-                                    import base64
-                                    content_bytes = base64.b64decode(output_doc["content"])
-                                    content_str = content_bytes.decode('utf-8')
-                                    
-                                    # Parse JSON
-                                    try:
-                                        output_data = json.loads(content_str)
-                                    except json.JSONDecodeError as e:
-                                        raise ValueError(f"Failed to parse output from {ref_node}: {e}")
-                                    
-                                    # If path extraction needed, navigate to the value
-                                    if ref_path:
-                                        current = output_data
-                                        parts = ref_path.split("/")
-                                        for part in parts:
-                                            if isinstance(current, dict) and part in current:
-                                                current = current[part]
-                                            else:
-                                                raise ValueError(f"Path {ref_path} not found in {ref_node} output")
-                                        # Pass extracted value directly as parameter
-                                        resolved_params[key] = current
-                                    else:
-                                        # Pass full output directly as parameter
-                                        resolved_params[key] = output_data
-                                else:
+                                if ref_node not in completed_outputs:
                                     raise ValueError(f"Reference to incomplete node: {ref_node}")
+                                
+                                output_hash = completed_outputs[ref_node]
+                                
+                                # If path extraction needed, create a new file with extracted content
+                                if ref_path:
+                                    extracted_hash = await extract_and_store_path(
+                                        output_hash, ref_path, node_id, input_name
+                                    )
+                                    resolved_file_inputs[input_name] = extracted_hash
+                                else:
+                                    # Use full output hash
+                                    resolved_file_inputs[input_name] = output_hash
                             else:
-                                resolved_params[key] = value
+                                # Direct hash
+                                resolved_file_inputs[input_name] = ref_value
                         
-                        step["parameters"] = resolved_params
+                        # Update step with resolved file_inputs
+                        step["file_inputs"] = resolved_file_inputs
+                        logger.info(f"Pipeline {pipeline_hash}: Resolved file_inputs for node {node_id} step {step_idx}: {resolved_file_inputs}")
+                    
+                    # Keep parameters as-is (no $ref resolution in parameters anymore)
+                    # All inputs must come through file_inputs
                 
                 # Determine input file hash (only for nodes with explicit file inputs)
                 input_hash = None

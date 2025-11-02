@@ -20,6 +20,7 @@ class MethodChainStep(BaseModel):
     """A single step in a method processing chain."""
     method_name: str
     parameters: Optional[Dict[str, Any]] = Field(default_factory=dict)
+    file_inputs: Optional[Dict[str, str]] = Field(None, description="Named file inputs with $ref support")
 
 
 class MetaJobRequest(BaseModel):

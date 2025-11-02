@@ -25,6 +25,7 @@ from dshpc_api.services.job_service import (
 from dshpc_api.services.method_service import check_method_functionality
 from dshpc_api.utils.parameter_utils import sort_parameters
 from dshpc_api.utils.sorting_utils import sort_file_inputs, sort_chain
+from dshpc_api.utils.file_input_resolver import resolve_and_inject_file_inputs
 import asyncio
 import logging
 
@@ -280,7 +281,7 @@ async def submit_meta_job(request: MetaJobRequest) -> Tuple[bool, str, Optional[
                 else:
                     step_input = request.initial_file_hash
             
-            chain_info.append({
+            step_info = {
                 "step": i,
                 "method_name": step.method_name,
                 "function_hash": function_hash,
@@ -291,7 +292,14 @@ async def submit_meta_job(request: MetaJobRequest) -> Tuple[bool, str, Optional[
                 "job_hash": None,
                 "status": "pending",
                 "cached": False
-            })
+            }
+            
+            # Include file_inputs if defined in step (from chain definition)
+            if step.file_inputs is not None:
+                step_info["file_inputs"] = step.file_inputs
+                logger.info(f"  Step {i} has file_inputs: {list(step.file_inputs.keys())}")
+            
+            chain_info.append(step_info)
         
         # Create meta-job document with hash as primary ID
         meta_job_doc = {
@@ -381,68 +389,50 @@ async def process_meta_job_chain(meta_job_hash: str):
             step["input_file_hash"] = step_file_hash
             step["input_file_inputs"] = step_file_inputs
             
-            # Resolve $ref:prev references in parameters BEFORE cache lookup
+            # Resolve file_inputs $ref to actual hashes
+            from dshpc_api.services.db_service import get_files_db
+            files_db = await get_files_db()
+            
+            # Get step's file_inputs definition (may contain $ref)
+            step_file_inputs_with_refs = step.get("file_inputs", {})
+            resolved_file_inputs = {}
+            
+            if step_file_inputs_with_refs:
+                logger.info(f"Meta-job {meta_job_hash} step {i}: Processing file_inputs: {step_file_inputs_with_refs}")
+                for input_name, ref_value in step_file_inputs_with_refs.items():
+                    if isinstance(ref_value, str) and ref_value.startswith("$ref:prev"):
+                        if i == 0:
+                            raise ValueError(f"Cannot use $ref:prev in first step of meta-job")
+                        
+                        prev_step = meta_job["chain"][i-1]
+                        prev_hash = prev_step.get("output_hash")
+                        if not prev_hash:
+                            raise ValueError(f"Previous step {i-1} has no output")
+                        
+                        # Check if path extraction needed
+                        if ref_value.startswith("$ref:prev/"):
+                            ref_path = ref_value[10:]  # Remove "$ref:prev/"
+                            # Extract and store path as new file
+                            from dshpc_api.background.pipeline_orchestrator import extract_and_store_path
+                            extracted_hash = await extract_and_store_path(
+                                prev_hash, ref_path, f"metajob_{meta_job_hash[:12]}", input_name
+                            )
+                            resolved_file_inputs[input_name] = extracted_hash
+                        else:
+                            # Use full prev output
+                            resolved_file_inputs[input_name] = prev_hash
+                    else:
+                        # Direct hash
+                        resolved_file_inputs[input_name] = ref_value
+                
+                logger.info(f"Meta-job {meta_job_hash} step {i}: Resolved file_inputs: {resolved_file_inputs}")
+            
+            # Keep parameters as-is (no resolution)
             resolved_params = step["parameters"].copy()
-            # Start with existing file_inputs (if any)
-            resolved_file_inputs = accumulated_file_inputs.copy()
             
-            if i > 0:
-                # Get previous step's output
-                prev_step = meta_job["chain"][i-1]
-                prev_output_hash = prev_step.get("output_hash")
-                
-                if not prev_output_hash:
-                    raise Exception(f"Previous step {i-1} has no output_hash")
-                
-                # Resolve $ref:prev references - extract values and pass directly as parameters
-                # This is internal to meta-job chains, not like pipeline references
-                for param_key, param_value in list(resolved_params.items()):
-                    if isinstance(param_value, str) and param_value.startswith("$ref:prev"):
-                        # Get previous step's output content
-                        from dshpc_api.services.db_service import get_files_db
-                        files_db = await get_files_db()
-                        
-                        prev_output_doc = await files_db.files.find_one({"file_hash": prev_output_hash})
-                        if not prev_output_doc:
-                            raise Exception(f"Previous step output {prev_output_hash} not found")
-                        
-                        # Decode content
-                        import base64
-                        content_bytes = base64.b64decode(prev_output_doc["content"])
-                        content_str = content_bytes.decode('utf-8')
-                        
-                        # Parse JSON
-                        try:
-                            prev_output = json.loads(content_str)
-                        except json.JSONDecodeError as e:
-                            raise Exception(f"Failed to parse previous step output: {e}")
-                        
-                        if param_value == "$ref:prev":
-                            # Full output reference - pass entire output as parameter
-                            # This might be too large for direct params, but keeping for compatibility
-                            resolved_params[param_key] = prev_output
-                        elif param_value.startswith("$ref:prev/"):
-                            # Path extraction - extract specific field and pass as parameter
-                            path = param_value[10:]  # Remove "$ref:prev/"
-                            
-                            # Navigate path
-                            current = prev_output
-                            parts = path.split("/")
-                            for part in parts:
-                                if isinstance(current, dict) and part in current:
-                                    current = current[part]
-                                else:
-                                    raise ValueError(f"Path {path} not found in previous output")
-                            
-                            # Pass extracted value directly as parameter
-                            resolved_params[param_key] = current
-            
-            # Update accumulated_file_inputs with newly resolved inputs for next step
-            if resolved_file_inputs:
-                accumulated_file_inputs = resolved_file_inputs.copy()
-            
-            # Use resolved parameters and file inputs for cache lookup
-            lookup_file_inputs = resolved_file_inputs if resolved_file_inputs else step_file_inputs
+            # Use resolved file_inputs for this job submission
+            # If step defines file_inputs, use those (resolved). Otherwise use step_file_inputs (legacy/accumulated)
+            lookup_file_inputs = resolved_file_inputs if step_file_inputs_with_refs else step_file_inputs
             
             # Check if this step already exists (deduplication)
             existing_job = await find_existing_job(
