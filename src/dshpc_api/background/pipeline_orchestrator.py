@@ -57,13 +57,15 @@ async def extract_and_store_path(source_hash: str, path: str, pipeline_node: str
         else:
             raise ValueError(f"Path '{path}' not found in source file {source_hash}")
     
-    # Create new JSON with extracted value
-    # Wrap in a simple structure that scripts can easily read
-    extracted_data = {
-        "value": result,
-        "extracted_from": source_hash,
-        "path": path
-    }
+    # Create new JSON with ONLY the extracted value
+    # Store the value in the same structure as the original
+    # If the extracted value is a primitive (string, number), wrap it in data/text structure
+    if isinstance(result, (str, int, float, bool)):
+        # Primitive value: wrap in standard structure
+        extracted_data = {"data": {"text": str(result)}}
+    else:
+        # Complex value (dict, list): store as-is
+        extracted_data = result
     
     extracted_json = json.dumps(extracted_data, indent=2)
     extracted_bytes = extracted_json.encode('utf-8')
@@ -87,10 +89,12 @@ async def extract_and_store_path(source_hash: str, path: str, pipeline_node: str
             "metadata": {
                 "source": "path_extraction",
                 "source_hash": source_hash,
-                "path": path,
+                "extracted_path": path,
                 "pipeline_node": pipeline_node,
-                "parameter": param_name
-            }
+                "parameter": param_name,
+                "extraction_type": "primitive" if isinstance(result, (str, int, float, bool)) else "complex"
+            },
+            "status": "completed"
         }},
         upsert=True
     )

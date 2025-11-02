@@ -192,16 +192,6 @@ fi
 ) &
 echo -e "${GREEN}>> Configuration monitor started (checks /config/slurm.conf every 30s)${NC}"
 
-# Start methods monitor in background (checks for method changes every 30s)
-(
-    while true; do
-        sleep 30
-        echo -e "${CYAN}>> Checking for method changes...${NC}"
-        bash /load-methods.sh 2>&1 | grep -v "Updating method status\|marked.*methods as inactive" || true
-    done
-) &
-echo -e "${GREEN}>> Methods monitor started (checks /environment/methods every 30s)${NC}"
-
 # Start FastAPI application using API_PYTHON environment
 cd /app
 echo -e ""
