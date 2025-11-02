@@ -26,7 +26,7 @@ from dshpc_api.services.method_service import check_method_functionality
 from dshpc_api.utils.parameter_utils import sort_parameters
 from dshpc_api.utils.sorting_utils import sort_file_inputs, sort_chain
 from dshpc_api.utils.file_input_resolver import resolve_and_inject_file_inputs
-from dshpc_api.services.job_service import is_method_unavailable_error
+from dshpc_api.services.job_service import is_method_unavailable_error, is_file_not_found_error
 import asyncio
 import logging
 
@@ -270,9 +270,25 @@ async def submit_meta_job(request: MetaJobRequest) -> Tuple[bool, str, Optional[
                             logger.info(f"  ✗ Method '{failed_method}' still not available")
                             return False, f"Meta-job previously failed: {error_msg}", None
                     else:
-                        # Not method-related failure - fail fast
-                        logger.info(f"  ✗ Meta-job previously failed with same configuration")
-                        return False, f"Meta-job previously failed: {error_msg}", None
+                        # Check for file not found
+                        missing_file_hash = is_file_not_found_error(error_msg)
+                        
+                        if missing_file_hash:
+                            # Check if file now exists
+                            files_db = await get_files_db()
+                            file_doc = await files_db.files.find_one({"file_hash": missing_file_hash})
+                            
+                            if file_doc and file_doc.get("status") == "completed":
+                                logger.info(f"  ♻️  File {missing_file_hash[:12]}... now available - deleting failed meta-job for retry")
+                                await meta_jobs_db.meta_jobs.delete_one({"meta_job_hash": meta_job_hash})
+                                # Continue to create new meta-job below
+                            else:
+                                logger.info(f"  ✗ File {missing_file_hash[:12]}... still not available")
+                                return False, f"Meta-job previously failed: {error_msg}", None
+                        else:
+                            # Not file-related or method-related - fail fast
+                            logger.info(f"  ✗ Meta-job previously failed with same configuration")
+                            return False, f"Meta-job previously failed: {error_msg}", None
                 else:
                     # Methods changed, allow recomputation
                     logger.info(f"  ↻ Methods changed, will recompute")

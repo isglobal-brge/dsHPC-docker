@@ -71,6 +71,30 @@ def is_method_unavailable_error(error_message: str) -> Optional[str]:
     return None
 
 
+def is_file_not_found_error(error_message: str) -> Optional[str]:
+    """
+    Check if error is due to file not found.
+    
+    Args:
+        error_message: Error message to check
+        
+    Returns:
+        File hash if error is file-not-found, None otherwise
+    """
+    if not error_message:
+        return None
+    
+    # Pattern: "File with hash 'X' not found"
+    # Pattern: "File 'name' with hash X not found"
+    # Pattern: "Initial file with hash X not found"
+    import re
+    match = re.search(r"[Ff]ile.*hash['\s]+([a-f0-9]{64})['\s]+not found", error_message)
+    if match:
+        return match.group(1)
+    
+    return None
+
+
 def compute_job_hash(
     file_hash: Optional[str] = None,
     file_inputs: Optional[Dict[str, str]] = None,

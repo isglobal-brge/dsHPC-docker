@@ -16,7 +16,7 @@ from dshpc_api.models.pipeline import (
 )
 from dshpc_api.utils.parameter_utils import sort_parameters
 from dshpc_api.utils.sorting_utils import sort_nodes, sort_dependencies, sort_chain, sort_file_inputs
-from dshpc_api.services.job_service import is_method_unavailable_error
+from dshpc_api.services.job_service import is_method_unavailable_error, is_file_not_found_error
 
 
 def compute_pipeline_hash(nodes: Dict[str, Any], function_hashes: Dict[str, List[str]]) -> str:
@@ -341,10 +341,34 @@ async def create_pipeline(pipeline_data: Dict[str, Any]) -> Tuple[str, str]:
                         logger.info(f"  ✗ Method '{failed_method}' still not available")
                         return pipeline_hash, f"Pipeline previously failed: {error_msg}"
                 else:
-                    # Same pipeline, same inputs -> would likely fail again
-                    logger.info(f"✗ Pipeline previously failed with same configuration (not method-related)")
-                    error_msg = existing_pipeline.get("error", "Unknown error")
-                    raise ValueError(f"Pipeline previously failed: {error_msg}")
+                    # Check for file not found
+                    missing_file_hash = is_file_not_found_error(error_msg)
+                    
+                    # Also check node errors
+                    if not missing_file_hash:
+                        for node_id, node_data in existing_pipeline.get("nodes", {}).items():
+                            node_error = node_data.get("error", "")
+                            missing_file_hash = is_file_not_found_error(node_error)
+                            if missing_file_hash:
+                                break
+                    
+                    if missing_file_hash:
+                        # Check if file now exists
+                        files_db = await get_files_db()
+                        file_doc = await files_db.files.find_one({"file_hash": missing_file_hash})
+                        
+                        if file_doc and file_doc.get("status") == "completed":
+                            logger.info(f"  ♻️  File {missing_file_hash[:12]}... now available - deleting failed pipeline for retry")
+                            await db.pipelines.delete_one({"pipeline_hash": pipeline_hash})
+                            # Continue to create new pipeline below
+                        else:
+                            logger.info(f"  ✗ File {missing_file_hash[:12]}... still not available")
+                            return pipeline_hash, f"Pipeline previously failed: {error_msg}"
+                    else:
+                        # Not file or method related - fail fast
+                        logger.info(f"✗ Pipeline previously failed with same configuration (not file or method related)")
+                        error_msg = existing_pipeline.get("error", "Unknown error")
+                        raise ValueError(f"Pipeline previously failed: {error_msg}")
             else:
                 # Methods may have changed, allow recomputation
                 logger.info(f"↻ Pipeline structure changed, will recompute")
