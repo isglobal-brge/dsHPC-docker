@@ -178,21 +178,57 @@
                         <h6 class="mb-3"><i class="bi bi-folder2-open"></i> Initial Input Files</h6>
                         
                         {% if meta_job.initial_file_inputs %}
-                                {% for name, hash in meta_job.initial_file_inputs.items %}
+                                {% for name, hash_or_array in meta_job.initial_file_inputs.items %}
                             <div class="info-row">
-                                <div class="label">{{ name }}</div>
-                                <div class="value">
-                                    {% if meta_job.initial_file_names and name in meta_job.initial_file_names %}
-                                        <div><strong>{{ meta_job.initial_file_names|lookup:name }}</strong></div>
+                                <div class="label">
+                                    {{ name }}
+                                    {% if hash_or_array is iterable and hash_or_array is not string %}
+                                        <span class="badge bg-info ms-1">Array[{{ hash_or_array|length }}]</span>
                                     {% endif %}
-                                    <div class="hash-display">
-                                        <div class="hash-scroll">
-                                            <code class="small">{{ hash }}</code>
+                                </div>
+                                <div class="value">
+                                    {% if hash_or_array is iterable and hash_or_array is not string %}
+                                        <!-- Array of files -->
+                                        <div class="accordion accordion-flush" id="arrayAccordion{{ name }}">
+                                            <div class="accordion-item">
+                                                <h2 class="accordion-header">
+                                                    <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#arrayContent{{ name }}">
+                                                        <i class="bi bi-collection"></i> {{ hash_or_array|length }} files
+                                                    </button>
+                                                </h2>
+                                                <div id="arrayContent{{ name }}" class="accordion-collapse collapse" data-bs-parent="#arrayAccordion{{ name }}">
+                                                    <div class="accordion-body">
+                                                        {% for hash in hash_or_array %}
+                                                        <div class="mb-2">
+                                                            <small class="text-muted">[{{ forloop.counter0 }}]</small>
+                                                            <div class="hash-display">
+                                                                <div class="hash-scroll">
+                                                                    <code class="small">{{ hash }}</code>
+                                                                </div>
+                                                                <button class="btn btn-sm btn-outline-secondary" onclick="copyToClipboard('{{ hash }}')">
+                                                                    <i class="bi bi-clipboard"></i>
+                                                                </button>
+                                                            </div>
+                                                        </div>
+                                                        {% endfor %}
+                                                    </div>
+                                                </div>
+                                            </div>
                                         </div>
-                                        <button class="btn btn-sm btn-outline-secondary" onclick="copyToClipboard('{{ hash }}')">
-                                            <i class="bi bi-clipboard"></i>
-                                        </button>
-                                    </div>
+                                    {% else %}
+                                        <!-- Single file -->
+                                        {% if meta_job.initial_file_names and name in meta_job.initial_file_names %}
+                                            <div><strong>{{ meta_job.initial_file_names|lookup:name }}</strong></div>
+                                        {% endif %}
+                                        <div class="hash-display">
+                                            <div class="hash-scroll">
+                                                <code class="small">{{ hash_or_array }}</code>
+                                            </div>
+                                            <button class="btn btn-sm btn-outline-secondary" onclick="copyToClipboard('{{ hash_or_array }}')">
+                                                <i class="bi bi-clipboard"></i>
+                                            </button>
+                                        </div>
+                                    {% endif %}
                                 </div>
                             </div>
                             {% endfor %}
