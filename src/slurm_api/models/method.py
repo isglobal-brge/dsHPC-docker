@@ -1,4 +1,4 @@
-from typing import Dict, List, Any, Optional
+from typing import Dict, List, Any, Optional, Union
 from pydantic import BaseModel, Field
 
 class MethodParameter(BaseModel):
@@ -25,6 +25,6 @@ class MethodExecution(BaseModel):
     """Model for method execution."""
     function_hash: str
     file_hash: Optional[str] = None  # Single file (legacy)
-    file_inputs: Optional[Dict[str, str]] = None  # Multi-file (new)
+    file_inputs: Optional[Dict[str, Union[str, List[str]]]] = None  # Multi-file - supports str (single) or List[str] (array)
     parameters: Dict[str, Any] = Field(default_factory=dict)
     name: Optional[str] = None 

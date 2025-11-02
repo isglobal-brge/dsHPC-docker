@@ -431,7 +431,36 @@ async def process_meta_job_chain(meta_job_hash: str):
             if step_file_inputs_with_refs:
                 logger.info(f"Meta-job {meta_job_hash} step {i}: Processing file_inputs: {step_file_inputs_with_refs}")
                 for input_name, ref_value in step_file_inputs_with_refs.items():
-                    if isinstance(ref_value, str) and ref_value.startswith("$ref:prev"):
+                    if isinstance(ref_value, list):
+                        # Array of files - resolve each element
+                        resolved_array = []
+                        for idx, item in enumerate(ref_value):
+                            if isinstance(item, str) and item.startswith("$ref:prev"):
+                                if i == 0:
+                                    raise ValueError(f"Cannot use $ref:prev in first step of meta-job")
+                                
+                                prev_step = meta_job["chain"][i-1]
+                                prev_hash = prev_step.get("output_hash")
+                                if not prev_hash:
+                                    raise ValueError(f"Previous step {i-1} has no output")
+                                
+                                # Check if path extraction needed
+                                if item.startswith("$ref:prev/"):
+                                    ref_path = item[10:]  # Remove "$ref:prev/"
+                                    from dshpc_api.background.pipeline_orchestrator import extract_and_store_path
+                                    extracted_hash = await extract_and_store_path(
+                                        prev_hash, ref_path, f"metajob_{meta_job_hash[:12]}", f"{input_name}_{idx}"
+                                    )
+                                    resolved_array.append(extracted_hash)
+                                else:
+                                    # Use full prev output
+                                    resolved_array.append(prev_hash)
+                            else:
+                                # Direct hash or other reference
+                                resolved_array.append(item)
+                        resolved_file_inputs[input_name] = resolved_array
+                    elif isinstance(ref_value, str) and ref_value.startswith("$ref:prev"):
+                        # Single file with $ref:prev
                         if i == 0:
                             raise ValueError(f"Cannot use $ref:prev in first step of meta-job")
                         
@@ -453,7 +482,7 @@ async def process_meta_job_chain(meta_job_hash: str):
                             # Use full prev output
                             resolved_file_inputs[input_name] = prev_hash
                     else:
-                        # Direct hash
+                        # Direct hash (single file, no ref)
                         resolved_file_inputs[input_name] = ref_value
                 
                 logger.info(f"Meta-job {meta_job_hash} step {i}: Resolved file_inputs: {resolved_file_inputs}")

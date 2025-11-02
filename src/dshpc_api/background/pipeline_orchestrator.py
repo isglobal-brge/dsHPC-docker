@@ -159,7 +159,41 @@ async def check_and_submit_ready_nodes(pipeline_hash: str, pipeline_doc: Dict[st
                         resolved_file_inputs = {}
                         
                         for input_name, ref_value in step_file_inputs.items():
-                            if isinstance(ref_value, str) and ref_value.startswith("$ref:"):
+                            if isinstance(ref_value, list):
+                                # Array of files - resolve each element
+                                resolved_array = []
+                                for idx, item in enumerate(ref_value):
+                                    if isinstance(item, str) and item.startswith("$ref:"):
+                                        ref_full = item[5:]  # Remove "$ref:"
+                                        
+                                        # Skip prev refs - meta-job will handle
+                                        if ref_full == "prev" or ref_full.startswith("prev/"):
+                                            resolved_array.append(item)
+                                            continue
+                                        
+                                        # Parse node reference
+                                        ref_node = ref_full.split("/")[0] if "/" in ref_full else ref_full
+                                        ref_path = ref_full[len(ref_node)+1:] if "/" in ref_full else None
+                                        
+                                        if ref_node not in completed_outputs:
+                                            raise ValueError(f"Reference to incomplete node: {ref_node}")
+                                        
+                                        output_hash = completed_outputs[ref_node]
+                                        
+                                        # If path extraction needed
+                                        if ref_path:
+                                            extracted_hash = await extract_and_store_path(
+                                                output_hash, ref_path, node_id, f"{input_name}_{idx}"
+                                            )
+                                            resolved_array.append(extracted_hash)
+                                        else:
+                                            resolved_array.append(output_hash)
+                                    else:
+                                        # Direct hash
+                                        resolved_array.append(item)
+                                resolved_file_inputs[input_name] = resolved_array
+                            elif isinstance(ref_value, str) and ref_value.startswith("$ref:"):
+                                # Single file with $ref
                                 ref_full = ref_value[5:]  # Remove "$ref:" prefix
                                 
                                 # Skip prev refs - meta-job will handle
@@ -186,7 +220,7 @@ async def check_and_submit_ready_nodes(pipeline_hash: str, pipeline_doc: Dict[st
                                     # Use full output hash
                                     resolved_file_inputs[input_name] = output_hash
                             else:
-                                # Direct hash
+                                # Direct hash (single file, no ref)
                                 resolved_file_inputs[input_name] = ref_value
                         
                         # Update step with resolved file_inputs

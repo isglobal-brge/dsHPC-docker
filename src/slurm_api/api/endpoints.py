@@ -34,14 +34,25 @@ async def submit_job(job: JobSubmission):
         # Validate file(s) exist in database
         logger.info("Starting file validation...")
         if job.file_inputs:
-            # Multi-file: validate all files
-            for name, file_hash in job.file_inputs.items():
-                file_doc = find_file_by_hash(file_hash)
-                if not file_doc:
-                    raise HTTPException(
-                        status_code=400,
-                        detail=f"File '{name}' with hash {file_hash} not found in database"
-                    )
+            # Multi-file: validate all files (handles both single files and arrays)
+            for name, file_ref in job.file_inputs.items():
+                if isinstance(file_ref, list):
+                    # Array of files
+                    for idx, file_hash in enumerate(file_ref):
+                        file_doc = find_file_by_hash(file_hash)
+                        if not file_doc:
+                            raise HTTPException(
+                                status_code=400,
+                                detail=f"File '{name}[{idx}]' with hash {file_hash} not found in database"
+                            )
+                else:
+                    # Single file
+                    file_doc = find_file_by_hash(file_ref)
+                    if not file_doc:
+                        raise HTTPException(
+                            status_code=400,
+                            detail=f"File '{name}' with hash {file_ref} not found in database"
+                        )
         else:
             # Single file (optional for params-only jobs)
             if job.file_hash:

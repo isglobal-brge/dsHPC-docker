@@ -1,5 +1,5 @@
 from pydantic import BaseModel, Field, validator
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, Union, List
 from enum import Enum
 
 class JobStatus(str, Enum):
@@ -24,7 +24,7 @@ class JobSubmission(BaseModel):
     name: Optional[str] = None
     parameters: Optional[Dict[str, Any]] = None
     file_hash: Optional[str] = None  # Single file (legacy)
-    file_inputs: Optional[Dict[str, str]] = None  # Multi-file (new)
+    file_inputs: Optional[Dict[str, Union[str, List[str]]]] = None  # Multi-file - supports str (single) or List[str] (array)
     function_hash: str
     job_hash: Optional[str] = None  # Pre-computed job hash from dshpc_api
     

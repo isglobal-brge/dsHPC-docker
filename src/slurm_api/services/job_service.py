@@ -34,29 +34,58 @@ def prepare_job_script(job_hash: str, job: JobSubmission) -> str:
     
     if job.file_inputs:
         # Multi-file: download each to its named folder
-        logger.info(f"Multi-file mode: {len(job.file_inputs)} files")
-        for input_name, file_hash in job.file_inputs.items():
-            logger.info(f"  Downloading '{input_name}': {file_hash[:12]}...")
-            
-            # Check file exists
-            file_doc = find_file_by_hash(file_hash)
-            if not file_doc:
-                logger.error(f"File '{input_name}' not found")
-                raise ValueError(f"File '{input_name}' with hash {file_hash} not found in database")
-            
-            # Create folder for this input
-            file_folder = os.path.join(workspace_dir, input_name)
-            os.makedirs(file_folder, exist_ok=True)
-            logger.info(f"    Folder created: {file_folder}")
-            
-            # Download file
-            success, message, file_path = download_file(file_hash, file_folder)
-            if not success:
-                logger.error(f"Download failed for '{input_name}': {message}")
-                raise ValueError(f"Failed to download file '{input_name}': {message}")
-            
-            logger.info(f"    Downloaded to: {file_path}")
-            file_paths[input_name] = file_path
+        logger.info(f"Multi-file mode: {len(job.file_inputs)} inputs")
+        for input_name, file_ref in job.file_inputs.items():
+            if isinstance(file_ref, list):
+                # Array of files
+                logger.info(f"  Input '{input_name}': array with {len(file_ref)} files")
+                file_paths[input_name] = []
+                
+                for idx, file_hash in enumerate(file_ref):
+                    logger.info(f"    [{idx}] Downloading: {file_hash[:12]}...")
+                    
+                    # Check file exists
+                    file_doc = find_file_by_hash(file_hash)
+                    if not file_doc:
+                        logger.error(f"File '{input_name}[{idx}]' not found")
+                        raise ValueError(f"File '{input_name}[{idx}]' with hash {file_hash} not found in database")
+                    
+                    # Create subfolder: workspace/input_name/idx/
+                    file_folder = os.path.join(workspace_dir, input_name, str(idx))
+                    os.makedirs(file_folder, exist_ok=True)
+                    
+                    # Download file
+                    success, message, file_path = download_file(file_hash, file_folder)
+                    if not success:
+                        logger.error(f"Download failed for '{input_name}[{idx}]': {message}")
+                        raise ValueError(f"Failed to download file '{input_name}[{idx}]': {message}")
+                    
+                    logger.info(f"      Downloaded to: {file_path}")
+                    file_paths[input_name].append(file_path)
+            else:
+                # Single file
+                file_hash = file_ref
+                logger.info(f"  Downloading '{input_name}': {file_hash[:12]}...")
+                
+                # Check file exists
+                file_doc = find_file_by_hash(file_hash)
+                if not file_doc:
+                    logger.error(f"File '{input_name}' not found")
+                    raise ValueError(f"File '{input_name}' with hash {file_hash} not found in database")
+                
+                # Create folder for this input
+                file_folder = os.path.join(workspace_dir, input_name)
+                os.makedirs(file_folder, exist_ok=True)
+                logger.info(f"    Folder created: {file_folder}")
+                
+                # Download file
+                success, message, file_path = download_file(file_hash, file_folder)
+                if not success:
+                    logger.error(f"Download failed for '{input_name}': {message}")
+                    raise ValueError(f"Failed to download file '{input_name}': {message}")
+                
+                logger.info(f"    Downloaded to: {file_path}")
+                file_paths[input_name] = file_path
     else:
         # Single file: use "input" folder (unified approach)
         # Handle case where there's no input file (params-only job)
@@ -182,10 +211,15 @@ def prepare_job_script(job_hash: str, job: JobSubmission) -> str:
             # For args[1] (backward compat): use first file or empty file if params-only
             # Single file: file_paths["input"]
             # Multi-file: file_paths[first_key] (sorted alphabetically)
+            # Array: file_paths[first_key][0] (first element)
             # Params-only: use empty_input.json
             if file_paths:
                 first_file_key = sorted(file_paths.keys())[0]
                 first_file_path = file_paths[first_file_key]
+                
+                # If it's an array, take the first element
+                if isinstance(first_file_path, list):
+                    first_file_path = first_file_path[0] if len(first_file_path) > 0 else os.path.join(workspace_dir, "empty_input.json")
             else:
                 # Params-only: use the empty input file we created earlier
                 first_file_path = os.path.join(workspace_dir, "empty_input.json")
