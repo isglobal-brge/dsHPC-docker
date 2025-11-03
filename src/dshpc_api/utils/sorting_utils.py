@@ -29,17 +29,36 @@ def sort_dict_recursive(data: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     return _sort_dict_recursive(data)
 
 
-def sort_file_inputs(file_inputs: Optional[Dict[str, str]]) -> Dict[str, str]:
+def sort_file_inputs(file_inputs: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     """
     Sort file inputs dictionary by key name alphabetically.
     
-    Used for multi-file operations to ensure consistent ordering.
+    Used for multi-file operations to ensure consistent ordering for hash computation.
+    
+    IMPORTANT: This function only sorts the KEYS (input names) alphabetically.
+    The VALUES (file hashes or arrays of hashes) are NOT modified or sorted.
+    
+    For array values (e.g., inputs: ["hash3", "hash1", "hash2"]), the array order
+    is PRESERVED EXACTLY as provided. If sorting of array elements is required,
+    it must be done client-side before submitting to the API.
     
     Args:
-        file_inputs: Dictionary mapping input names to file hashes
+        file_inputs: Dictionary mapping input names to file hashes (str or List[str])
         
     Returns:
-        OrderedDict with keys sorted alphabetically
+        OrderedDict with keys sorted alphabetically, values unchanged
+        
+    Examples:
+        >>> inputs = {"file_c": "hash3", "file_a": "hash1"}
+        >>> sorted_inputs = sort_file_inputs(inputs)
+        >>> list(sorted_inputs.keys())
+        ['file_a', 'file_c']
+        
+        >>> # Arrays preserve order
+        >>> inputs_array = {"zebra": ["hash_z", "hash_a"], "alpha": "hash1"}
+        >>> sorted_inputs = sort_file_inputs(inputs_array)
+        >>> sorted_inputs["zebra"]
+        ["hash_z", "hash_a"]  # Order preserved!
     """
     if file_inputs is None:
         return {}
