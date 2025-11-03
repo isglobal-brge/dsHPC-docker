@@ -183,12 +183,12 @@
                             <div class="info-row">
                                 <div class="label">
                                     {{ name }}
-                                    {% if hash_or_array is iterable and hash_or_array is not string %}
+                                    {% if hash_or_array|is_list %}
                                         <span class="badge bg-info ms-1">Array[{{ hash_or_array|length }}]</span>
                                     {% endif %}
                                 </div>
                                 <div class="value">
-                                    {% if hash_or_array is iterable and hash_or_array is not string %}
+                                    {% if hash_or_array|is_list %}
                                         <!-- Array -->
                                         <details class="mt-1">
                                             <summary style="cursor: pointer; color: #0d6efd;">
@@ -225,12 +225,12 @@
                             <div class="info-row">
                                 <div class="label">
                                     {{ name }}
-                                    {% if hash_or_array is iterable and hash_or_array is not string %}
+                                    {% if hash_or_array|is_list %}
                                         <span class="badge bg-info ms-1">Array[{{ hash_or_array|length }}]</span>
                                     {% endif %}
                                 </div>
                                 <div class="value">
-                                    {% if hash_or_array is iterable and hash_or_array is not string %}
+                                    {% if hash_or_array|is_list %}
                                         <!-- Array of files -->
                                         <div class="mb-1">
                                             <span class="badge bg-info" style="font-size: 0.75rem;">
@@ -370,7 +370,7 @@
                                                 {% for name, hash_or_array in step.file_inputs.items %}
                                                     <div class="mb-2">
                                                         <strong class="small">{{ name }}:</strong>
-                                                        {% if hash_or_array is iterable and hash_or_array is not string %}
+                                                        {% if hash_or_array|is_list %}
                                                             <span class="badge bg-info ms-1" style="font-size: 0.7rem;">Array[{{ hash_or_array|length }}]</span>
                                                             <details class="mt-1">
                                                                 <summary style="cursor: pointer; color: #0d6efd; font-size: 0.85rem;">

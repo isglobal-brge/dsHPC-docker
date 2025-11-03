@@ -203,12 +203,12 @@
                                 <div class="info-row">
                                     <div class="label">
                                         {{ name }}
-                                        {% if hash_or_array is iterable and hash_or_array is not string %}
+                                        {% if hash_or_array|is_list %}
                                             <span class="badge bg-info ms-1">Array[{{ hash_or_array|length }}]</span>
                                         {% endif %}
                                     </div>
                                     <div class="value">
-                                        {% if hash_or_array is iterable and hash_or_array is not string %}
+                                        {% if hash_or_array|is_list %}
                                             <!-- Array of files -->
                                             <div class="mb-1">
                                                 <span class="badge bg-info" style="font-size: 0.75rem;">

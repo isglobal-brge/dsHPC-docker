@@ -253,6 +253,17 @@ def lookup(dictionary, key):
         return None
 
 
+@register.filter(name='is_list')
+def is_list(value):
+    """
+    Check if value is a list (for array detection in templates).
+    
+    Usage:
+        {% if value|is_list %}
+    """
+    return isinstance(value, (list, tuple))
+
+
 @register.filter(name='join_filenames')
 def join_filenames(file_info):
     """
@@ -264,7 +275,16 @@ def join_filenames(file_info):
     if not file_info:
         return ""
     
-    filenames = [info.get('filename', '') for info in file_info.values() if info]
+    filenames = []
+    for info in file_info.values():
+        if info:
+            if isinstance(info, list):
+                # Array of files
+                filenames.extend([item.get('filename', '') for item in info if isinstance(item, dict)])
+            elif isinstance(info, dict):
+                # Single file
+                filenames.append(info.get('filename', ''))
+    
     return ", ".join(filenames)
 
 

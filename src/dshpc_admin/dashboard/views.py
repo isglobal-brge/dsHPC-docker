@@ -497,16 +497,39 @@ def jobs_list(request):
                 j['error'] = f"[Error retrieving error from GridFS: {str(e)}]"
                 j['error_type'] = 'error'
         
-        # Enrich with file info
+        # Parse file_inputs arrays (if stored as strings)
+        if j.get('file_inputs'):
+            for input_name, input_value in list(j['file_inputs'].items()):
+                if isinstance(input_value, str) and input_value.startswith('['):
+                    try:
+                        import json
+                        j['file_inputs'][input_name] = json.loads(input_value.replace("'", '"'))
+                    except:
+                        pass  # Keep as string if parse fails
+        
+        # Enrich with file info (handle both single files and arrays)
         if j.get('file_inputs'):
             j['file_info'] = {}
             for name, hash_val in j['file_inputs'].items():
-                file_doc = files_db.files.find_one({'file_hash': hash_val})
-                if file_doc:
-                    j['file_info'][name] = {
-                        'filename': file_doc.get('filename', 'unknown'),
-                        'size': file_doc.get('file_size', 0)
-                    }
+                if isinstance(hash_val, list):
+                    # Array of files - enrich each one
+                    j['file_info'][name] = []
+                    for h in hash_val:
+                        file_doc = files_db.files.find_one({'file_hash': h})
+                        if file_doc:
+                            j['file_info'][name].append({
+                                'filename': file_doc.get('filename', 'unknown'),
+                                'size': file_doc.get('file_size', 0),
+                                'hash': h
+                            })
+                else:
+                    # Single file
+                    file_doc = files_db.files.find_one({'file_hash': hash_val})
+                    if file_doc:
+                        j['file_info'][name] = {
+                            'filename': file_doc.get('filename', 'unknown'),
+                            'size': file_doc.get('file_size', 0)
+                        }
         elif j.get('file_hash'):
             file_doc = files_db.files.find_one({'file_hash': j['file_hash']})
             if file_doc:
@@ -615,24 +638,37 @@ def meta_jobs_list(request):
             m['id'] = str(m['_id'])
             del m['_id']
         
-        # Enrich initial file inputs with filenames
+        # Enrich initial file inputs with filenames (handle both single files and arrays)
         if m.get('initial_file_inputs'):
             file_names = {}
             for name, hash_val in m['initial_file_inputs'].items():
-                file_doc = files_db.files.find_one({'file_hash': hash_val})
-                if file_doc:
-                    file_names[name] = file_doc.get('filename', name)
+                if isinstance(hash_val, list):
+                    # Array - leave as list for template to handle
+                    file_names[name] = [f"File {i}" for i in range(len(hash_val))]
                 else:
-                    file_names[name] = name
+                    # Single file
+                    file_doc = files_db.files.find_one({'file_hash': hash_val})
+                    if file_doc:
+                        file_names[name] = file_doc.get('filename', name)
+                    else:
+                        file_names[name] = name
             m['initial_file_names'] = file_names
         elif m.get('initial_file_hash'):
             file_doc = files_db.files.find_one({'file_hash': m['initial_file_hash']})
             if file_doc:
                 m['initial_file_name'] = file_doc.get('filename', 'unknown')
         
-        # For each step, get the actual job
+        # For each step, get the actual job and debug file_inputs
         if 'chain' in m:
             for step in m['chain']:
+                # Check file_inputs - PyMongo should return arrays as lists
+                if step.get('file_inputs'):
+                    print(f"DEBUG file_inputs: {step['file_inputs']}")
+                    for input_name, input_value in step['file_inputs'].items():
+                        print(f"  {input_name}: type={type(input_value).__name__}, is_list={isinstance(input_value, list)}")
+                        if not isinstance(input_value, list) and str(input_value).startswith('['):
+                            print(f"  WARNING: Array stored as string, needs conversion!")
+                    # file_inputs should already be lists from PyMongo
                 if step.get('job_hash'):
                     job = jobs_db.jobs.find_one({'job_hash': step['job_hash']})
                     if job:
