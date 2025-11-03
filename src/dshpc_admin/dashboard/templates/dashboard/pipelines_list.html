@@ -939,17 +939,35 @@
                                                 ${sourceInfo}
                                                 ${isArray ? 
                                                     `<details class="mt-1">
-                                                        <summary class="small text-muted" style="cursor: pointer;">Show all ${inputHashOrArray.length} files</summary>
-                                                        <div class="mt-2">
-                                                            ${inputHashOrArray.map((h, i) => `
-                                                                <div class="mb-1">
-                                                                    <small class="text-muted">[${i}]</small>
-                                                                    <code class="small">${h.substr(0,12)}...</code>
-                                                                    <button class="btn btn-sm btn-outline-secondary" onclick="copyToClipboard('${h}')" style="padding: 0.1rem 0.2rem;">
-                                                                        <i class="bi bi-clipboard" style="font-size: 0.6rem;"></i>
-                                                                    </button>
+                                                        <summary class="small text-primary" style="cursor: pointer; font-weight: 500;">
+                                                            <i class="bi bi-collection-fill"></i> Array of ${inputHashOrArray.length} files - Click to expand
+                                                        </summary>
+                                                        <div class="mt-2 ms-3" style="border-left: 2px solid #dee2e6; padding-left: 0.5rem;">
+                                                            ${inputHashOrArray.map((h, i) => {
+                                                                const isRef = h.startsWith('$ref:');
+                                                                const refType = isRef ? (h.includes('/') ? 'Path Extract' : 'Full Output') : 'Direct Hash';
+                                                                const badgeClass = isRef ? 'bg-warning text-dark' : 'bg-primary';
+                                                                
+                                                                return `
+                                                                <div class="mb-2 p-2" style="background: white; border: 1px solid #e9ecef; border-radius: 4px;">
+                                                                    <div class="d-flex align-items-center mb-1">
+                                                                        <span class="badge bg-secondary me-2" style="font-size: 0.65rem;">[${i}]</span>
+                                                                        <span class="badge ${badgeClass}" style="font-size: 0.65rem;">
+                                                                            <i class="bi bi-${isRef ? 'link-45deg' : 'file-earmark'}"></i> ${refType}
+                                                                        </span>
+                                                                    </div>
+                                                                    ${isRef ? 
+                                                                        `<code class="small d-block text-info" style="font-size: 0.7rem; word-break: break-all;">${h}</code>` :
+                                                                        `<div class="d-flex align-items-center">
+                                                                            <code class="small text-truncate" style="font-size: 0.7rem; max-width: 300px;">${h}</code>
+                                                                            <button class="btn btn-sm btn-outline-secondary ms-2" onclick="copyToClipboard('${h}')" style="padding: 0.1rem 0.3rem;">
+                                                                                <i class="bi bi-clipboard" style="font-size: 0.6rem;"></i>
+                                                                            </button>
+                                                                        </div>`
+                                                                    }
                                                                 </div>
-                                                            `).join('')}
+                                                                `;
+                                                            }).join('')}
                                                         </div>
                                                     </details>`
                                                     : `<code class="small d-block text-truncate mt-1" style="font-size: 0.7rem;">${inputHash}</code>`

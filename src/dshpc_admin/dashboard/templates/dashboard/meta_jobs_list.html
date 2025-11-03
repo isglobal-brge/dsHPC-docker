@@ -189,32 +189,27 @@
                                 <div class="value">
                                     {% if hash_or_array is iterable and hash_or_array is not string %}
                                         <!-- Array of files -->
-                                        <div class="accordion accordion-flush" id="arrayAccordion{{ name }}">
-                                            <div class="accordion-item">
-                                                <h2 class="accordion-header">
-                                                    <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#arrayContent{{ name }}">
-                                                        <i class="bi bi-collection"></i> {{ hash_or_array|length }} files
-                                                    </button>
-                                                </h2>
-                                                <div id="arrayContent{{ name }}" class="accordion-collapse collapse" data-bs-parent="#arrayAccordion{{ name }}">
-                                                    <div class="accordion-body">
-                                                        {% for hash in hash_or_array %}
-                                                        <div class="mb-2">
-                                                            <small class="text-muted">[{{ forloop.counter0 }}]</small>
-                                                            <div class="hash-display">
-                                                                <div class="hash-scroll">
-                                                                    <code class="small">{{ hash }}</code>
-                                                                </div>
-                                                                <button class="btn btn-sm btn-outline-secondary" onclick="copyToClipboard('{{ hash }}')">
-                                                                    <i class="bi bi-clipboard"></i>
-                                                                </button>
-                                                            </div>
-                                                        </div>
-                                                        {% endfor %}
-                                                    </div>
-                                                </div>
-                                            </div>
+                                        <div class="mb-1">
+                                            <span class="badge bg-info" style="font-size: 0.75rem;">
+                                                <i class="bi bi-collection"></i> Array[{{ hash_or_array|length }}]
+                                            </span>
                                         </div>
+                                        <details class="mt-1">
+                                            <summary style="cursor: pointer; color: #0d6efd;">
+                                                <i class="bi bi-chevron-right"></i> View {{ hash_or_array|length }} files
+                                            </summary>
+                                            <div class="mt-2 ms-3">
+                                                {% for hash in hash_or_array %}
+                                                <div class="mb-1 p-1" style="background: #f8f9fa; border-radius: 3px;">
+                                                    <span class="badge bg-secondary me-1" style="font-size: 0.7rem;">[{{ forloop.counter0 }}]</span>
+                                                    <code style="font-size: 0.75rem;">{{ hash|truncatechars:20 }}</code>
+                                                    <button class="btn btn-sm btn-outline-secondary" onclick="copyToClipboard('{{ hash }}')" style="padding: 0.1rem 0.3rem; font-size: 0.7rem;">
+                                                        <i class="bi bi-clipboard"></i>
+                                                    </button>
+                                                </div>
+                                                {% endfor %}
+                                            </div>
+                                        </details>
                                     {% else %}
                                         <!-- Single file -->
                                         {% if meta_job.initial_file_names and name in meta_job.initial_file_names %}
@@ -321,6 +316,47 @@
                                                         <i class="bi bi-clipboard"></i>
                                                     </button>
                                                 </div>
+                                            </div>
+                                        </div>
+                                        {% endif %}
+                                        
+                                        {% if step.file_inputs %}
+                                        <div class="info-row">
+                                            <div class="label">File Inputs</div>
+                                            <div class="value">
+                                                {% for name, hash_or_array in step.file_inputs.items %}
+                                                    <div class="mb-2">
+                                                        <strong class="small">{{ name }}:</strong>
+                                                        {% if hash_or_array is iterable and hash_or_array is not string %}
+                                                            <span class="badge bg-info ms-1" style="font-size: 0.7rem;">Array[{{ hash_or_array|length }}]</span>
+                                                            <details class="mt-1">
+                                                                <summary style="cursor: pointer; color: #0d6efd; font-size: 0.85rem;">
+                                                                    <i class="bi bi-chevron-right"></i> View {{ hash_or_array|length }} files
+                                                                </summary>
+                                                                <div class="mt-1 ms-3">
+                                                                    {% for hash in hash_or_array %}
+                                                                    <div class="mb-1 p-1" style="background: #f8f9fa; border-radius: 3px;">
+                                                                        <span class="badge bg-secondary me-1" style="font-size: 0.65rem;">[{{ forloop.counter0 }}]</span>
+                                                                        <code style="font-size: 0.7rem;">{{ hash|truncatechars:20 }}</code>
+                                                                        <button class="btn btn-sm btn-outline-secondary" onclick="copyToClipboard('{{ hash }}')" style="padding: 0.05rem 0.2rem; font-size: 0.65rem;">
+                                                                            <i class="bi bi-clipboard"></i>
+                                                                        </button>
+                                                                    </div>
+                                                                    {% endfor %}
+                                                                </div>
+                                                            </details>
+                                                        {% else %}
+                                                            <div class="hash-display mt-1">
+                                                                <div class="hash-scroll">
+                                                                    <code class="small">{{ hash_or_array }}</code>
+                                                                </div>
+                                                                <button class="btn btn-sm btn-outline-secondary" onclick="copyToClipboard('{{ hash_or_array }}')">
+                                                                    <i class="bi bi-clipboard"></i>
+                                                                </button>
+                                                            </div>
+                                                        {% endif %}
+                                                    </div>
+                                                {% endfor %}
                                             </div>
                                         </div>
                                         {% endif %}
