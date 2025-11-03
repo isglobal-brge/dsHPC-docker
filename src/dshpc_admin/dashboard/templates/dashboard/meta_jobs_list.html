@@ -177,7 +177,50 @@
                     <div class="col-md-6">
                         <h6 class="mb-3"><i class="bi bi-folder2-open"></i> Initial Input Files</h6>
                         
-                        {% if meta_job.initial_file_inputs %}
+                        {% if meta_job.chain.0.file_inputs %}
+                            <!-- Show file_inputs from first step if no initial_file_inputs -->
+                            {% for name, hash_or_array in meta_job.chain.0.file_inputs.items %}
+                            <div class="info-row">
+                                <div class="label">
+                                    {{ name }}
+                                    {% if hash_or_array is iterable and hash_or_array is not string %}
+                                        <span class="badge bg-info ms-1">Array[{{ hash_or_array|length }}]</span>
+                                    {% endif %}
+                                </div>
+                                <div class="value">
+                                    {% if hash_or_array is iterable and hash_or_array is not string %}
+                                        <!-- Array -->
+                                        <details class="mt-1">
+                                            <summary style="cursor: pointer; color: #0d6efd;">
+                                                <i class="bi bi-chevron-right"></i> View {{ hash_or_array|length }} files
+                                            </summary>
+                                            <div class="mt-2 ms-3">
+                                                {% for hash in hash_or_array %}
+                                                <div class="mb-1 p-1" style="background: #f8f9fa; border-radius: 3px;">
+                                                    <span class="badge bg-secondary me-1" style="font-size: 0.7rem;">[{{ forloop.counter0 }}]</span>
+                                                    <code style="font-size: 0.75rem;">{{ hash|truncatechars:20 }}</code>
+                                                    <button class="btn btn-sm btn-outline-secondary" onclick="copyToClipboard('{{ hash }}')" style="padding: 0.1rem 0.3rem; font-size: 0.7rem;">
+                                                        <i class="bi bi-clipboard"></i>
+                                                    </button>
+                                                </div>
+                                                {% endfor %}
+                                            </div>
+                                        </details>
+                                    {% else %}
+                                        <!-- Single -->
+                                        <div class="hash-display">
+                                            <div class="hash-scroll">
+                                                <code class="small">{{ hash_or_array }}</code>
+                                            </div>
+                                            <button class="btn btn-sm btn-outline-secondary" onclick="copyToClipboard('{{ hash_or_array }}')">
+                                                <i class="bi bi-clipboard"></i>
+                                            </button>
+                                        </div>
+                                    {% endif %}
+                                </div>
+                            </div>
+                            {% endfor %}
+                        {% elif meta_job.initial_file_inputs %}
                                 {% for name, hash_or_array in meta_job.initial_file_inputs.items %}
                             <div class="info-row">
                                 <div class="label">
