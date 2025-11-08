@@ -415,12 +415,13 @@ async def trigger_job_check() -> Tuple[bool, str]:
     except Exception as e:
         return False, f"Error triggering job check: {str(e)}"
 
-async def simulate_job(file_hash: str, method_name: str, parameters: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+async def simulate_job(file_hash: Optional[str] = None, file_inputs: Optional[Dict[str, Any]] = None, method_name: Optional[str] = None, parameters: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """
     Simulate a job by checking for existing jobs and conditionally submitting a new one.
     
     Args:
-        file_hash: The hash of the input file
+        file_hash: The hash of the input file (single file - legacy)
+        file_inputs: Dict of input name → hash (multi-file - new). Supports str (single) or List[str] (array)
         method_name: The name of the method
         parameters: The job parameters
         
@@ -429,6 +430,16 @@ async def simulate_job(file_hash: str, method_name: str, parameters: Optional[Di
     """
     if parameters is None:
         parameters = {}
+    
+    # Validate method_name is provided
+    if not method_name:
+        return {
+            "job_hash": None,
+            "status": None,
+            "message": "method_name is required",
+            "status_detail": "Invalid request",
+            "error_details": "method_name parameter must be provided"
+        }
     
     # Sort parameters to ensure consistent ordering
     sorted_params = sort_parameters(parameters)
@@ -460,37 +471,90 @@ async def simulate_job(file_hash: str, method_name: str, parameters: Optional[Di
                 "error_details": f"Could not find an active method with name '{method_name}'"
             }
         
-        # Check if the file exists (skip for params-only jobs)
-        file_doc = None
-        if file_hash:
-            files_db = await get_files_db()
+        # Validate files (single file or multi-file)
+        files_db = await get_files_db()
+        
+        if file_inputs:
+            # Multi-file: validate ALL files
+            for name, file_ref in file_inputs.items():
+                # Handle arrays in file_inputs
+                if isinstance(file_ref, list):
+                    # Array of files
+                    for idx, file_hash_item in enumerate(file_ref):
+                        file_doc = await files_db.files.find_one({"file_hash": file_hash_item})
+                        if not file_doc:
+                            return {
+                                "job_hash": None,
+                                "status": None,
+                                "message": f"File '{name}[{idx}]' with hash {file_hash_item} not found",
+                                "status_detail": "Input file not found",
+                                "error_details": f"No file exists in the database with hash '{file_hash_item}'"
+                            }
+                        # Check if file upload is completed
+                        metadata_source = file_doc.get("metadata", {}).get("source")
+                        is_generated = metadata_source in ["job_output", "path_extraction"]
+                        if not is_generated and file_doc.get("status") != "completed":
+                            file_status = file_doc.get("status", "unknown")
+                            return {
+                                "job_hash": None,
+                                "status": None,
+                                "message": f"File '{name}[{idx}]' is not ready (status: {file_status})",
+                                "status_detail": "Input file not ready",
+                                "error_details": f"File upload is in progress or failed. Current status: {file_status}. Please wait for upload to complete."
+                            }
+                else:
+                    # Single file hash
+                    file_doc = await files_db.files.find_one({"file_hash": file_ref})
+                    if not file_doc:
+                        return {
+                            "job_hash": None,
+                            "status": None,
+                            "message": f"File '{name}' with hash {file_ref} not found",
+                            "status_detail": "Input file not found",
+                            "error_details": f"No file exists in the database with hash '{file_ref}'"
+                        }
+                    # Check if file upload is completed
+                    metadata_source = file_doc.get("metadata", {}).get("source")
+                    is_generated = metadata_source in ["job_output", "path_extraction"]
+                    if not is_generated and file_doc.get("status") != "completed":
+                        file_status = file_doc.get("status", "unknown")
+                        return {
+                            "job_hash": None,
+                            "status": None,
+                            "message": f"File '{name}' is not ready (status: {file_status})",
+                            "status_detail": "Input file not ready",
+                            "error_details": f"File upload is in progress or failed. Current status: {file_status}. Please wait for upload to complete."
+                        }
+        elif file_hash:
+            # Single file (legacy)
             file_doc = await files_db.files.find_one({"file_hash": file_hash})
-        
-        # Only validate file if file_hash was provided
-        if file_hash and not file_doc:
-            return {
-                "job_hash": None,
-                "status": None,
-                "message": f"File with hash '{file_hash}' not found",
-                "status_detail": "Input file not found",
-                "error_details": f"No file exists in the database with hash '{file_hash}'"
-            }
-        
-        # Check if file upload is completed (only if file_hash was provided)
-        if file_hash and file_doc and file_doc.get("status") != "completed":
-            file_status = file_doc.get("status", "unknown")
-            return {
-                "job_hash": None,
-                "status": None,
-                "message": f"File with hash '{file_hash}' is not ready (status: {file_status})",
-                "status_detail": "Input file not ready",
-                "error_details": f"File upload is in progress or failed. Current status: {file_status}. Please wait for upload to complete."
-            }
+            
+            # Only validate file if file_hash was provided
+            if not file_doc:
+                return {
+                    "job_hash": None,
+                    "status": None,
+                    "message": f"File with hash '{file_hash}' not found",
+                    "status_detail": "Input file not found",
+                    "error_details": f"No file exists in the database with hash '{file_hash}'"
+                }
+            
+            # Check if file upload is completed (only if file_hash was provided)
+            if file_doc.get("status") != "completed":
+                file_status = file_doc.get("status", "unknown")
+                return {
+                    "job_hash": None,
+                    "status": None,
+                    "message": f"File with hash '{file_hash}' is not ready (status: {file_status})",
+                    "status_detail": "Input file not ready",
+                    "error_details": f"File upload is in progress or failed. Current status: {file_status}. Please wait for upload to complete."
+                }
+        # If neither file_hash nor file_inputs provided, it's a params-only job (valid)
         
         # Check if there's an existing job with these parameters (using sorted parameters)
         existing_job = await find_existing_job(
             file_hash=file_hash,
-            file_inputs=None,
+            file_inputs=file_inputs,
             function_hash=function_hash,
             parameters=sorted_params
         )
@@ -499,6 +563,7 @@ async def simulate_job(file_hash: str, method_name: str, parameters: Optional[Di
             # No existing job, submit a new one (using sorted parameters)
             success, message, job_data = await submit_job(
                 file_hash=file_hash,
+                file_inputs=file_inputs,
                 function_hash=function_hash,
                 parameters=sorted_params
             )
@@ -553,7 +618,12 @@ async def simulate_job(file_hash: str, method_name: str, parameters: Optional[Di
         
         elif job_status in RETRIABLE_FAILED_STATUSES:
             # Job failed but in a retriable way, submit a new one
-            success, message, job_data = await submit_job(file_hash, function_hash, sorted_params)
+            success, message, job_data = await submit_job(
+                file_hash=file_hash,
+                file_inputs=file_inputs,
+                function_hash=function_hash,
+                parameters=sorted_params
+            )
             
             if not success:
                 return {

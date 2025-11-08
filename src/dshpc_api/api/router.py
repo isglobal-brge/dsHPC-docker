@@ -125,7 +125,10 @@ async def health_check():
 @router.post("/query-job")
 async def simulate_job_endpoint(job_data: JobRequest, api_key: str = Security(get_api_key)):
     """
-    Simulate a job execution based on file_hash, method_name, and parameters.
+    Simulate a job execution based on file_hash/file_inputs, method_name, and parameters.
+    
+    Supports both single file (file_hash) and multiple files (file_inputs).
+    Exactly one of file_hash or file_inputs must be provided, not both.
     
     This endpoint will:
     1. Check for the most recent hash of the specified method
@@ -142,9 +145,10 @@ async def simulate_job_endpoint(job_data: JobRequest, api_key: str = Security(ge
     """
     try:
         result = await simulate_job(
-            job_data.file_hash,
-            job_data.method_name,
-            job_data.parameters
+            file_hash=job_data.file_hash,
+            file_inputs=job_data.file_inputs,
+            method_name=job_data.method_name,
+            parameters=job_data.parameters
         )
         
         # Handle cases where no job_hash was returned and it's not an internal error
