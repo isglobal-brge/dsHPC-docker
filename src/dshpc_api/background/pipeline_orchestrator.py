@@ -252,11 +252,35 @@ async def check_and_submit_ready_nodes(pipeline_hash: str, pipeline_doc: Dict[st
                 # Convert chain to MethodChainStep objects
                 method_steps = [MethodChainStep(**step) for step in chain]
                 
-                # All references are now resolved in parameters, just use simple file_hash
-                request = MetaJobRequest(
-                    initial_file_hash=input_hash,
-                    method_chain=method_steps
-                )
+                # Check if first step has file_inputs - if so, use as initial_file_inputs
+                # Otherwise use initial_file_hash
+                first_step = method_steps[0] if method_steps else None
+                initial_file_inputs = None
+                initial_file_hash_for_request = input_hash
+                
+                if first_step and first_step.file_inputs:
+                    # First step has file_inputs - extract them and remove from step
+                    # Sort file_inputs for consistency
+                    from dshpc_api.utils.sorting_utils import sort_file_inputs
+                    initial_file_inputs = sort_file_inputs(first_step.file_inputs)
+                    # Remove file_inputs from first step since they'll be initial_file_inputs
+                    first_step_dict = first_step.dict()
+                    first_step_dict.pop('file_inputs', None)
+                    method_steps[0] = MethodChainStep(**first_step_dict)
+                    initial_file_hash_for_request = None
+                    logger.info(f"Pipeline {pipeline_hash}: Using file_inputs from first step as initial_file_inputs: {list(initial_file_inputs.keys())}")
+                
+                # Create meta-job request with appropriate initial input
+                if initial_file_inputs:
+                    request = MetaJobRequest(
+                        initial_file_inputs=initial_file_inputs,
+                        method_chain=method_steps
+                    )
+                else:
+                    request = MetaJobRequest(
+                        initial_file_hash=initial_file_hash_for_request,
+                        method_chain=method_steps
+                    )
                 success, message, response = await submit_meta_job(request)
                 
                 if not success:
