@@ -59,6 +59,13 @@ def compute_pipeline_hash(nodes: Dict[str, Any], function_hashes: Dict[str, List
             sorted_params = sort_parameters(step.get("parameters", {}))
             params_json = json.dumps(sorted_params, sort_keys=True)
             hash_components.append(f"params:{params_json}")
+            
+            # Add file_inputs if present (sorted for determinism)
+            step_file_inputs = step.get("file_inputs")
+            if step_file_inputs:
+                sorted_file_inputs = sort_file_inputs(step_file_inputs)
+                file_inputs_json = json.dumps(sorted_file_inputs, sort_keys=True)
+                hash_components.append(f"file_inputs:{file_inputs_json}")
     
     # Combine all components
     hash_input = "|".join(hash_components)
@@ -365,10 +372,17 @@ async def create_pipeline(pipeline_data: Dict[str, Any]) -> Tuple[str, str]:
                             logger.info(f"  ✗ File {missing_file_hash[:12]}... still not available")
                             return pipeline_hash, f"Pipeline previously failed: {error_msg}"
                     else:
-                        # Not file or method related - fail fast
-                        logger.info(f"✗ Pipeline previously failed with same configuration (not file or method related)")
+                        # Not file or method related - check if it's a validation error that might be fixed
+                        # If the error is "Unknown error" or a validation error, allow retry
                         error_msg = existing_pipeline.get("error", "Unknown error")
-                        raise ValueError(f"Pipeline previously failed: {error_msg}")
+                        if "validation error" in error_msg.lower() or "Unknown error" in error_msg:
+                            logger.info(f"  ♻️  Pipeline failed with validation/unknown error - deleting for retry")
+                            await db.pipelines.delete_one({"pipeline_hash": pipeline_hash})
+                            # Continue to create new pipeline below
+                        else:
+                            # Not file or method related - fail fast
+                            logger.info(f"✗ Pipeline previously failed with same configuration (not file or method related)")
+                            raise ValueError(f"Pipeline previously failed: {error_msg}")
             else:
                 # Methods may have changed, allow recomputation
                 logger.info(f"↻ Pipeline structure changed, will recompute")

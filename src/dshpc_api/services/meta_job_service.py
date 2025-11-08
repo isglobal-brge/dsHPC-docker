@@ -176,21 +176,37 @@ async def submit_meta_job(request: MetaJobRequest) -> Tuple[bool, str, Optional[
         files_db = await get_files_db()
         
         if request.initial_file_inputs:
-            # Multi-file: validate ALL files
-            for name, file_hash in request.initial_file_inputs.items():
-                file_doc = await files_db.files.find_one({"file_hash": file_hash})
-                
-                if not file_doc:
-                    logger.error(f"File '{name}' with hash {file_hash} not found")
-                    return False, f"File '{name}' with hash {file_hash} not found", None
-                
-                # Only check status for uploaded files, not job outputs or path extractions
-                metadata_source = file_doc.get("metadata", {}).get("source")
-                is_generated = metadata_source in ["job_output", "path_extraction"]
-                if not is_generated and file_doc.get("status") != "completed":
-                    file_status = file_doc.get("status", "unknown")
-                    logger.error(f"File '{name}' not completed (status: {file_status})")
-                    return False, f"File '{name}' is not ready (status: {file_status}). Please wait for upload to complete.", None
+            # Multi-file: validate ALL files (handles both single files and arrays)
+            for name, file_ref in request.initial_file_inputs.items():
+                if isinstance(file_ref, list):
+                    # Array of files
+                    for idx, file_hash_item in enumerate(file_ref):
+                        file_doc = await files_db.files.find_one({"file_hash": file_hash_item})
+                        if not file_doc:
+                            logger.error(f"File '{name}[{idx}]' with hash {file_hash_item} not found")
+                            return False, f"File '{name}[{idx}]' with hash {file_hash_item} not found", None
+                        
+                        # Only check status for uploaded files, not job outputs or path extractions
+                        metadata_source = file_doc.get("metadata", {}).get("source")
+                        is_generated = metadata_source in ["job_output", "path_extraction"]
+                        if not is_generated and file_doc.get("status") != "completed":
+                            file_status = file_doc.get("status", "unknown")
+                            logger.error(f"File '{name}[{idx}]' not completed (status: {file_status})")
+                            return False, f"File '{name}[{idx}]' is not ready (status: {file_status}). Please wait for upload to complete.", None
+                else:
+                    # Single file hash
+                    file_doc = await files_db.files.find_one({"file_hash": file_ref})
+                    if not file_doc:
+                        logger.error(f"File '{name}' with hash {file_ref} not found")
+                        return False, f"File '{name}' with hash {file_ref} not found", None
+                    
+                    # Only check status for uploaded files, not job outputs or path extractions
+                    metadata_source = file_doc.get("metadata", {}).get("source")
+                    is_generated = metadata_source in ["job_output", "path_extraction"]
+                    if not is_generated and file_doc.get("status") != "completed":
+                        file_status = file_doc.get("status", "unknown")
+                        logger.error(f"File '{name}' not completed (status: {file_status})")
+                        return False, f"File '{name}' is not ready (status: {file_status}). Please wait for upload to complete.", None
         else:
             # Single file (legacy) or params-only
             # Special case: PARAMS_ONLY_ hash or None means no actual input file needed

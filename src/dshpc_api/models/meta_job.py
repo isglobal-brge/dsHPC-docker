@@ -26,7 +26,7 @@ class MethodChainStep(BaseModel):
 class MetaJobRequest(BaseModel):
     """Request model for submitting a meta-job."""
     initial_file_hash: Optional[str] = Field(None, description="Hash of the initial input file (single file - legacy)")
-    initial_file_inputs: Optional[Dict[str, str]] = Field(None, description="Named dict of file hashes (multi-file - new)")
+    initial_file_inputs: Optional[Dict[str, Any]] = Field(None, description="Named dict of file hashes (multi-file - new). Supports str (single) or List[str] (array)")
     method_chain: List[MethodChainStep] = Field(..., min_items=1, description="Chain of methods to execute sequentially")
     
     @validator('initial_file_inputs')
@@ -97,7 +97,7 @@ class MetaJobInfo(BaseModel):
     """Full status information for a meta-job."""
     meta_job_hash: str
     initial_file_hash: Optional[str] = None  # Single file (can be None for multi-file)
-    initial_file_inputs: Optional[Dict[str, str]] = None  # Multi-file inputs
+    initial_file_inputs: Optional[Dict[str, Any]] = None  # Multi-file inputs (supports str or List[str])
     chain: List[MetaJobStepInfo]
     status: MetaJobStatus
     current_step: Optional[int] = None
