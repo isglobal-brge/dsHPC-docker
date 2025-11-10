@@ -289,6 +289,29 @@ class MonitorWorker:
                 env_data['slurm']['node_info'] = node_info
             except Exception as e:
                 env_data['slurm']['error'] = str(e)
+            
+            # Startup scripts
+            try:
+                startup_scripts = {}
+                script_paths = {
+                    'pre-install.sh': '/environment/startup/pre-install.sh',
+                    'pre-startup.sh': '/environment/startup/pre-startup.sh',
+                    'post-install.sh': '/environment/startup/post-install.sh'
+                }
+                
+                for script_name, script_path in script_paths.items():
+                    try:
+                        result = container.exec_run(['bash', '-c', f'cat {script_path} 2>/dev/null || echo ""'])
+                        script_content = result.output.decode('utf-8')
+                        startup_scripts[script_name] = script_content if script_content else ""
+                    except Exception as e:
+                        logger.warning(f"Error reading startup script {script_name}: {e}")
+                        startup_scripts[script_name] = ""
+                
+                env_data['startup_scripts'] = startup_scripts
+            except Exception as e:
+                logger.warning(f"Error collecting startup scripts: {e}")
+                env_data['startup_scripts'] = {}
                 
         except docker.errors.NotFound:
             env_data['error'] = f"Container '{self.docker_prefix}-slurm' not found"

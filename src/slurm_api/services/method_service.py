@@ -348,6 +348,28 @@ def get_system_runtime_info() -> Dict[str, Any]:
                     logger.warning(f"Error reading {key} from {path}: {e}")
                     runtime_info[key] = {}
         
+        # Read startup scripts and add to runtime info
+        startup_scripts = {}
+        startup_script_paths = {
+            'pre-install.sh': '/environment/startup/pre-install.sh',
+            'pre-startup.sh': '/environment/startup/pre-startup.sh',
+            'post-install.sh': '/environment/startup/post-install.sh'
+        }
+        
+        for script_name, script_path in startup_script_paths.items():
+            if os.path.exists(script_path):
+                try:
+                    with open(script_path, 'r', encoding='utf-8') as f:
+                        script_content = f.read()
+                        startup_scripts[script_name] = script_content
+                except Exception as e:
+                    logger.warning(f"Error reading startup script {script_name}: {e}")
+                    startup_scripts[script_name] = ""
+            else:
+                startup_scripts[script_name] = ""
+        
+        runtime_info['startup_scripts'] = startup_scripts
+        
     except Exception as e:
         logger.error(f"Error getting system runtime info: {e}")
     
@@ -481,7 +503,17 @@ def register_method(method_data: Dict[str, Any], method_dir: str) -> Tuple[bool,
             if not k.endswith('_full')
         }
         
-        # Add runtime information to hash (without *_full fields)
+        # Remove startup_scripts from dict (we'll add them individually for deterministic ordering)
+        startup_scripts_for_hash = runtime_info_for_hash.pop('startup_scripts', {})
+        
+        # Add startup scripts to hash individually (they affect the environment)
+        # Sort scripts by name for deterministic hashing
+        if startup_scripts_for_hash:
+            sorted_scripts = sorted(startup_scripts_for_hash.items())
+            for script_name, script_content in sorted_scripts:
+                runtime_info_for_hash[f'startup_script:{script_name}'] = script_content
+        
+        # Add runtime information to hash (without *_full fields, with startup scripts as individual keys)
         runtime_json = json.dumps(runtime_info_for_hash, sort_keys=True)
         hasher.update(runtime_json.encode())
         
