@@ -146,6 +146,15 @@ RUN if [ $(jq '.packages | length' /tmp/r.json) -gt 0 ]; then \
         echo "No R packages specified, skipping..."; \
     fi
 
+# Run post-install script AFTER installing Python and R libraries (build time only)
+# This script can install packages that need dependencies to be installed first
+RUN if [ -f /environment/startup/post-install.sh ] && [ -s /environment/startup/post-install.sh ]; then \
+        chmod +x /environment/startup/post-install.sh && \
+        /environment/startup/post-install.sh; \
+    else \
+        echo "No post-install script found or script is empty, skipping post-install step"; \
+    fi
+
 # Create necessary directories and set permissions
 RUN mkdir -p /var/run/munge \
     && mkdir -p /var/run/slurm \
