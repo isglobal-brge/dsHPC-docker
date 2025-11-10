@@ -187,7 +187,8 @@ async def submit_meta_job(request: MetaJobRequest) -> Tuple[bool, str, Optional[
                             return False, f"File '{name}[{idx}]' with hash {file_hash_item} not found", None
                         
                         # Only check status for uploaded files, not job outputs or path extractions
-                        metadata_source = file_doc.get("metadata", {}).get("source")
+                        metadata = file_doc.get("metadata") or {}
+                        metadata_source = metadata.get("source")
                         is_generated = metadata_source in ["job_output", "path_extraction"]
                         if not is_generated and file_doc.get("status") != "completed":
                             file_status = file_doc.get("status", "unknown")
@@ -201,7 +202,8 @@ async def submit_meta_job(request: MetaJobRequest) -> Tuple[bool, str, Optional[
                         return False, f"File '{name}' with hash {file_ref} not found", None
                     
                     # Only check status for uploaded files, not job outputs or path extractions
-                    metadata_source = file_doc.get("metadata", {}).get("source")
+                    metadata = file_doc.get("metadata") or {}
+                    metadata_source = metadata.get("source")
                     is_generated = metadata_source in ["job_output", "path_extraction"]
                     if not is_generated and file_doc.get("status") != "completed":
                         file_status = file_doc.get("status", "unknown")
@@ -218,7 +220,8 @@ async def submit_meta_job(request: MetaJobRequest) -> Tuple[bool, str, Optional[
                     return False, f"Initial file with hash {request.initial_file_hash} not found", None
                 
                 # Only check status for uploaded files, not job outputs or path extractions
-                metadata_source = file_doc.get("metadata", {}).get("source")
+                metadata = file_doc.get("metadata") or {}
+                metadata_source = metadata.get("source")
                 is_generated = metadata_source in ["job_output", "path_extraction"]
                 if not is_generated and file_doc.get("status") != "completed":
                     file_status = file_doc.get("status", "unknown")
