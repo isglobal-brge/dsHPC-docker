@@ -405,11 +405,25 @@ def process_job_output(job_hash: str, slurm_id: str, final_state: str) -> bool:
             logger.error(f"Error reading stderr file for job {job_hash}: {e}")
 
     # Parse output JSON to check for internal errors (if output exists and is JSON)
+    # Also extract JSON from output if there are extra lines before it (e.g., logging messages)
     output_has_error = False
     if output:
         try:
             import json
-            output_data = json.loads(output)
+            import re
+            
+            # Try to extract JSON from output (in case there are logging messages before JSON)
+            # Look for JSON object starting with { and ending with }
+            json_match = re.search(r'\{.*\}', output, re.DOTALL)
+            if json_match:
+                json_str = json_match.group(0)
+                output_data = json.loads(json_str)
+                # If we extracted JSON, use the cleaned JSON as the output
+                output = json_str
+            else:
+                # No JSON found, try parsing the whole output
+                output_data = json.loads(output)
+            
             if isinstance(output_data, dict) and output_data.get('status') == 'error':
                 output_has_error = True
                 # Extract error message from output
