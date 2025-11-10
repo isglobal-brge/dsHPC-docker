@@ -8,6 +8,18 @@ COPY environment/python.json /tmp/python.json
 COPY environment/r.json /tmp/r.json
 COPY environment/system_deps.json /tmp/system_deps.json
 
+# Copy startup scripts directory (for pre-install script)
+COPY environment/startup /environment/startup
+
+# Run pre-install script BEFORE installing dependencies (build time only)
+# This script can configure apt repositories, add GPG keys, etc.
+RUN if [ -f /environment/startup/pre-install-wrapper.sh ]; then \
+        chmod +x /environment/startup/pre-install-wrapper.sh && \
+        /environment/startup/pre-install-wrapper.sh; \
+    else \
+        echo "No pre-install-wrapper.sh found, skipping pre-install step"; \
+    fi
+
 # Configure apt to be more resilient to hash mismatches
 RUN echo 'Acquire::http::Pipeline-Depth "0";' >> /etc/apt/apt.conf.d/99fixbadproxy && \
     echo 'Acquire::http::No-Cache=True;' >> /etc/apt/apt.conf.d/99fixbadproxy && \
@@ -162,13 +174,29 @@ COPY src/slurm/start-services.sh /start-services.sh
 COPY src/slurm/load-methods.sh /load-methods.sh
 COPY src/slurm/scripts /app/slurm/scripts
 
+# Copy startup wrapper scripts and make them executable
+COPY environment/startup/pre-startup-wrapper.sh /pre-startup-wrapper.sh
+RUN chmod +x /pre-startup-wrapper.sh
+
 # Make the startup scripts executable
 RUN chmod +x /start-services.sh \
     && chmod +x /load-methods.sh \
     && chmod +x /app/slurm/scripts/register_method.py
 
+# Create entrypoint script that runs pre-startup before start-services
+RUN echo '#!/bin/bash' > /entrypoint.sh && \
+    echo 'set -e' >> /entrypoint.sh && \
+    echo '# Run pre-startup script (must complete before container is considered ready)' >> /entrypoint.sh && \
+    echo 'if [ -f /pre-startup-wrapper.sh ]; then' >> /entrypoint.sh && \
+    echo '    /pre-startup-wrapper.sh' >> /entrypoint.sh && \
+    echo 'fi' >> /entrypoint.sh && \
+    echo '# Run main start-services script' >> /entrypoint.sh && \
+    echo 'exec /start-services.sh "$@"' >> /entrypoint.sh && \
+    chmod +x /entrypoint.sh
+
 # Expose port for FastAPI
 EXPOSE 8000
 
-# Start services
-CMD ["/start-services.sh"] 
+# Use entrypoint that runs pre-startup before start-services
+ENTRYPOINT ["/entrypoint.sh"]
+CMD [] 
