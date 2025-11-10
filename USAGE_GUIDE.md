@@ -236,7 +236,7 @@ query_job_by_hash(
 
 ### Common Mistakes to Avoid
 
-❌ **Wrong**: Providing an array when method expects named inputs
+**Wrong**: Providing an array when method expects named inputs
 ```r
 # Method expects input_a and input_b (named inputs)
 file_inputs <- list(
@@ -244,7 +244,7 @@ file_inputs <- list(
 )
 ```
 
-✅ **Correct**: Providing named inputs matching method definition
+**Correct**: Providing named inputs matching method definition
 ```r
 file_inputs <- list(
   input_a = "hash1",  # Correct!
@@ -252,7 +252,7 @@ file_inputs <- list(
 )
 ```
 
-❌ **Wrong**: Providing named inputs when method expects an array
+**Wrong**: Providing named inputs when method expects an array
 ```r
 # Method expects inputs (array)
 file_inputs <- list(
@@ -261,7 +261,7 @@ file_inputs <- list(
 )
 ```
 
-✅ **Correct**: Providing an array matching method definition
+**Correct**: Providing an array matching method definition
 ```r
 file_inputs <- list(
   inputs = c("hash1", "hash2")  # Correct!
@@ -1535,7 +1535,7 @@ When developing method scripts, it's crucial to understand that **your script mu
 
 **Problem**: When using `$ref:node1/data/mask_base64` in a pipeline, the system extracts the `mask_base64` value from the JSON output and creates a file containing that base64 string as text. Your method script receives a file path, but the file contains base64 text, not the decoded binary.
 
-**✅ Correct Approach**: Handle it in your method script
+**Correct Approach**: Handle it in your method script
 ```python
 # In your method script (e.g., pyradiomics/main.py)
 def decode_mask_from_base64(mask_base64):
