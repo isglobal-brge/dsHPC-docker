@@ -63,6 +63,10 @@ services:
       - ./config:/config
     networks:
       - __DOCKER_PREFIX__-internal-network
+      - __DOCKER_PREFIX__-public-network
+    dns:
+      - 8.8.8.8
+      - 8.8.4.4
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
       interval: 10s
