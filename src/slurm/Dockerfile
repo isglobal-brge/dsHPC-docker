@@ -13,11 +13,11 @@ COPY environment/startup /environment/startup
 
 # Run pre-install script BEFORE installing dependencies (build time only)
 # This script can configure apt repositories, add GPG keys, etc.
-RUN if [ -f /environment/startup/pre-install-wrapper.sh ]; then \
-        chmod +x /environment/startup/pre-install-wrapper.sh && \
-        /environment/startup/pre-install-wrapper.sh; \
+RUN if [ -f /environment/startup/pre-install.sh ] && [ -s /environment/startup/pre-install.sh ]; then \
+        chmod +x /environment/startup/pre-install.sh && \
+        /environment/startup/pre-install.sh; \
     else \
-        echo "No pre-install-wrapper.sh found, skipping pre-install step"; \
+        echo "No pre-install script found or script is empty, skipping pre-install step"; \
     fi
 
 # Configure apt to be more resilient to hash mismatches
@@ -174,10 +174,6 @@ COPY src/slurm/start-services.sh /start-services.sh
 COPY src/slurm/load-methods.sh /load-methods.sh
 COPY src/slurm/scripts /app/slurm/scripts
 
-# Copy startup wrapper scripts and make them executable
-COPY environment/startup/pre-startup-wrapper.sh /pre-startup-wrapper.sh
-RUN chmod +x /pre-startup-wrapper.sh
-
 # Make the startup scripts executable
 RUN chmod +x /start-services.sh \
     && chmod +x /load-methods.sh \
@@ -187,8 +183,9 @@ RUN chmod +x /start-services.sh \
 RUN echo '#!/bin/bash' > /entrypoint.sh && \
     echo 'set -e' >> /entrypoint.sh && \
     echo '# Run pre-startup script (must complete before container is considered ready)' >> /entrypoint.sh && \
-    echo 'if [ -f /pre-startup-wrapper.sh ]; then' >> /entrypoint.sh && \
-    echo '    /pre-startup-wrapper.sh' >> /entrypoint.sh && \
+    echo 'if [ -f /environment/startup/pre-startup.sh ] && [ -s /environment/startup/pre-startup.sh ]; then' >> /entrypoint.sh && \
+    echo '    chmod +x /environment/startup/pre-startup.sh' >> /entrypoint.sh && \
+    echo '    /environment/startup/pre-startup.sh' >> /entrypoint.sh && \
     echo 'fi' >> /entrypoint.sh && \
     echo '# Run main start-services script' >> /entrypoint.sh && \
     echo 'exec /start-services.sh "$@"' >> /entrypoint.sh && \

@@ -184,25 +184,6 @@ if [ $LOAD_METHODS_EXIT_CODE -ne 0 ]; then
     exit 1
 fi
 
-# Run runtime startup script from environment/startup/startup.sh if it exists
-# This runs during start-services.sh (runtime, after container is up)
-if [ -f /environment/startup/startup.sh ]; then
-    echo -e ""
-    echo -e "${BOLD}${CYAN}>> Running runtime startup script...${NC}"
-    set +e  # Temporarily disable exit on error for runtime script
-    if bash /environment/startup/startup.sh; then
-        echo -e "${GREEN}>> Runtime startup script completed successfully${NC}"
-    else
-        STARTUP_EXIT_CODE=$?
-        echo -e "${RED}>> ERROR: Runtime startup script failed with exit code $STARTUP_EXIT_CODE${NC}"
-        echo -e "${RED}>> Aborting service startup${NC}"
-        exit $STARTUP_EXIT_CODE
-    fi
-    set -e  # Re-enable exit on error
-else
-    echo -e "${CYAN}>> No runtime startup script found at /environment/startup/startup.sh (skipping)${NC}"
-fi
-
 # Start configuration monitor in background (checks for slurm.conf changes every 30s)
 (
     while true; do
