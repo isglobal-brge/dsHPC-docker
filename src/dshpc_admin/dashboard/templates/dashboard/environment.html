@@ -1,6 +1,13 @@
 {% extends "base.html" %}
 {% load dashboard_filters %}
 
+{% block extra_css %}
+<!-- Highlight.js for syntax highlighting -->
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/vs2015.min.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/bash.min.js"></script>
+{% endblock %}
+
 {% block page_actions %}
 <button onclick="manualRefresh()" class="btn btn-sm btn-outline-secondary" id="refreshBtn" disabled>
     <i class="bi bi-arrow-clockwise spin"></i>
@@ -97,6 +104,11 @@ function loadEnvironmentData() {
             
             // Apply syntax highlighting
             applySyntaxHighlighting();
+            
+            // Highlight startup scripts with highlight.js
+            document.querySelectorAll('code.language-bash').forEach((block) => {
+                hljs.highlightElement(block);
+            });
         })
         .catch(e => {
             document.getElementById('loadingState').style.display = 'none';
@@ -454,7 +466,9 @@ function buildStartupScriptsCard(startup_scripts) {
                     <div id="startupScript${script_name.replace(/[^a-zA-Z0-9]/g, '_')}" class="accordion-collapse collapse">
                         <div class="accordion-body">
                             ${has_content ? `
-                            <div class="terminal" style="max-height: 400px;" id="startupScriptContent${script_name.replace(/[^a-zA-Z0-9]/g, '_')}">${escapeHtml(script_content)}</div>
+                            <div style="max-height: 400px; overflow-y: auto;">
+                                <pre style="margin: 0; padding: 1rem; background: #1e1e1e; border-radius: 0.25rem;"><code class="language-bash" id="startupScriptContent${script_name.replace(/[^a-zA-Z0-9]/g, '_')}">${escapeHtml(script_content)}</code></pre>
+                            </div>
                             ` : '<p class="text-muted small mb-0">Script file exists but is empty</p>'}
                         </div>
                     </div>
@@ -464,11 +478,16 @@ function buildStartupScriptsCard(startup_scripts) {
         }
     }
     
+    // Count scripts that actually exist (not just empty strings)
+    const existing_scripts_count = script_order.filter(name => 
+        startup_scripts[name] !== undefined && startup_scripts[name] !== null
+    ).length;
+    
     return `
     <div class="card shadow-sm mb-4">
         <div class="card-header bg-dark text-white d-flex justify-content-between align-items-center">
             <span><i class="bi bi-file-play"></i> Startup Scripts</span>
-            <span class="badge bg-light text-dark">${Object.keys(startup_scripts).length} scripts</span>
+            ${existing_scripts_count > 0 ? `<span class="badge bg-light text-dark">${existing_scripts_count} script${existing_scripts_count !== 1 ? 's' : ''}</span>` : ''}
         </div>
         <div class="card-body">
             <p class="text-muted small mb-3">These scripts are executed during container initialization and affect the runtime environment.</p>
