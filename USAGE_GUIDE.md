@@ -15,8 +15,10 @@ This comprehensive guide explains how to use the **dsHPC R package** to submit j
 7. [Pipelines: Complete Examples](#pipelines-complete-examples)
 8. [Reference System ($ref)](#reference-system-ref)
 9. [Troubleshooting](#troubleshooting)
-10. [Best Practices](#best-practices)
-11. [Function Reference](#function-reference)
+10. [Method Script Development: Handling Input Formats](#method-script-development-handling-input-formats)
+11. [Array Ordering and Deduplication](#array-ordering-and-deduplication)
+12. [Best Practices](#best-practices)
+13. [Function Reference](#function-reference)
 
 ---
 
@@ -1507,6 +1509,173 @@ Before submitting, verify:
 - [ ] Required parameters are provided
 
 ---
+
+## Method Script Development: Handling Input Formats
+
+### Important Principle: Method Scripts Must Handle Input Variations
+
+When developing method scripts, it's crucial to understand that **your script must handle the various input formats** that the system might provide. The system delivers inputs in a standardized way, but the actual content format may vary depending on how the input was created (uploaded file, extracted from JSON, referenced from another job, etc.).
+
+### What Your Method Script Should Handle
+
+**Your method script** (`environment/methods/scripts/<method_name>/main.py`) should handle:
+
+1. **Different input formats**: The system may provide inputs in various formats
+   - Example: When `$ref` extracts a JSON path value (like `$ref:node1/data/mask_base64`), it creates a file containing that extracted value. If that value is base64-encoded, the file contains the base64 string as text, not the decoded binary.
+
+2. **Method-specific processing logic**: Any logic that's specific to how your method processes data
+   - Example: Detecting if an input file contains base64-encoded content and decoding it before processing
+
+3. **Input validation**: Validating or transforming inputs in ways specific to your method
+   - Example: Checking if a file is binary vs text, detecting file formats, handling edge cases
+
+4. **Output formatting**: Formatting outputs in ways specific to your method's requirements
+
+### Example: Handling Base64-Extracted Files
+
+**Problem**: When using `$ref:node1/data/mask_base64` in a pipeline, the system extracts the `mask_base64` value from the JSON output and creates a file containing that base64 string as text. Your method script receives a file path, but the file contains base64 text, not the decoded binary.
+
+**✅ Correct Approach**: Handle it in your method script
+```python
+# In your method script (e.g., pyradiomics/main.py)
+def decode_mask_from_base64(mask_base64):
+    """Decode mask from base64 string and save to temporary file."""
+    mask_bytes = base64.b64decode(mask_base64)
+    with tempfile.NamedTemporaryFile(suffix='.nii.gz', delete=False) as tmp_file:
+        tmp_path = tmp_file.name
+        tmp_file.write(mask_bytes)
+    return tmp_path, None
+
+# When reading mask file, check if it contains base64
+mask_path = files['mask']  # From metadata
+# Check if file contains base64-encoded content
+try:
+    with open(mask_path, 'rb') as f:
+        first_bytes = f.read(100)
+        # Check if file starts with base64-like content (text, not binary)
+        if len(first_bytes) > 0 and first_bytes[0] not in [0x00, 0x1E, 0x5C]:
+            # Try to read as text and decode base64
+            with open(mask_path, 'r', encoding='utf-8') as text_file:
+                content = text_file.read().strip()
+                if all(c.isalnum() or c in '+/=' for c in content) and len(content) > 100:
+                    # Likely base64, decode it
+                    mask_bytes = base64.b64decode(content)
+                    # Create temporary file with decoded content
+                    with tempfile.NamedTemporaryFile(suffix='.nii.gz', delete=False) as tmp_file:
+                        tmp_path = tmp_file.name
+                        tmp_file.write(mask_bytes)
+                    mask_path = tmp_path
+except Exception:
+    # If reading fails, continue with original file path
+    pass
+```
+
+### Key Takeaways
+
+1. **Method scripts handle input variations**: Each method script should handle the various formats it might receive
+2. **Detect and adapt**: Method scripts should detect input formats and adapt accordingly
+3. **Error handling**: Method scripts should gracefully handle unexpected input formats
+4. **Don't assume input format**: Always validate and handle different possible input formats
+
+### Best Practices for Method Scripts
+
+1. **Always validate inputs**: Check file existence, format, and content before processing
+2. **Handle multiple formats**: Be prepared to receive inputs in different formats (binary, text, base64, etc.)
+3. **Provide clear errors**: If an input format is unsupported, provide a clear error message
+4. **Clean up temporary files**: If you create temporary files, clean them up after use
+5. **Document assumptions**: Document what input formats your method expects and handles
+
+---
+
+## Array Ordering and Deduplication
+
+### Important: Arrays Preserve Order
+
+**Arrays in `file_inputs` are NOT automatically sorted** - their order is preserved exactly as you provide it. This is intentional because the order of array elements may be semantically important for your use case.
+
+### What Gets Sorted (For Deduplication)
+
+The system automatically sorts certain elements for **deduplication purposes** (to ensure that identical jobs/meta-jobs/pipelines are detected correctly):
+
+1. **Parameter keys**: Parameters are sorted alphabetically by key name (recursively for nested structures)
+2. **File input keys**: The names of `file_inputs` are sorted alphabetically (e.g., `input_a`, `input_b` → sorted alphabetically)
+3. **Node IDs**: Pipeline node IDs are sorted alphabetically
+
+### What Does NOT Get Sorted
+
+**Array elements within `file_inputs` are NOT sorted** - their order is preserved exactly as provided:
+
+```r
+# This array order is PRESERVED
+file_inputs <- list(
+  inputs = c("hash3", "hash1", "hash2")  # Order: hash3, hash1, hash2
+)
+
+# The system will use this exact order for deduplication
+# If you want sorted order, you must sort it yourself:
+file_inputs <- list(
+  inputs = sort(c("hash3", "hash1", "hash2"))  # Now: hash1, hash2, hash3
+)
+```
+
+### Why Sorting Matters (Deduplication)
+
+The sorting of keys (but not array elements) ensures **deterministic hash computation** for deduplication:
+
+- **Same parameters in different order** → Same hash (because parameters are sorted)
+- **Same file_inputs keys in different order** → Same hash (because keys are sorted)
+- **Same array elements in different order** → **Different hash** (because arrays preserve order)
+
+### When to Sort Arrays Yourself
+
+**You should sort arrays yourself** if:
+
+1. **Order doesn't matter**: If the order of elements in your array doesn't affect the result, sort them to improve deduplication
+   ```r
+   # If order doesn't matter, sort for better deduplication
+   file_inputs <- list(
+     inputs = sort(c("hash3", "hash1", "hash2"))
+   )
+   ```
+
+2. **You want consistent deduplication**: If you want `c("hash1", "hash2")` and `c("hash2", "hash1")` to be treated as the same job, sort them
+
+**You should NOT sort arrays** if:
+
+1. **Order matters**: If the order of elements affects your method's output, preserve the order
+   ```r
+   # If order matters (e.g., processing sequence), preserve it
+   file_inputs <- list(
+     inputs = c("hash3", "hash1", "hash2")  # Order preserved
+   )
+   ```
+
+2. **Semantic meaning**: If the array order has semantic meaning (e.g., time series, processing order), preserve it
+
+### Example: When Order Matters vs When It Doesn't
+
+**Order matters** (e.g., time series data):
+```r
+# Preserve order - each file represents a time point
+file_inputs <- list(
+  time_series = c("t1_hash", "t2_hash", "t3_hash")  # Order is critical!
+)
+```
+
+**Order doesn't matter** (e.g., batch processing):
+```r
+# Sort for better deduplication - order doesn't affect result
+file_inputs <- list(
+  batch_files = sort(c("file3_hash", "file1_hash", "file2_hash"))
+)
+```
+
+### Summary
+
+- **Arrays preserve order**: The system does NOT auto-sort array elements
+- **Keys are sorted**: Parameter keys and file_input keys are sorted for deduplication
+- **Developer decides**: You decide whether to sort arrays based on whether order matters
+- **Use `sort()` function**: If you want arrays sorted, use R's `sort()` function before submitting
 
 ## Best Practices
 
