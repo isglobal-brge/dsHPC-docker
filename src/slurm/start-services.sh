@@ -183,6 +183,21 @@ if [ $LOAD_METHODS_EXIT_CODE -ne 0 ]; then
     exit 1
 fi
 
+# Run startup script from environment/startup/startup.sh if it exists
+if [ -f /environment/startup/startup.sh ]; then
+    echo -e ""
+    echo -e "${BOLD}${CYAN}>> Running environment startup script...${NC}"
+    if bash /environment/startup/startup.sh; then
+        echo -e "${GREEN}>> Startup script completed successfully${NC}"
+    else
+        STARTUP_EXIT_CODE=$?
+        echo -e "${YELLOW}>> Warning: Startup script exited with code $STARTUP_EXIT_CODE (non-fatal)${NC}"
+        # Don't abort - startup script failures are non-fatal
+    fi
+else
+    echo -e "${CYAN}>> No startup script found at /environment/startup/startup.sh (skipping)${NC}"
+fi
+
 # Start configuration monitor in background (checks for slurm.conf changes every 30s)
 (
     while true; do
