@@ -1159,7 +1159,8 @@ def environment_info(request):
     if not is_ajax:
         # Return loading page immediately
         context = {
-            'page_title': 'Environment'
+            'page_title': 'Environment',
+            'env_config': get_env_config()
         }
         return render(request, 'dashboard/environment.html', context)
     
