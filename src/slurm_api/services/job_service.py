@@ -193,10 +193,56 @@ def prepare_job_script(job_hash: str, job: JobSubmission) -> str:
         f.write("#!/bin/bash\n")
         if job.name:
             f.write(f"#SBATCH --job-name={job.name}\n")
-        # Allocate maximum available memory (0 means all available)
-        f.write("#SBATCH --mem=0\n")
-        # Use all available CPUs
-        f.write("#SBATCH --cpus-per-task=8\n")
+
+        # Get resource requirements from method (if available)
+        resources = method_doc.get("resources", {}) if method_doc else {}
+
+        # Read default CPUs from config file, env var, or use fallback
+        default_cpus = 2  # Ultimate fallback
+        # Try to read from dshpc.conf
+        config_path = "/config/dshpc.conf"
+        if os.path.exists(config_path):
+            try:
+                with open(config_path, 'r') as cfg:
+                    for line in cfg:
+                        line = line.strip()
+                        if line.startswith('DEFAULT_CPUS_PER_TASK='):
+                            default_cpus = int(line.split('=')[1])
+                            break
+            except Exception:
+                pass
+        # Env var takes precedence over config file
+        default_cpus = int(os.environ.get("DEFAULT_CPUS_PER_TASK", default_cpus))
+        cpus = resources.get("cpus", default_cpus)
+        # 0 means use all available CPUs (don't specify, let Slurm use node default)
+        if cpus == 0:
+            # Get total CPUs from system
+            try:
+                import multiprocessing
+                cpus = multiprocessing.cpu_count()
+            except Exception:
+                cpus = 8  # Fallback if detection fails
+        f.write(f"#SBATCH --cpus-per-task={cpus}\n")
+
+        # Memory: use method's setting or default to all available
+        # 0 or unset means use all available memory (--mem=0)
+        memory_mb = resources.get("memory_mb")
+        if memory_mb and memory_mb > 0:
+            f.write(f"#SBATCH --mem={memory_mb}M\n")
+        else:
+            # 0 or unset = all available memory
+            f.write("#SBATCH --mem=0\n")
+
+        # Time limit: use method's setting if specified
+        time_limit = resources.get("time_limit")
+        if time_limit:
+            f.write(f"#SBATCH --time={time_limit}\n")
+
+        # GPUs: use method's setting if specified
+        gpus = resources.get("gpus")
+        if gpus:
+            f.write(f"#SBATCH --gpus={gpus}\n")
+
         # Capture output to a file
         output_path = f"/tmp/output_{job_hash}.txt"
         error_path = f"/tmp/error_{job_hash}.txt"

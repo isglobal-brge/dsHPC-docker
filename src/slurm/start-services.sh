@@ -24,6 +24,29 @@ echo -e "${BOLD}Welcome to ${YELLOW}High-Performance Computing for DataSHIELD${N
 echo -e ""
 echo -e "${BOLD}${CYAN}>> Starting services...${NC}"
 
+# Handle dshpc.conf - check if custom config exists, otherwise create default
+if [ -f /config/dshpc.conf ]; then
+    echo -e "${GREEN}>> Using custom dshpc.conf from /config${NC}"
+else
+    echo -e "${YELLOW}>> No custom dshpc.conf found, creating default configuration${NC}"
+    cat > /config/dshpc.conf << 'EOF'
+# dsHPC Job Resource Defaults
+# These values are used when a method doesn't specify its own resource requirements
+# Use 0 to request all available resources (max CPUs, max memory)
+
+# Default CPUs per task (0 = all available CPUs)
+DEFAULT_CPUS_PER_TASK=2
+
+# Default memory per task in MB (0 = all available memory)
+# DEFAULT_MEMORY_MB=0
+
+# Default time limit (optional, format: HH:MM:SS)
+# DEFAULT_TIME_LIMIT=01:00:00
+EOF
+fi
+# Show current settings
+echo -e "${CYAN}   DEFAULT_CPUS_PER_TASK=$(grep '^DEFAULT_CPUS_PER_TASK=' /config/dshpc.conf | cut -d'=' -f2)${NC}"
+
 # Function to reload slurm configuration
 reload_slurm_config() {
     if [ -f /config/slurm.conf ]; then

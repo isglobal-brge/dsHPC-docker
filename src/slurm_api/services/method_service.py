@@ -579,6 +579,7 @@ def register_method(method_data: Dict[str, Any], method_dir: str) -> Tuple[bool,
             "command": method_data.get("command", "python"),
             "script_path": method_data.get("script_path", ""),
             "parameters": method_data.get("parameters", []),
+            "resources": method_data.get("resources"),  # Resource requirements (cpus, memory_mb, time_limit, gpus)
             "input_modes": method_data.get("input_modes"),
             "function_hash": function_hash,
             "version": method_data.get("version", "1.0.0"),
