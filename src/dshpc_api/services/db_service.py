@@ -167,9 +167,10 @@ async def upload_file(file_data: Dict[str, Any]) -> Tuple[bool, str, Dict[str, A
     except Exception as e:
         return False, f"Error decoding file content: {str(e)}", None
     
-    # Use GridFS for files larger than 15MB (leaving 1MB margin for BSON overhead)
-    # 15MB = 15 * 1024 * 1024 bytes
-    GRIDFS_THRESHOLD = 15 * 1024 * 1024
+    # Use GridFS for files larger than 11MB
+    # Base64 encoding increases size by ~33%, so 11MB raw becomes ~14.7MB encoded
+    # This leaves margin for BSON overhead within MongoDB's 16MB document limit
+    GRIDFS_THRESHOLD = 11 * 1024 * 1024
     
     if file_size > GRIDFS_THRESHOLD:
         # Use GridFS for large files

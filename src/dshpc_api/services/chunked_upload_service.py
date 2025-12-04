@@ -265,8 +265,10 @@ class ChunkedUploadService:
             # Get file size
             file_size = os.path.getsize(combined_path)
             
-            # Upload to database - use GridFS for files > 15 MB
-            GRIDFS_THRESHOLD = 15 * 1024 * 1024
+            # Upload to database - use GridFS for files > 11 MB
+            # Base64 encoding increases size by ~33%, so 11MB raw becomes ~14.7MB encoded
+            # This leaves margin for BSON overhead within MongoDB's 16MB document limit
+            GRIDFS_THRESHOLD = 11 * 1024 * 1024
             now = datetime.utcnow()
             
             if file_size > GRIDFS_THRESHOLD:
