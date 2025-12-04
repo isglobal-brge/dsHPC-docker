@@ -60,12 +60,18 @@ def compute_meta_job_hash(request: MetaJobRequest, chain_function_hashes: List[s
     for i, (step, function_hash) in enumerate(zip(request.method_chain, chain_function_hashes)):
         hash_components.append(f"step:{i}")
         hash_components.append(f"function:{function_hash}")
-        
+
         # Sort parameters for determinism
         sorted_params = sort_parameters(step.parameters)
         params_json = json.dumps(sorted_params, sort_keys=True)
         hash_components.append(f"params:{params_json}")
-    
+
+        # Include file_inputs in hash if present
+        if step.file_inputs:
+            sorted_file_inputs = sort_file_inputs(step.file_inputs)
+            file_inputs_json = json.dumps(sorted_file_inputs, sort_keys=True)
+            hash_components.append(f"file_inputs:{file_inputs_json}")
+
     # Combine all components
     hash_input = "|".join(hash_components)
     hash_bytes = hash_input.encode('utf-8')
