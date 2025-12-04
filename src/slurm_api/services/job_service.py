@@ -104,12 +104,38 @@ def prepare_job_script(job_hash: str, job: JobSubmission) -> str:
             file_paths["input"] = file_path
         # If no file_hash, leave file_paths empty (params-only job)
     
+    # Check for extracted JSON files and inject their values into params
+    # This handles $ref extractions that produce JSON with data/text or value fields
+    injected_params = {}
+    logger.info(f"  Checking {len(file_paths)} file_paths for JSON injection...")
+    for input_name, file_path in list(file_paths.items()):
+        logger.info(f"    - '{input_name}': {file_path}")
+        if isinstance(file_path, str) and file_path.endswith('.json'):
+            logger.info(f"      -> JSON file detected, attempting injection")
+            try:
+                with open(file_path, 'r', encoding='utf-8') as f:
+                    content = json.load(f)
+                    logger.info(f"      -> Parsed JSON, keys: {list(content.keys()) if isinstance(content, dict) else 'not a dict'}")
+                    # Check for data/text structure (standard extraction format)
+                    if isinstance(content, dict) and 'data' in content and 'text' in content.get('data', {}):
+                        value = content['data']['text']
+                        injected_params[input_name] = value
+                        logger.info(f"  Injected '{input_name}' from data/text into params (length: {len(str(value))})")
+                    # Check for value structure (legacy format)
+                    elif isinstance(content, dict) and 'value' in content:
+                        injected_params[input_name] = content['value']
+                        logger.info(f"  Injected '{input_name}' from value into params")
+                    else:
+                        logger.info(f"      -> No data/text or value structure found")
+            except Exception as e:
+                logger.warning(f"  Could not parse '{input_name}' as JSON for injection: {e}")
+
     # Create metadata.json with file paths and workspace info
     metadata = {
         "workspace_dir": workspace_dir,
         "files": file_paths  # Dict of all files (single or multi)
     }
-    
+
     metadata_file_path = os.path.join(workspace_dir, "metadata.json")
     with open(metadata_file_path, "w") as meta_f:
         json.dump(metadata, meta_f, indent=2)
@@ -124,9 +150,15 @@ def prepare_job_script(job_hash: str, job: JobSubmission) -> str:
         method_doc = find_method_by_hash(job.function_hash)
         if not method_doc:
             raise ValueError(f"Method with hash {job.function_hash} not found in database")
-        
+
+        # Merge injected params from extracted JSON files into job parameters
+        merged_params = dict(job.parameters) if job.parameters else {}
+        if injected_params:
+            merged_params.update(injected_params)
+            logger.info(f"Merged {len(injected_params)} injected params into job parameters")
+
         # Sort parameters to ensure consistent ordering
-        sorted_params = sort_parameters(job.parameters)
+        sorted_params = sort_parameters(merged_params)
         
         # Prepare method execution
         # For backward compatibility, use file_hash or file_inputs

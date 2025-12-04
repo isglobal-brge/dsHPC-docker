@@ -143,17 +143,17 @@ async def extract_and_store_path(
     extracted_content = json.dumps(result)
     extracted_bytes = extracted_content.encode('utf-8')
     extracted_base64 = base64.b64encode(extracted_bytes).decode('utf-8')
-    
+
     # Compute hash for deduplication
     import hashlib
     extracted_hash = hashlib.sha256(extracted_bytes).hexdigest()
-    
+
     # Check if already exists
     existing = await files_db.files.find_one({"file_hash": extracted_hash})
     if existing:
         logger.debug(f"[{context}] Path extraction '{path}' already exists: {extracted_hash[:12]}...")
         return extracted_hash
-    
+
     # Store as new file
     file_doc = {
         "file_hash": extracted_hash,

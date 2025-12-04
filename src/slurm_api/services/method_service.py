@@ -133,12 +133,28 @@ def prepare_method_execution(workspace_dir: str, method_execution: MethodExecuti
         
         if not success:
             return False, message, None
-        
+
+        # Coerce parameters based on method parameter definitions
+        # (e.g., convert array to comma-separated string for string-type params)
+        coerced_params = dict(method_execution.parameters) if method_execution.parameters else {}
+        param_definitions = method_data.get("parameters", [])
+
+        for param_def in param_definitions:
+            param_name = param_def.get("name")
+            param_type = param_def.get("type", "").lower()
+
+            if param_name in coerced_params:
+                value = coerced_params[param_name]
+                # If param is defined as string but received as list, convert to comma-separated
+                if param_type == "string" and isinstance(value, list):
+                    coerced_params[param_name] = ",".join(str(v) for v in value)
+                    logger.info(f"Coerced '{param_name}' from list to string: {coerced_params[param_name]}")
+
         # Create parameter file (for the script to access)
         params_file_path = os.path.join(workspace_dir, "params.json")
         with open(params_file_path, "w") as f:
-            json.dump(method_execution.parameters, f)
-        
+            json.dump(coerced_params, f)
+
         # Create execution data
         method = Method(**method_data)
         

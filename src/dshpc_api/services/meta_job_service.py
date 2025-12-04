@@ -66,12 +66,13 @@ def compute_meta_job_hash(request: MetaJobRequest, chain_function_hashes: List[s
         params_json = json.dumps(sorted_params, sort_keys=True)
         hash_components.append(f"params:{params_json}")
 
-        # Include file_inputs in hash if present
+        # Include file_inputs in hash (important for $ref paths)
+        # This ensures different $ref paths produce different meta-job hashes
         if step.file_inputs:
             sorted_file_inputs = sort_file_inputs(step.file_inputs)
             file_inputs_json = json.dumps(sorted_file_inputs, sort_keys=True)
             hash_components.append(f"file_inputs:{file_inputs_json}")
-
+    
     # Combine all components
     hash_input = "|".join(hash_components)
     hash_bytes = hash_input.encode('utf-8')
@@ -124,19 +125,24 @@ async def extract_and_store_path_from_hash(source_hash: str, path: str, files_db
             raise ValueError(f"Path {path} not found in output")
     
     # Wrap extracted value in standard format
-    extracted_data = {"value": current}
+    # For primitives (string, number), wrap in data/text structure
+    # For complex values (dict, list), store as-is
+    if isinstance(current, (str, int, float, bool)):
+        extracted_data = {"data": {"text": str(current)}}
+    else:
+        extracted_data = current
     extracted_json = json.dumps(extracted_data, indent=2)
     extracted_bytes = extracted_json.encode('utf-8')
-    
+
     # Calculate hash
     extracted_hash = hashlib.sha256(extracted_bytes).hexdigest()
-    
+
     # Check if already exists
     existing = await files_db.files.find_one({"file_hash": extracted_hash})
     if existing:
         logger.debug(f"Extracted value for {path} already exists as {extracted_hash[:8]}...")
         return extracted_hash
-    
+
     # Store as new file with metadata
     file_doc = {
         "file_hash": extracted_hash,

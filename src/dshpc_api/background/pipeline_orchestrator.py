@@ -66,14 +66,14 @@ async def extract_and_store_path(source_hash: str, path: str, pipeline_node: str
     else:
         # Complex value (dict, list): store as-is
         extracted_data = result
-    
+
     extracted_json = json.dumps(extracted_data, indent=2)
     extracted_bytes = extracted_json.encode('utf-8')
     extracted_b64 = base64.b64encode(extracted_bytes).decode('utf-8')
-    
+
     # Calculate hash
     extracted_hash = hashlib.sha256(extracted_bytes).hexdigest()
-    
+
     # Store in database
     await files_db.files.update_one(
         {"file_hash": extracted_hash},
