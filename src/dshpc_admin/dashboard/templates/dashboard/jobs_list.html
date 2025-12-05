@@ -7,6 +7,9 @@
         <a href="{% url 'jobs_list' %}?per_page={{ per_page }}" class="btn {% if not status_filter %}btn-dark{% else %}btn-outline-secondary{% endif %}">
             All
     </a>
+        <a href="{% url 'jobs_list' %}?status=PD&per_page={{ per_page }}" class="btn {% if status_filter == 'PD' %}btn-warning{% else %}btn-outline-secondary{% endif %}">
+            Pending
+    </a>
         <a href="{% url 'jobs_list' %}?status=R&per_page={{ per_page }}" class="btn {% if status_filter == 'R' %}btn-info{% else %}btn-outline-secondary{% endif %}">
             Running
     </a>
@@ -15,6 +18,9 @@
     </a>
         <a href="{% url 'jobs_list' %}?status=F&per_page={{ per_page }}" class="btn {% if status_filter == 'F' %}btn-danger{% else %}btn-outline-secondary{% endif %}">
             Failed
+        </a>
+        <a href="{% url 'jobs_list' %}?status=CA&per_page={{ per_page }}" class="btn {% if status_filter == 'CA' %}btn-secondary{% else %}btn-outline-secondary{% endif %}">
+            Cancelled
         </a>
     </div>
     <button class="btn btn-sm btn-outline-secondary" type="button" data-bs-toggle="collapse" data-bs-target="#filterPanel">

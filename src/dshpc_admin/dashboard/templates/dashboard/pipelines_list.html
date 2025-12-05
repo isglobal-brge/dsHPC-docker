@@ -35,6 +35,9 @@
         <a href="{% url 'pipelines_list' %}?status=failed&per_page={{ per_page }}" class="btn {% if status_filter == 'failed' %}btn-danger{% else %}btn-outline-secondary{% endif %}">
             Failed
         </a>
+        <a href="{% url 'pipelines_list' %}?status=cancelled&per_page={{ per_page }}" class="btn {% if status_filter == 'cancelled' %}btn-secondary{% else %}btn-outline-secondary{% endif %}">
+            Cancelled
+        </a>
     </div>
     <button class="btn btn-sm btn-outline-secondary" type="button" data-bs-toggle="collapse" data-bs-target="#filterPanel">
         <i class="bi bi-funnel"></i> Advanced Filters
