@@ -43,17 +43,50 @@ def get_active_jobs() -> Dict[str, str]:
     
     return slurm_statuses
 
-def get_job_final_state(slurm_id: str) -> str:
-    """Get final state of a completed job from sacct."""
+def get_job_final_state(slurm_id: str, job_hash: str = None) -> str:
+    """Get final state of a completed job from sacct or scontrol."""
+    import os
+
+    # First try sacct
     sacct_result = subprocess.run(
         ["sacct", "-j", slurm_id, "--format=State", "--noheader", "--parsable2"],
         capture_output=True,
         text=True
     )
-    
+
     if sacct_result.returncode == 0 and sacct_result.stdout.strip():
-        return sacct_result.stdout.strip().split("\n")[0]
-    
+        state = sacct_result.stdout.strip().split("\n")[0]
+        # sacct might return states like "CANCELLED by 0" - extract just the state
+        if " " in state:
+            state = state.split()[0]
+        return state
+
+    # If sacct doesn't work (accounting disabled), try scontrol
+    scontrol_result = subprocess.run(
+        ["scontrol", "show", "job", slurm_id],
+        capture_output=True,
+        text=True
+    )
+
+    if scontrol_result.returncode == 0 and "JobState=" in scontrol_result.stdout:
+        # Parse JobState from scontrol output
+        for part in scontrol_result.stdout.split():
+            if part.startswith("JobState="):
+                return part.split("=")[1]
+
+    # If we can't get state from Slurm, check if output files exist
+    # This helps distinguish between completed and cancelled jobs
+    if job_hash:
+        output_path = f"/tmp/output_{job_hash}.txt"
+        exit_code_path = f"/tmp/exit_code_{job_hash}"
+
+        # If output files exist, job completed (success or failure will be determined by process_job_output)
+        if os.path.exists(output_path) or os.path.exists(exit_code_path):
+            return "CD"  # Completed (final status determined by exit code)
+        else:
+            # No output files = job was likely cancelled or never ran
+            return "CA"  # Cancelled
+
     return "CD"  # Default to completed if we can't determine
 
 def submit_slurm_job(script_path: str) -> Tuple[bool, str, str]:

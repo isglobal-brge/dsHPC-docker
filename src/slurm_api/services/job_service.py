@@ -426,7 +426,24 @@ def process_job_output(job_hash: str, slurm_id: str, final_state: str) -> bool:
     stderr_content = None
     error = None
     job_status = JobStatus.FAILED # Default to FAILED
-    
+
+    # Check if job was cancelled/killed (no output files exist at all)
+    # This typically happens when scancel is used or job is externally terminated
+    if final_state in ["CA", "CANCELLED"] or (not os.path.exists(exit_code_path) and not os.path.exists(output_path) and not os.path.exists(error_path)):
+        # Job was cancelled or has no traces - delete from database to allow retry
+        logger.warning(f"Job {job_hash} appears cancelled or orphaned (no output files). Deleting from database to allow retry.")
+        try:
+            # Delete job from database
+            result = jobs_collection.delete_one({"job_hash": job_hash})
+            if result.deleted_count > 0:
+                logger.info(f"Job {job_hash} deleted from database (was cancelled/orphaned)")
+            else:
+                logger.warning(f"Job {job_hash} not found in database for deletion")
+            return True  # Return success so we don't retry immediately
+        except Exception as e:
+            logger.error(f"Error deleting cancelled job {job_hash}: {e}")
+            return False
+
     # Read exit code if file exists
     if os.path.exists(exit_code_path):
         try:

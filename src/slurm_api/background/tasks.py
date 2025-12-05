@@ -1,4 +1,5 @@
 import asyncio
+import os
 
 from slurm_api.config.db_config import jobs_collection
 from slurm_api.config.logging_config import logger
@@ -6,6 +7,70 @@ from slurm_api.models.job import JobStatus
 from slurm_api.services.slurm_service import get_active_jobs, get_job_final_state
 from slurm_api.services.job_service import process_job_output
 from slurm_api.utils.db_utils import update_job_status
+
+
+async def check_cancelled_jobs():
+    """
+    Detect and clean up jobs that were cancelled externally (e.g., via scancel).
+
+    A job is considered cancelled if:
+    1. It has a slurm_id (was submitted to Slurm)
+    2. It's not in a terminal state in our DB
+    3. It's no longer in the Slurm queue
+    4. It has no output files (meaning it was killed before completing)
+
+    Also cleans up jobs that failed with "Exit code file not found" error,
+    which indicates they were killed before producing output.
+    """
+    try:
+        cancelled_count = 0
+
+        # Part 1: Check active jobs that disappeared from Slurm queue
+        slurm_statuses = get_active_jobs()
+
+        active_db_jobs = jobs_collection.find({
+            "status": {"$in": [JobStatus.PENDING, JobStatus.RUNNING, "PD", "R", "CG"]},
+            "slurm_id": {"$ne": None}
+        })
+
+        for job in active_db_jobs:
+            slurm_id = job["slurm_id"]
+            job_hash = job["job_hash"]
+
+            if slurm_id not in slurm_statuses:
+                output_path = f"/tmp/output_{job_hash}.txt"
+                exit_code_path = f"/tmp/exit_code_{job_hash}"
+                error_path = f"/tmp/error_{job_hash}.txt"
+
+                if not os.path.exists(output_path) and not os.path.exists(exit_code_path) and not os.path.exists(error_path):
+                    logger.warning(f"Detected cancelled job {job_hash} (slurm_id={slurm_id}) - no output files found")
+                    result = jobs_collection.delete_one({"job_hash": job_hash})
+                    if result.deleted_count > 0:
+                        logger.info(f"🗑️ Deleted cancelled job {job_hash} from database")
+                        cancelled_count += 1
+
+        # Part 2: Clean up failed jobs where the exit code file was not found
+        # This means the job was killed externally (scancel, OOM, timeout, container restart)
+        # before it could write its exit code - NOT a logical error in the job itself
+        # These jobs should be deleted so they can be retried
+        failed_external_jobs = jobs_collection.find({
+            "status": {"$in": [JobStatus.FAILED, "FA", "F"]},
+            "error": {"$regex": "Exit code file not found"}
+        })
+
+        for job in failed_external_jobs:
+            job_hash = job["job_hash"]
+            logger.warning(f"Found externally-killed job {job_hash} (no exit code file)")
+            result = jobs_collection.delete_one({"job_hash": job_hash})
+            if result.deleted_count > 0:
+                logger.info(f"🗑️ Deleted killed job {job_hash} from database (will retry)")
+                cancelled_count += 1
+
+        if cancelled_count > 0:
+            logger.info(f"🧹 Cleaned up {cancelled_count} cancelled/orphaned jobs")
+
+    except Exception as e:
+        logger.error(f"Error checking cancelled jobs: {e}")
 
 async def check_orphaned_jobs():
     """Find and retry jobs that are pending but were never submitted to Slurm."""
@@ -95,9 +160,12 @@ async def check_orphaned_jobs():
 async def check_jobs_once():
     """Run a single iteration of job status check."""
     try:
-        # First, check for orphaned jobs and retry them
+        # First, check for cancelled jobs and clean them up
+        await check_cancelled_jobs()
+
+        # Then, check for orphaned jobs and retry them
         await check_orphaned_jobs()
-        
+
         # Find all jobs that are in a non-terminal state AND have slurm_id
         active_jobs = jobs_collection.find({
             "status": {"$nin": [JobStatus.COMPLETED, JobStatus.FAILED, JobStatus.CANCELLED, 
@@ -116,8 +184,8 @@ async def check_jobs_once():
             
             # If job not in Slurm queue, check sacct for final status
             if slurm_id not in slurm_statuses:
-                # Get final status from sacct
-                final_state = get_job_final_state(slurm_id)
+                # Get final status from sacct (pass job_hash to help detect cancelled jobs)
+                final_state = get_job_final_state(slurm_id, job_hash)
                 process_job_output(job_hash, slurm_id, final_state)
             else:
                 # Update status if job is still in queue
