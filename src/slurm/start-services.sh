@@ -30,15 +30,30 @@ if [ -f /config/dshpc.conf ]; then
 else
     echo -e "${YELLOW}>> No custom dshpc.conf found, creating default configuration${NC}"
     cat > /config/dshpc.conf << 'EOF'
+# ============================================================================
 # dsHPC Job Resource Defaults
-# These values are used when a method doesn't specify its own resource requirements
-# Use 0 to request all available resources (max CPUs, max memory)
+# ============================================================================
+# These values are used when a method doesn't specify its own resource requirements.
+#
+# IMPORTANT: For methods that need more resources (like deep learning),
+# specify min_memory_mb in the method's method.json file:
+#
+#   "resources": {
+#       "min_memory_mb": 4096,  // Method needs at least 4GB
+#       "cpus": 2               // Method needs 2 CPUs
+#   }
+#
+# ============================================================================
 
-# Default CPUs per task (0 = all available CPUs)
-DEFAULT_CPUS_PER_TASK=2
+# Default CPUs per task
+# Set to 1 to maximize parallelism (more jobs running simultaneously)
+# Methods that need more CPUs should specify it in their method.json
+DEFAULT_CPUS_PER_TASK=1
 
-# Default memory per task in MB (0 = all available memory)
-# DEFAULT_MEMORY_MB=0
+# Default memory per CPU in MB
+# With DEFAULT_CPUS_PER_TASK=1, each job gets 1024 MB by default
+# Heavy methods should specify min_memory_mb in method.json
+# DEFAULT_MEM_PER_CPU=1024
 
 # Default time limit (optional, format: HH:MM:SS)
 # DEFAULT_TIME_LIMIT=01:00:00
@@ -92,15 +107,15 @@ else
         SLURM_MEMORY_MB=1024
     fi
 
-    # CONSERVATIVE DEFAULT MEMORY PER CPU:
-    # Deep learning methods (like lungmask) can use 2-3 GB per process
-    # Set default to 1500 MB per CPU to be safe for most workloads
-    # With 2 CPUs per job (default), each job gets 3 GB
-    DEF_MEM_PER_CPU=1500
+    # MEMORY PER CPU ALLOCATION:
+    # Default to 1024 MB (1GB) per CPU for general workloads
+    # Methods that need more memory should specify min_memory_mb in method.json
+    # With DEFAULT_CPUS_PER_TASK=1, each job gets 1GB by default
+    DEF_MEM_PER_CPU=1024
 
     # Calculate max parallel jobs based on available memory
-    # Assuming 2 CPUs per job and DEF_MEM_PER_CPU per CPU
-    MEM_PER_JOB=$((DEF_MEM_PER_CPU * 2))
+    # With 1 CPU per job (default) and 1024 MB per CPU
+    MEM_PER_JOB=$((DEF_MEM_PER_CPU * 1))  # 1 CPU per job default
     MAX_PARALLEL_JOBS=$((SLURM_MEMORY_MB / MEM_PER_JOB))
 
     # Ensure at least 1 job can run
@@ -115,7 +130,8 @@ else
 
     echo -e "${CYAN}>> Detected resources: ${DETECTED_CPUS} CPUs, ${TOTAL_MEMORY_MB} MB total RAM${NC}"
     echo -e "${CYAN}>> Memory allocation: ${SYSTEM_RESERVED_MB} MB reserved for system, ${SLURM_MEMORY_MB} MB for jobs${NC}"
-    echo -e "${CYAN}>> Job resources: ${DEF_MEM_PER_CPU} MB per CPU (default), max ~${MAX_PARALLEL_JOBS} parallel jobs${NC}"
+    echo -e "${CYAN}>> Default job: 1 CPU, ${DEF_MEM_PER_CPU} MB RAM → max ~${MAX_PARALLEL_JOBS} parallel jobs${NC}"
+    echo -e "${CYAN}>> Methods can override with 'resources.min_memory_mb' in method.json${NC}"
 
     cat > /etc/slurm/slurm.conf << EOF
 ClusterName=${CLUSTER_NAME:-dshpc-slurm}
@@ -135,7 +151,8 @@ SelectTypeParameters=CR_Core_Memory
 # Total system: ${DETECTED_CPUS} CPUs, ${TOTAL_MEMORY_MB} MB RAM
 # Reserved for system (MongoDB, Slurm, OS): ${SYSTEM_RESERVED_MB} MB
 # Available for jobs: ${SLURM_MEMORY_MB} MB
-# Estimated max parallel jobs (2 CPUs each): ${MAX_PARALLEL_JOBS}
+# Default job: 1 CPU, ${DEF_MEM_PER_CPU} MB RAM
+# Estimated max parallel jobs: ${MAX_PARALLEL_JOBS}
 NodeName=localhost CPUs=${DETECTED_CPUS} RealMemory=${SLURM_MEMORY_MB} TmpDisk=100000 State=UNKNOWN
 PartitionName=debug Nodes=localhost Default=YES MaxTime=INFINITE State=UP DefMemPerCPU=${DEF_MEM_PER_CPU} MaxMemPerCPU=${MAX_MEM_PER_CPU}
 

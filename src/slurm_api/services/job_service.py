@@ -194,14 +194,30 @@ def prepare_job_script(job_hash: str, job: JobSubmission) -> str:
         if job.name:
             f.write(f"#SBATCH --job-name={job.name}\n")
 
-        # Get resource requirements from method (if available)
+        # ========================================================================
+        # RESOURCE ALLOCATION LOGIC
+        # ========================================================================
+        # Priority order for resources:
+        # 1. Method's explicit settings (from method.json "resources" field)
+        # 2. System defaults from dshpc.conf
+        # 3. Hardcoded conservative fallbacks
+        #
+        # The goal is to:
+        # - Maximize parallelism (more jobs running simultaneously)
+        # - Prevent OOM kills (each job gets enough memory)
+        # - Let methods specify their minimum requirements
+        # ========================================================================
+
         resources = method_doc.get("resources") if method_doc else None
         if resources is None:
             resources = {}
 
-        # Read default CPUs from config file, env var, or use fallback
-        default_cpus = 2  # Ultimate fallback
-        # Try to read from dshpc.conf
+        # --- CPU ALLOCATION ---
+        # Default: 1 CPU per job (maximizes parallelism)
+        # Methods can request more if needed
+        default_cpus = 1  # Conservative default for parallelism
+
+        # Read from dshpc.conf if available
         config_path = "/config/dshpc.conf"
         if os.path.exists(config_path):
             try:
@@ -213,34 +229,56 @@ def prepare_job_script(job_hash: str, job: JobSubmission) -> str:
                             break
             except Exception:
                 pass
-        # Env var takes precedence over config file
+
+        # Env var takes precedence
         default_cpus = int(os.environ.get("DEFAULT_CPUS_PER_TASK", default_cpus))
+
+        # Use method's cpus setting, or default
         cpus = resources.get("cpus", default_cpus)
-        # 0 means use all available CPUs (don't specify, let Slurm use node default)
+
+        # 0 means use all available CPUs (single job per node)
         if cpus == 0:
-            # Get total CPUs from system
             try:
                 import multiprocessing
                 cpus = multiprocessing.cpu_count()
             except Exception:
-                cpus = 8  # Fallback if detection fails
+                cpus = 8
+
         f.write(f"#SBATCH --cpus-per-task={cpus}\n")
 
-        # Memory: use method's setting if specified
-        # If not specified (None), calculate based on CPUs × DefMemPerCPU
-        # If explicitly 0, use --mem=0 for all available memory (single job per node)
-        # IMPORTANT: Always specify --mem explicitly so Slurm tracks memory allocation
-        memory_mb = resources.get("memory_mb")
+        # --- MEMORY ALLOCATION ---
+        # This is CRITICAL for preventing OOM kills!
+        # Priority:
+        # 1. memory_mb (explicit override)
+        # 2. min_memory_mb (method's minimum requirement)
+        # 3. Calculated from CPUs × default_mem_per_cpu
+        #
+        # The key insight: methods that need lots of memory (like deep learning)
+        # should specify min_memory_mb in their method.json
+
+        memory_mb = resources.get("memory_mb")  # Explicit override
+        min_memory_mb = resources.get("min_memory_mb")  # Minimum requirement
+
+        # Default memory per CPU - conservative for general workloads
+        # 1GB per CPU is reasonable for most R/Python scripts
+        # Heavy methods should specify min_memory_mb
+        default_mem_per_cpu = 1024  # 1GB per CPU
+
         if memory_mb is not None:
+            # Explicit memory setting takes precedence
             if memory_mb == 0:
-                # Explicit 0 = all available memory (single job per node)
+                # 0 = all available memory (single job per node)
                 f.write("#SBATCH --mem=0\n")
             else:
                 f.write(f"#SBATCH --mem={memory_mb}M\n")
+        elif min_memory_mb is not None:
+            # Method specified minimum memory requirement - use it!
+            # This is the recommended way for methods to avoid OOM
+            f.write(f"#SBATCH --mem={min_memory_mb}M\n")
         else:
-            # Calculate default memory based on CPUs × DefMemPerCPU (default 1500 MB/CPU)
-            # This ensures Slurm tracks memory allocation correctly for scheduling
-            default_mem_per_cpu = 1500  # Must match slurm.conf DefMemPerCPU
+            # Calculate based on CPUs
+            # For 1 CPU: 1024 MB
+            # For 2 CPUs: 2048 MB, etc.
             calculated_mem = cpus * default_mem_per_cpu
             f.write(f"#SBATCH --mem={calculated_mem}M\n")
 

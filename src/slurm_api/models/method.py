@@ -10,9 +10,30 @@ class MethodParameter(BaseModel):
     default: Optional[Any] = None
 
 class MethodResources(BaseModel):
-    """Model for method resource requirements."""
-    cpus: int = 1  # Number of CPUs per task (default: 1)
-    memory_mb: Optional[int] = None  # Memory in MB (None = use Slurm default)
+    """
+    Model for method resource requirements.
+
+    Methods can specify their minimum resource requirements to prevent OOM kills.
+    If not specified, system defaults are used (conservative for safety).
+
+    Example in method.json:
+    {
+        "resources": {
+            "min_memory_mb": 2048,  // Method needs at least 2GB
+            "cpus": 1              // Use 1 CPU
+        }
+    }
+    """
+    # CPU settings
+    cpus: int = 1  # Number of CPUs per task (default: 1 for max parallelism)
+
+    # Memory settings - CRITICAL for avoiding OOM kills
+    # If min_memory_mb is set, it's used as the actual memory request
+    # If not set, memory is calculated as cpus × default_mem_per_cpu
+    min_memory_mb: Optional[int] = None  # Minimum memory required (recommended to set!)
+    memory_mb: Optional[int] = None  # Explicit memory (overrides min_memory_mb if set)
+
+    # Time and GPU settings
     time_limit: Optional[str] = None  # Time limit (e.g., "01:00:00" for 1 hour)
     gpus: Optional[int] = None  # Number of GPUs (optional)
 
