@@ -195,7 +195,9 @@ def prepare_job_script(job_hash: str, job: JobSubmission) -> str:
             f.write(f"#SBATCH --job-name={job.name}\n")
 
         # Get resource requirements from method (if available)
-        resources = method_doc.get("resources", {}) if method_doc else {}
+        resources = method_doc.get("resources") if method_doc else None
+        if resources is None:
+            resources = {}
 
         # Read default CPUs from config file, env var, or use fallback
         default_cpus = 2  # Ultimate fallback
