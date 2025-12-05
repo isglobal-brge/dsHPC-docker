@@ -450,6 +450,176 @@ async def check_orphaned_jobs():
         logger.error(f"Error checking orphaned jobs (will retry next iteration): {e}")
 
 
+async def check_orphaned_meta_jobs_for_retry():
+    """
+    Find and retry meta-jobs that were cancelled due to service failures.
+
+    Checks ALL jobs in the chain (not just current step) to determine if any
+    was cancelled due to service failure. If so, reactivates the meta-job.
+    """
+    try:
+        reactivated_count = 0
+
+        # Patterns that indicate service/infrastructure failure (same as jobs)
+        service_failure_patterns = [
+            "service unavailable",
+            "Submission failed",
+            "Submission error",
+            "Connection refused",
+            "Connection reset",
+            "Internal server error",
+            "Memory specification can not be satisfied",
+            "failed without error details",
+            "likely service restart",
+            "no exit code",
+            "disappeared from Slurm",
+        ]
+
+        # Find cancelled meta-jobs
+        cancelled_meta_jobs = meta_jobs_collection.find({
+            "status": "cancelled"
+        })
+
+        for meta_job in cancelled_meta_jobs:
+            meta_job_hash = meta_job["meta_job_hash"]
+            chain = meta_job.get("chain", [])
+
+            # Check ALL jobs in the chain
+            should_reactivate = False
+            for step in chain:
+                job_hash = step.get("job_hash")
+                if not job_hash:
+                    continue
+
+                job = jobs_collection.find_one({"job_hash": job_hash})
+                if not job:
+                    continue
+
+                job_error = job.get("error", "") or ""
+                job_status = job.get("status")
+
+                # Check if this job was cancelled due to service failure
+                is_service_failure = any(pattern.lower() in job_error.lower() for pattern in service_failure_patterns)
+
+                # Or if the job was already reactivated (now PENDING or RUNNING)
+                job_reactivated = job_status in [JobStatus.PENDING, JobStatus.RUNNING, "PD", "R"]
+
+                if is_service_failure or job_reactivated:
+                    should_reactivate = True
+                    logger.debug(f"Meta-job {meta_job_hash}: job {job_hash} qualifies for reactivation (status={job_status}, service_failure={is_service_failure})")
+                    break
+
+            if should_reactivate:
+                # Reactivate the meta-job
+                result = meta_jobs_collection.update_one(
+                    {"meta_job_hash": meta_job_hash},
+                    {"$set": {"status": "running"}}
+                )
+                if result.modified_count > 0:
+                    logger.info(f"🔄 Reactivated cancelled meta-job {meta_job_hash} (service failure recovery)")
+                    reactivated_count += 1
+
+        if reactivated_count > 0:
+            logger.info(f"🔄 Reactivated {reactivated_count} cancelled meta-jobs")
+
+    except Exception as e:
+        logger.error(f"Error checking orphaned meta-jobs for retry: {e}")
+
+
+async def check_orphaned_pipelines_for_retry():
+    """
+    Find and retry pipelines that were cancelled due to service failures.
+
+    Checks ALL meta-jobs in the pipeline to determine if any was cancelled
+    due to service failure (by checking their jobs). If so, reactivates the pipeline.
+    """
+    try:
+        reactivated_count = 0
+
+        # Patterns that indicate service/infrastructure failure
+        service_failure_patterns = [
+            "service unavailable",
+            "Submission failed",
+            "Submission error",
+            "Connection refused",
+            "Connection reset",
+            "Internal server error",
+            "Memory specification can not be satisfied",
+            "failed without error details",
+            "likely service restart",
+            "no exit code",
+            "disappeared from Slurm",
+        ]
+
+        # Find cancelled pipelines
+        cancelled_pipelines = pipelines_collection.find({
+            "status": "cancelled"
+        })
+
+        for pipeline in cancelled_pipelines:
+            pipeline_hash = pipeline["pipeline_hash"]
+            nodes = pipeline.get("nodes", {})
+
+            should_reactivate = False
+
+            for node_id, node in nodes.items():
+                meta_job_hash = node.get("meta_job_hash")
+                if not meta_job_hash:
+                    continue
+
+                # Check meta-job status - if already reactivated, pipeline should too
+                meta_job = meta_jobs_collection.find_one({"meta_job_hash": meta_job_hash})
+                if not meta_job:
+                    continue
+
+                if meta_job.get("status") in ["running", "pending"]:
+                    should_reactivate = True
+                    logger.debug(f"Pipeline {pipeline_hash}: meta-job {meta_job_hash} is active, reactivating pipeline")
+                    break
+
+                # If meta-job is cancelled, check its jobs for service failure
+                if meta_job.get("status") == "cancelled":
+                    chain = meta_job.get("chain", [])
+                    for step in chain:
+                        job_hash = step.get("job_hash")
+                        if not job_hash:
+                            continue
+
+                        job = jobs_collection.find_one({"job_hash": job_hash})
+                        if not job:
+                            continue
+
+                        job_error = job.get("error", "") or ""
+                        job_status = job.get("status")
+
+                        is_service_failure = any(pattern.lower() in job_error.lower() for pattern in service_failure_patterns)
+                        job_reactivated = job_status in [JobStatus.PENDING, JobStatus.RUNNING, "PD", "R"]
+
+                        if is_service_failure or job_reactivated:
+                            should_reactivate = True
+                            logger.debug(f"Pipeline {pipeline_hash}: job {job_hash} in meta-job {meta_job_hash} qualifies for reactivation")
+                            break
+
+                    if should_reactivate:
+                        break
+
+            if should_reactivate:
+                # Reactivate the pipeline
+                result = pipelines_collection.update_one(
+                    {"pipeline_hash": pipeline_hash},
+                    {"$set": {"status": "running"}}
+                )
+                if result.modified_count > 0:
+                    logger.info(f"🔄 Reactivated cancelled pipeline {pipeline_hash} (service failure recovery)")
+                    reactivated_count += 1
+
+        if reactivated_count > 0:
+            logger.info(f"🔄 Reactivated {reactivated_count} cancelled pipelines")
+
+    except Exception as e:
+        logger.error(f"Error checking orphaned pipelines for retry: {e}")
+
+
 async def check_jobs_once():
     """Run a single iteration of job status check."""
     try:
@@ -461,6 +631,11 @@ async def check_jobs_once():
 
         # Then, check for orphaned jobs and retry them
         await check_orphaned_jobs()
+
+        # Reactivate meta-jobs and pipelines that were cancelled due to service failures
+        # This must run AFTER check_orphaned_jobs so jobs are reactivated first
+        await check_orphaned_meta_jobs_for_retry()
+        await check_orphaned_pipelines_for_retry()
 
         # Find all jobs that are in a non-terminal state AND have slurm_id
         active_jobs = jobs_collection.find({
