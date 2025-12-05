@@ -484,29 +484,130 @@ async def update_pipeline_overall_status(pipeline_hash: str) -> None:
             )
 
 
+async def recover_stalled_pipeline_nodes(pipeline_hash: str, pipeline_doc: Dict[str, Any]) -> bool:
+    """
+    Recover pipeline nodes that are 'running' but their meta-job has already completed.
+
+    This happens when:
+    - dshpc_api restarts while pipeline is running
+    - Meta-job completed but pipeline didn't get updated
+
+    Returns:
+        True if any recovery was performed
+    """
+    db = await get_jobs_db()
+    nodes = pipeline_doc["nodes"]
+    recovered = False
+
+    for node_id, node_data in nodes.items():
+        if node_data["status"] != PipelineNodeStatus.RUNNING.value:
+            continue
+
+        meta_job_hash = node_data.get("meta_job_hash")
+        if not meta_job_hash:
+            continue
+
+        # Check meta-job status
+        meta_job_info = await get_meta_job_info(meta_job_hash)
+
+        if not meta_job_info:
+            # Meta-job not found - this shouldn't happen, mark node as failed
+            logger.warning(f"🔄 RECOVERY: Pipeline {pipeline_hash} node {node_id} - meta-job {meta_job_hash[:16]}... not found")
+            await db.pipelines.update_one(
+                {"pipeline_hash": pipeline_hash},
+                {"$set": {
+                    f"nodes.{node_id}.status": PipelineNodeStatus.FAILED.value,
+                    f"nodes.{node_id}.error": "Meta-job not found (may have been deleted)",
+                    f"nodes.{node_id}.completed_at": datetime.utcnow()
+                }}
+            )
+            recovered = True
+            continue
+
+        # If meta-job is completed but node is still running, update node
+        if meta_job_info.status == "completed":
+            logger.warning(f"🔄 RECOVERY: Pipeline {pipeline_hash} node {node_id} - meta-job is COMPLETED but node still 'running'")
+
+            # Get output hash from meta-job
+            final_job_hash = meta_job_info.final_job_hash
+            jobs_db = await get_jobs_db()
+            final_job = await jobs_db.jobs.find_one({"job_hash": final_job_hash})
+
+            if final_job and final_job.get("output_file_hash"):
+                output_hash = final_job["output_file_hash"]
+            else:
+                output_hash = final_job_hash
+
+            await db.pipelines.update_one(
+                {"pipeline_hash": pipeline_hash},
+                {"$set": {
+                    f"nodes.{node_id}.status": PipelineNodeStatus.COMPLETED.value,
+                    f"nodes.{node_id}.output_hash": output_hash,
+                    f"nodes.{node_id}.completed_at": datetime.utcnow()
+                }}
+            )
+            logger.info(f"   Updated node {node_id} to COMPLETED with output_hash {output_hash[:16]}...")
+            recovered = True
+
+        elif meta_job_info.status == "failed":
+            logger.warning(f"🔄 RECOVERY: Pipeline {pipeline_hash} node {node_id} - meta-job FAILED but node still 'running'")
+            error_msg = meta_job_info.error or "Meta-job failed"
+
+            await db.pipelines.update_one(
+                {"pipeline_hash": pipeline_hash},
+                {"$set": {
+                    f"nodes.{node_id}.status": PipelineNodeStatus.FAILED.value,
+                    f"nodes.{node_id}.error": error_msg,
+                    f"nodes.{node_id}.completed_at": datetime.utcnow()
+                }}
+            )
+            recovered = True
+
+        elif meta_job_info.status == "cancelled":
+            logger.warning(f"🔄 RECOVERY: Pipeline {pipeline_hash} node {node_id} - meta-job CANCELLED but node still 'running'")
+
+            await db.pipelines.update_one(
+                {"pipeline_hash": pipeline_hash},
+                {"$set": {
+                    f"nodes.{node_id}.status": PipelineNodeStatus.CANCELLED.value,
+                    f"nodes.{node_id}.error": "Meta-job was cancelled",
+                    f"nodes.{node_id}.completed_at": datetime.utcnow()
+                }}
+            )
+            recovered = True
+
+    return recovered
+
+
 async def process_pipeline_once(pipeline_hash: str) -> None:
     """
     Process a single pipeline iteration.
     """
     db = await get_jobs_db()
     pipeline = await db.pipelines.find_one({"pipeline_hash": pipeline_hash})
-    
+
     if not pipeline:
         return
-    
+
     # Skip if already completed/failed/cancelled
     if pipeline["status"] in [PipelineStatus.COMPLETED.value, PipelineStatus.FAILED.value, PipelineStatus.CANCELLED.value]:
         return
-    
+
+    # First, recover any stalled nodes (meta-job completed but node not updated)
+    await recover_stalled_pipeline_nodes(pipeline_hash, pipeline)
+
+    # Reload pipeline after recovery
+    pipeline = await db.pipelines.find_one({"pipeline_hash": pipeline_hash})
+
     # Update running nodes
     await update_running_nodes(pipeline_hash, pipeline)
-    
+
     # Reload pipeline after updates
     pipeline = await db.pipelines.find_one({"pipeline_hash": pipeline_hash})
-    
+
     # Submit ready nodes
     await check_and_submit_ready_nodes(pipeline_hash, pipeline)
-    
+
     # Update overall status
     await update_pipeline_overall_status(pipeline_hash)
 

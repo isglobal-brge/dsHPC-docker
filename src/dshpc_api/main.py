@@ -27,6 +27,11 @@ async def startup_event():
     from dshpc_api.background.pipeline_orchestrator import pipeline_orchestrator
     asyncio.create_task(pipeline_orchestrator())
     logger.info("\033[1;36mPipeline orchestrator started\033[0m")
+
+    # Start meta-job background processor (recovery + monitoring)
+    from dshpc_api.background.meta_job_processor import start_background_processor
+    start_background_processor()
+    logger.info("\033[1;36mMeta-job background processor started\033[0m")
     
     # Log only important messages at API startup
     logger.info("\033[1;32mdsHPC API service started successfully!\033[0m")

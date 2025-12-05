@@ -32,7 +32,7 @@ def cascade_reactivate_pipelines(meta_job_hash: str) -> int:
             if node.get("meta_job_hash") == meta_job_hash:
                 result = pipelines_collection.update_one(
                     {"pipeline_hash": pipeline_hash},
-                    {"$set": {"status": "running"}}
+                    {"$set": {"status": "running", "error": None}}
                 )
                 if result.modified_count > 0:
                     logger.info(f"🔄 Cascade reactivated pipeline {pipeline_hash} (meta-job {meta_job_hash} was reactivated)")
@@ -61,10 +61,10 @@ def cascade_reactivate_meta_jobs(job_hash: str) -> tuple[int, int]:
     for meta_job in meta_jobs:
         meta_job_hash = meta_job["meta_job_hash"]
 
-        # Mark the meta-job as running
+        # Mark the meta-job as running and clear any old error
         result = meta_jobs_collection.update_one(
             {"meta_job_hash": meta_job_hash},
-            {"$set": {"status": "running"}}
+            {"$set": {"status": "running", "error": None}}
         )
         if result.modified_count > 0:
             logger.info(f"🔄 Cascade reactivated meta-job {meta_job_hash} (job {job_hash} was reactivated)")
@@ -523,6 +523,152 @@ async def check_orphaned_jobs():
         logger.error(f"Error checking orphaned jobs (will retry next iteration): {e}")
 
 
+async def check_stale_cancelled_meta_jobs():
+    """
+    Find and reactivate meta-jobs that were cancelled but their jobs are OK.
+
+    This handles the case where dshpc_api died while processing a meta-job:
+    - The jobs are completed or still running/pending
+    - But the meta-job got marked as cancelled because dshpc_api wasn't there to track it
+
+    Only reactivates if ALL existing jobs in the chain are OK (no real failures).
+    """
+    try:
+        reactivated_count = 0
+        pipeline_count = 0
+
+        # Find cancelled meta-jobs
+        cancelled_meta_jobs = meta_jobs_collection.find({
+            "status": "cancelled"
+        })
+
+        for meta_job in cancelled_meta_jobs:
+            meta_job_hash = meta_job["meta_job_hash"]
+            chain = meta_job.get("chain", [])
+
+            if not chain:
+                continue
+
+            # Check ALL jobs in the chain
+            has_real_failure = False
+            has_active_or_completed_job = False
+
+            for step in chain:
+                job_hash = step.get("job_hash")
+                if not job_hash:
+                    # Job not yet created for this step - that's ok, will be created when resumed
+                    continue
+
+                job = jobs_collection.find_one({"job_hash": job_hash})
+                if not job:
+                    continue
+
+                job_status = job.get("status")
+                job_error = job.get("error", "") or ""
+
+                # Check for real failures (not service failures)
+                if job_status in [JobStatus.CANCELLED, JobStatus.FAILED, "CA", "F", "FA"]:
+                    # Real job failures - OOM, crashes, etc. - should NOT be reactivated
+                    real_failure_patterns = [
+                        "OOM", "SIGKILL", "SIGSEGV", "SIGTERM",
+                        "137", "139", "143",
+                        "exit code", "crashed", "killed"
+                    ]
+                    if any(pattern.lower() in job_error.lower() for pattern in real_failure_patterns):
+                        has_real_failure = True
+                        break
+
+                # Track if we have any active or completed jobs
+                if job_status in [JobStatus.COMPLETED, JobStatus.RUNNING, JobStatus.PENDING, "CD", "R", "PD"]:
+                    has_active_or_completed_job = True
+
+            # Only reactivate if:
+            # 1. No real job failures
+            # 2. At least one job is active or completed
+            if not has_real_failure and has_active_or_completed_job:
+                result = meta_jobs_collection.update_one(
+                    {"meta_job_hash": meta_job_hash},
+                    {"$set": {"status": "running", "error": None}}
+                )
+                if result.modified_count > 0:
+                    logger.info(f"🔄 Reactivated stale meta-job {meta_job_hash} (jobs OK but meta-job was cancelled)")
+                    reactivated_count += 1
+
+                    # Cascade reactivate pipelines
+                    pipeline_count += cascade_reactivate_pipelines(meta_job_hash)
+
+        if reactivated_count > 0:
+            logger.info(f"🔄 Reactivated {reactivated_count} stale meta-job(s), {pipeline_count} pipeline(s)")
+
+    except Exception as e:
+        logger.error(f"Error checking stale cancelled meta-jobs: {e}")
+
+
+async def check_stale_cancelled_pipelines():
+    """
+    Find and reactivate pipelines that were cancelled but their meta-jobs are running/completed.
+
+    This handles the case where dshpc_api died while processing a pipeline:
+    - The meta-jobs are running or completed
+    - But the pipeline got marked as cancelled because dshpc_api wasn't there to track it
+
+    These pipelines should be reactivated so dshpc_api can resume processing them.
+    """
+    try:
+        reactivated_count = 0
+
+        # Find cancelled pipelines
+        cancelled_pipelines = pipelines_collection.find({
+            "status": "cancelled"
+        })
+
+        for pipeline in cancelled_pipelines:
+            pipeline_hash = pipeline["pipeline_hash"]
+            nodes = pipeline.get("nodes", {})
+
+            if not nodes:
+                continue
+
+            # Check if any meta-job in the pipeline is running or completed
+            should_reactivate = False
+            has_failed_meta_job = False
+
+            for node_id, node in nodes.items():
+                meta_job_hash = node.get("meta_job_hash")
+                if not meta_job_hash:
+                    continue
+
+                meta_job = meta_jobs_collection.find_one({"meta_job_hash": meta_job_hash})
+                if not meta_job:
+                    continue
+
+                meta_status = meta_job.get("status")
+
+                # If any meta-job is running or completed, pipeline should be active
+                if meta_status in ["running", "pending", "completed"]:
+                    should_reactivate = True
+
+                # If meta-job failed with real error (not service failure), don't reactivate
+                if meta_status == "failed":
+                    has_failed_meta_job = True
+
+            # Reactivate if we have active meta-jobs and no real failures
+            if should_reactivate and not has_failed_meta_job:
+                result = pipelines_collection.update_one(
+                    {"pipeline_hash": pipeline_hash},
+                    {"$set": {"status": "running", "error": None}}
+                )
+                if result.modified_count > 0:
+                    logger.info(f"🔄 Reactivated stale pipeline {pipeline_hash} (meta-jobs active but pipeline was cancelled)")
+                    reactivated_count += 1
+
+        if reactivated_count > 0:
+            logger.info(f"🔄 Reactivated {reactivated_count} stale pipeline(s)")
+
+    except Exception as e:
+        logger.error(f"Error checking stale cancelled pipelines: {e}")
+
+
 async def check_jobs_once():
     """Run a single iteration of job status check."""
     try:
@@ -535,6 +681,13 @@ async def check_jobs_once():
         # Then, check for orphaned jobs and retry them
         # This also cascade-reactivates meta-jobs and pipelines when a job is reactivated
         await check_orphaned_jobs()
+
+        # Check for meta-jobs that were cancelled but their jobs completed
+        # (dshpc_api died while processing)
+        await check_stale_cancelled_meta_jobs()
+
+        # Check for pipelines that were cancelled but their meta-jobs are active
+        await check_stale_cancelled_pipelines()
 
         # Find all jobs that are in a non-terminal state AND have slurm_id
         active_jobs = jobs_collection.find({

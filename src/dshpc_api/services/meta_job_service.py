@@ -431,6 +431,20 @@ async def process_meta_job_chain(meta_job_hash: str):
         
         # Process each step in the chain
         for i, step in enumerate(meta_job["chain"]):
+            # Check if step is already completed (recovery scenario)
+            # If step.status is 'completed' or 'cached', skip processing and use its output
+            step_status = step.get("status")
+            if step_status in ["completed", "cached"]:
+                output_hash = step.get("output_hash")
+                if output_hash:
+                    logger.info(f"⏭️ SKIP - Meta-job {meta_job_hash[:16]}... step {i} already '{step_status}', using output: {output_hash[:16]}...")
+                    # Update current_input_hash for next step
+                    current_input_hash = output_hash
+                    continue
+                else:
+                    # Step marked as completed but no output hash - this is an error, reprocess
+                    logger.warning(f"⚠️ Meta-job {meta_job_hash[:16]}... step {i} marked as '{step_status}' but no output_hash, reprocessing...")
+
             # Update current step
             await meta_jobs_db.meta_jobs.update_one(
                 {"meta_job_hash": meta_job_hash},
@@ -439,7 +453,7 @@ async def process_meta_job_chain(meta_job_hash: str):
                     "updated_at": datetime.utcnow()
                 }}
             )
-            
+
             # For first step: use initial file(s), for subsequent steps: use previous output
             if i == 0:
                 step_file_hash = current_input_hash
