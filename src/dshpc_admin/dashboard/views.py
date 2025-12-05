@@ -7,7 +7,7 @@ from django.urls import reverse
 from django.contrib import messages
 from .db_connections import MongoDBConnections, get_stats
 from .auth import login_required_simple
-from .snapshot_utils import get_container_status, get_system_resources, get_job_logs, get_environment_info, get_slurm_queue, get_latest_snapshot, get_jobs_list, get_meta_jobs_list, get_files_list
+from .snapshot_utils import get_container_status, get_system_resources, get_job_logs, get_environment_info, get_slurm_queue, get_latest_snapshot
 import requests
 from django.conf import settings
 import logging
@@ -170,30 +170,8 @@ def files_list(request):
     date_from = request.GET.get('date_from', '')
     date_to = request.GET.get('date_to', '')
     page = int(request.GET.get('page', 1))
-    per_page = int(request.GET.get('per_page', 50))
+    per_page = int(request.GET.get('per_page', 20))
 
-    # FAST PATH: If page 1 with no filters, use pre-computed snapshot
-    has_filters = search or size_min or size_max or date_from or date_to
-    if page == 1 and not has_filters:
-        snapshot_data = get_files_list()
-        if snapshot_data and snapshot_data.get('items'):
-            return render(request, 'dashboard/files_list.html', {
-                'files': snapshot_data['items'],
-                'page': 1,
-                'total_pages': max(1, (snapshot_data['total'] + per_page - 1) // per_page),
-                'total_files': snapshot_data['total'],
-                'per_page': per_page,
-                'page_range': list(range(1, min(6, max(1, (snapshot_data['total'] + per_page - 1) // per_page) + 1))),
-                'search': '',
-                'size_min': '',
-                'size_max': '',
-                'date_from': '',
-                'date_to': '',
-                'page_title': 'Files',
-                'from_snapshot': True,
-            })
-
-    # SLOW PATH: Query with filters or pagination beyond page 1
     files_db = MongoDBConnections.get_files_db()
     
     # Build query
@@ -278,8 +256,39 @@ def files_list(request):
             is_large = file_size > 100000  # > 100KB
 
             if is_binary:
-                f['content_preview'] = '[Binary file - click to view details]'
-                f['preview_type'] = 'binary'
+                # Show hex preview for binary files (first 64 bytes)
+                HEX_PREVIEW_SIZE = 64
+                hex_preview = None
+
+                if f.get('storage_type') == 'gridfs' and f.get('gridfs_id'):
+                    try:
+                        from gridfs import GridFS
+                        from bson import ObjectId
+                        fs = GridFS(files_db, collection='fs')
+                        grid_id = f['gridfs_id']
+                        if isinstance(grid_id, str):
+                            grid_id = ObjectId(grid_id)
+                        grid_out = fs.get(grid_id)
+                        content_bytes = grid_out.read(HEX_PREVIEW_SIZE)
+                        grid_out.close()
+                        hex_preview = ' '.join(f'{b:02x}' for b in content_bytes)
+                    except Exception as e:
+                        logger.debug(f"Could not load GridFS hex preview: {e}")
+                elif f.get('storage_type') in ['mongodb', 'inline'] and f.get('content'):
+                    import base64
+                    try:
+                        content_bytes = base64.b64decode(f.get('content'))[:HEX_PREVIEW_SIZE]
+                        hex_preview = ' '.join(f'{b:02x}' for b in content_bytes)
+                    except Exception:
+                        pass
+
+                if hex_preview:
+                    f['content_preview'] = hex_preview
+                    f['preview_type'] = 'hex'
+                    f['content_truncated'] = True
+                else:
+                    f['content_preview'] = '[Binary file - click to view details]'
+                    f['preview_type'] = 'binary'
             elif is_large:
                 f['content_preview'] = f'[Large file ({file_size:,} bytes) - click to view]'
                 f['preview_type'] = 'large'
@@ -357,7 +366,7 @@ def files_list(request):
     return render(request, 'dashboard/files_list.html', context)
 
 
-@login_required_simple  
+@login_required_simple
 def jobs_list(request):
     """List all jobs with advanced filtering."""
     from datetime import datetime
@@ -370,30 +379,8 @@ def jobs_list(request):
     date_from = request.GET.get('date_from', '')
     date_to = request.GET.get('date_to', '')
     page = int(request.GET.get('page', 1))
-    per_page = int(request.GET.get('per_page', 50))
+    per_page = int(request.GET.get('per_page', 20))
 
-    # FAST PATH: If page 1 with no filters, use pre-computed snapshot
-    has_filters = status_filter or search or method_filter or date_from or date_to
-    if page == 1 and not has_filters:
-        snapshot_data = get_jobs_list()
-        if snapshot_data and snapshot_data.get('items'):
-            return render(request, 'dashboard/jobs_list.html', {
-                'jobs': snapshot_data['items'],
-                'page': 1,
-                'total_pages': max(1, (snapshot_data['total'] + per_page - 1) // per_page),
-                'total_jobs': snapshot_data['total'],
-                'per_page': per_page,
-                'page_range': list(range(1, min(6, max(1, (snapshot_data['total'] + per_page - 1) // per_page) + 1))),
-                'status_filter': '',
-                'search': '',
-                'method_filter': '',
-                'date_from': '',
-                'date_to': '',
-                'page_title': 'Jobs',
-                'from_snapshot': True,
-            })
-
-    # SLOW PATH: Query with filters or pagination beyond page 1
     jobs_db = MongoDBConnections.get_jobs_db()
     methods_db = MongoDBConnections.get_methods_db()
     files_db = MongoDBConnections.get_files_db()
@@ -491,13 +478,57 @@ def jobs_list(request):
             duration = (j['completed_at'] - j['created_at']).total_seconds()
             j['duration_seconds'] = duration
         
-        # PERFORMANCE: Don't load output/error content in list view
-        # Just indicate if they exist - full content loaded in detail view
+        # PERFORMANCE: Load only a small preview of output/error for list view
         j['has_output'] = bool(j.get('output') or j.get('output_gridfs_id'))
         j['has_error'] = bool(j.get('error') or j.get('error_gridfs_id'))
-        # Clear any inline content to reduce page size
-        j['output'] = None
-        j['error'] = None
+
+        OUTPUT_PREVIEW_SIZE = 500  # Characters for preview
+
+        # Get output preview
+        output_content = j.get('output')
+        if j.get('output_gridfs_id'):
+            # Load from GridFS (small preview only)
+            try:
+                from gridfs import GridFS
+                from bson import ObjectId
+                fs = GridFS(jobs_db, collection='outputs')
+                grid_id = j['output_gridfs_id']
+                if isinstance(grid_id, str):
+                    grid_id = ObjectId(grid_id)
+                grid_out = fs.get(grid_id)
+                output_content = grid_out.read(OUTPUT_PREVIEW_SIZE * 2).decode('utf-8', errors='replace')
+                grid_out.close()
+                j['output_storage'] = 'gridfs'
+            except Exception:
+                output_content = None
+
+        if output_content:
+            j['output'] = output_content[:OUTPUT_PREVIEW_SIZE]
+            j['output_truncated'] = len(output_content) > OUTPUT_PREVIEW_SIZE
+        else:
+            j['output'] = None
+
+        # Get error preview (usually small, keep full)
+        error_content = j.get('error')
+        if j.get('error_gridfs_id'):
+            try:
+                from gridfs import GridFS
+                from bson import ObjectId
+                fs = GridFS(jobs_db, collection='errors')
+                grid_id = j['error_gridfs_id']
+                if isinstance(grid_id, str):
+                    grid_id = ObjectId(grid_id)
+                grid_out = fs.get(grid_id)
+                error_content = grid_out.read(OUTPUT_PREVIEW_SIZE * 2).decode('utf-8', errors='replace')
+                grid_out.close()
+            except Exception:
+                error_content = None
+
+        if error_content:
+            j['error'] = error_content[:OUTPUT_PREVIEW_SIZE]
+            j['error_truncated'] = len(error_content) > OUTPUT_PREVIEW_SIZE
+        else:
+            j['error'] = None
         
         # Parse file_inputs arrays (if stored as strings)
         if j.get('file_inputs'):
@@ -586,29 +617,8 @@ def meta_jobs_list(request):
     date_from = request.GET.get('date_from', '')
     date_to = request.GET.get('date_to', '')
     page = int(request.GET.get('page', 1))
-    per_page = int(request.GET.get('per_page', 50))
+    per_page = int(request.GET.get('per_page', 20))
 
-    # FAST PATH: If page 1 with no filters, use pre-computed snapshot
-    has_filters = search or status_filter or date_from or date_to
-    if page == 1 and not has_filters:
-        snapshot_data = get_meta_jobs_list()
-        if snapshot_data and snapshot_data.get('items'):
-            return render(request, 'dashboard/meta_jobs_list.html', {
-                'meta_jobs': snapshot_data['items'],
-                'page': 1,
-                'total_pages': max(1, (snapshot_data['total'] + per_page - 1) // per_page),
-                'total_meta_jobs': snapshot_data['total'],
-                'per_page': per_page,
-                'page_range': list(range(1, min(6, max(1, (snapshot_data['total'] + per_page - 1) // per_page) + 1))),
-                'search': '',
-                'status_filter': '',
-                'date_from': '',
-                'date_to': '',
-                'page_title': 'Meta-Jobs',
-                'from_snapshot': True,
-            })
-
-    # SLOW PATH: Query with filters or pagination beyond page 1
     jobs_db = MongoDBConnections.get_jobs_db()
     methods_db = MongoDBConnections.get_methods_db()
     files_db = MongoDBConnections.get_files_db()
@@ -697,70 +707,52 @@ def meta_jobs_list(request):
                         PREVIEW_SIZE = 500
 
                         # Retrieve output preview from GridFS if stored there
-                        if job.get('output_storage') == 'gridfs' and job.get('output_gridfs_id'):
+                        output_content = job.get('output')
+                        if job.get('output_gridfs_id'):
                             try:
                                 from gridfs import GridFS
                                 from bson import ObjectId
-                                fs = GridFS(jobs_db, collection='job_outputs')
+                                fs = GridFS(jobs_db, collection='outputs')
 
                                 grid_id = job['output_gridfs_id']
                                 if isinstance(grid_id, str):
                                     grid_id = ObjectId(grid_id)
 
                                 grid_out = fs.get(grid_id)
-                                output_bytes = grid_out.read(PREVIEW_SIZE)
+                                output_content = grid_out.read(PREVIEW_SIZE * 2).decode('utf-8', errors='replace')
                                 grid_out.close()
-
-                                try:
-                                    job['output'] = output_bytes.decode('utf-8', errors='strict')
-                                    job['output_type'] = 'text'
-                                except UnicodeDecodeError:
-                                    job['output'] = '[Binary data]'
-                                    job['output_type'] = 'binary'
-
-                                job['output_truncated'] = True
-                                job['has_full_output'] = True
                             except Exception as e:
-                                job['output'] = f"[Error: {str(e)[:50]}]"
-                                job['output_type'] = 'error'
+                                output_content = f"[Error: {str(e)[:50]}]"
 
-                        # Truncate inline output if too long
-                        if job.get('output') and len(job.get('output', '')) > PREVIEW_SIZE:
-                            job['output'] = job['output'][:PREVIEW_SIZE]
-                            job['output_truncated'] = True
+                        if output_content:
+                            job['output'] = output_content[:PREVIEW_SIZE]
+                            job['output_truncated'] = len(output_content) > PREVIEW_SIZE
+                        else:
+                            job['output'] = None
 
                         # Retrieve error preview from GridFS if stored there
-                        if job.get('error_storage') == 'gridfs' and job.get('error_gridfs_id'):
+                        error_content = job.get('error')
+                        if job.get('error_gridfs_id'):
                             try:
                                 from gridfs import GridFS
                                 from bson import ObjectId
-                                fs = GridFS(jobs_db, collection='job_outputs')
+                                fs = GridFS(jobs_db, collection='errors')
 
                                 grid_id = job['error_gridfs_id']
                                 if isinstance(grid_id, str):
                                     grid_id = ObjectId(grid_id)
 
                                 grid_out = fs.get(grid_id)
-                                error_bytes = grid_out.read(PREVIEW_SIZE)
+                                error_content = grid_out.read(PREVIEW_SIZE * 2).decode('utf-8', errors='replace')
                                 grid_out.close()
-
-                                try:
-                                    job['error'] = error_bytes.decode('utf-8', errors='strict')
-                                    job['error_type'] = 'text'
-                                except UnicodeDecodeError:
-                                    job['error'] = '[Binary data]'
-                                    job['error_type'] = 'binary'
-
-                                job['error_truncated'] = True
-                                job['has_full_error'] = True
                             except Exception as e:
-                                job['error'] = f"[Error: {str(e)[:50]}]"
-                                job['error_type'] = 'error'
+                                error_content = f"[Error: {str(e)[:50]}]"
 
-                        # Truncate inline error if too long
-                        if job.get('error') and len(job.get('error', '')) > PREVIEW_SIZE:
-                            job['error'] = job['error'][:PREVIEW_SIZE]
-                            job['error_truncated'] = True
+                        if error_content:
+                            job['error'] = error_content[:PREVIEW_SIZE]
+                            job['error_truncated'] = len(error_content) > PREVIEW_SIZE
+                        else:
+                            job['error'] = None
 
                         step['job_data'] = job
                         # Get method name
@@ -831,7 +823,7 @@ def pipelines_list(request):
     date_from = request.GET.get('date_from', '')
     date_to = request.GET.get('date_to', '')
     page = int(request.GET.get('page', 1))
-    per_page = int(request.GET.get('per_page', 25))
+    per_page = int(request.GET.get('per_page', 20))
     
     # Filter pipelines
     filtered_pipelines = []
@@ -1033,7 +1025,7 @@ def methods_list(request):
     search = request.GET.get('search', '').strip()
     version_filter = request.GET.get('version', '').strip()
     page = int(request.GET.get('page', 1))
-    per_page = int(request.GET.get('per_page', 50))
+    per_page = int(request.GET.get('per_page', 20))
     
     # Build base query (always get all methods for client-side toggle)
     query = {}
@@ -1128,24 +1120,58 @@ def slurm_queue(request):
     """Show Slurm queue status from snapshot."""
     # Get data from snapshot
     snapshot_data = get_slurm_queue()
-    
+
+    # Sort queue: Running (R) first, then Pending (PD), then others
+    queue = snapshot_data.get('queue', [])
+    state_order = {'R': 0, 'CG': 1, 'PD': 2}  # Running, Completing, Pending
+    queue = sorted(queue, key=lambda j: (state_order.get(j.get('state', 'ZZ'), 99), j.get('job_id', '')))
+
     # Check if AJAX request
     is_ajax = request.GET.get('ajax', '0') == '1'
-    
-    # Return JSON for AJAX
+
+    # Return JSON for AJAX (with sorted queue)
     if is_ajax:
         return JsonResponse({
-            'queue': snapshot_data['queue'],
+            'queue': queue,
             'age_seconds': snapshot_data['age_seconds']
         }, safe=False)
-    
+
+    # Pagination
+    page = int(request.GET.get('page', 1))
+    per_page = int(request.GET.get('per_page', 20))
+
+    total_jobs = len(queue)
+    total_pages = max(1, (total_jobs + per_page - 1) // per_page)
+    page = max(1, min(page, total_pages))
+
+    start_idx = (page - 1) * per_page
+    end_idx = start_idx + per_page
+    queue_page = queue[start_idx:end_idx]
+
+    # Generate page range for pagination
+    page_range = []
+    if total_pages <= 10:
+        page_range = list(range(1, total_pages + 1))
+    else:
+        if page <= 4:
+            page_range = list(range(1, 6)) + ['...', total_pages]
+        elif page >= total_pages - 3:
+            page_range = [1, '...'] + list(range(total_pages - 4, total_pages + 1))
+        else:
+            page_range = [1, '...'] + list(range(page - 1, page + 2)) + ['...', total_pages]
+
     context = {
-        'queue': snapshot_data['queue'],
+        'queue': queue_page,
+        'total_jobs': total_jobs,
+        'page': page,
+        'total_pages': total_pages,
+        'per_page': per_page,
+        'page_range': page_range,
         'snapshot_time': snapshot_data['timestamp'],
         'env_config': get_env_config(),
         'page_title': 'Slurm'
     }
-    
+
     return render(request, 'dashboard/slurm_queue.html', context)
 
 

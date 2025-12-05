@@ -374,7 +374,7 @@ async def update_running_nodes(pipeline_hash: str, pipeline_doc: Dict[str, Any])
             
         elif meta_job_info.status == "failed":
             error_msg = meta_job_info.error or "Unknown error"
-            
+
             await db.pipelines.update_one(
                 {"pipeline_hash": pipeline_hash},
                 {"$set": {
@@ -387,7 +387,22 @@ async def update_running_nodes(pipeline_hash: str, pipeline_doc: Dict[str, Any])
             logger.warning(f"Pipeline {pipeline_hash}: Node {node_id} failed: {error_msg}")
             # Trigger immediate pipeline check to propagate failure
             trigger_pipeline_check()
-    
+
+        elif meta_job_info.status == "cancelled":
+            # Meta-job was cancelled (externally killed, scancel, etc.)
+            await db.pipelines.update_one(
+                {"pipeline_hash": pipeline_hash},
+                {"$set": {
+                    f"nodes.{node_id}.status": PipelineNodeStatus.CANCELLED.value,
+                    f"nodes.{node_id}.error": "Meta-job was cancelled",
+                    f"nodes.{node_id}.completed_at": datetime.utcnow()
+                }}
+            )
+            changes_made = True
+            logger.warning(f"Pipeline {pipeline_hash}: Node {node_id} cancelled (meta-job was cancelled)")
+            # Trigger immediate pipeline check to propagate cancellation
+            trigger_pipeline_check()
+
     return changes_made
 
 
@@ -433,6 +448,18 @@ async def update_pipeline_overall_status(pipeline_hash: str) -> None:
         )
         logger.info(f"Pipeline {pipeline_hash} completed successfully")
         
+    elif any(s == PipelineNodeStatus.CANCELLED.value for s in statuses):
+        # At least one node cancelled - mark whole pipeline as cancelled
+        if pipeline["status"] not in [PipelineStatus.CANCELLED.value, PipelineStatus.FAILED.value]:
+            await db.pipelines.update_one(
+                {"pipeline_hash": pipeline_hash},
+                {"$set": {
+                    "status": PipelineStatus.CANCELLED.value,
+                    "completed_at": datetime.utcnow()
+                }}
+            )
+            logger.warning(f"Pipeline {pipeline_hash} marked as cancelled")
+
     elif any(s == PipelineNodeStatus.FAILED.value for s in statuses):
         # At least one node failed
         if pipeline["status"] != PipelineStatus.FAILED.value:
@@ -467,8 +494,8 @@ async def process_pipeline_once(pipeline_hash: str) -> None:
     if not pipeline:
         return
     
-    # Skip if already completed/failed
-    if pipeline["status"] in [PipelineStatus.COMPLETED.value, PipelineStatus.FAILED.value]:
+    # Skip if already completed/failed/cancelled
+    if pipeline["status"] in [PipelineStatus.COMPLETED.value, PipelineStatus.FAILED.value, PipelineStatus.CANCELLED.value]:
         return
     
     # Update running nodes
