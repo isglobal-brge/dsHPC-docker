@@ -165,16 +165,21 @@ async def check_and_submit_ready_nodes(pipeline_hash: str, pipeline_doc: Dict[st
                                 for idx, item in enumerate(ref_value):
                                     if isinstance(item, str) and item.startswith("$ref:"):
                                         ref_full = item[5:]  # Remove "$ref:"
-                                        
+
                                         # Skip prev refs - meta-job will handle
                                         if ref_full == "prev" or ref_full.startswith("prev/"):
                                             resolved_array.append(item)
                                             continue
-                                        
+
+                                        # Skip initial refs - meta-job will handle
+                                        if ref_full == "initial":
+                                            resolved_array.append(item)
+                                            continue
+
                                         # Parse node reference
                                         ref_node = ref_full.split("/")[0] if "/" in ref_full else ref_full
                                         ref_path = ref_full[len(ref_node)+1:] if "/" in ref_full else None
-                                        
+
                                         if ref_node not in completed_outputs:
                                             raise ValueError(f"Reference to incomplete node: {ref_node}")
                                         
@@ -195,16 +200,21 @@ async def check_and_submit_ready_nodes(pipeline_hash: str, pipeline_doc: Dict[st
                             elif isinstance(ref_value, str) and ref_value.startswith("$ref:"):
                                 # Single file with $ref
                                 ref_full = ref_value[5:]  # Remove "$ref:" prefix
-                                
+
                                 # Skip prev refs - meta-job will handle
                                 if ref_full == "prev" or ref_full.startswith("prev/"):
                                     resolved_file_inputs[input_name] = ref_value
                                     continue
-                                
+
+                                # Skip initial refs - meta-job will handle (resolves to initial_file_hash)
+                                if ref_full == "initial":
+                                    resolved_file_inputs[input_name] = ref_value
+                                    continue
+
                                 # Parse node reference
                                 ref_node = ref_full.split("/")[0] if "/" in ref_full else ref_full
                                 ref_path = ref_full[len(ref_node)+1:] if "/" in ref_full else None
-                                
+
                                 if ref_node not in completed_outputs:
                                     raise ValueError(f"Reference to incomplete node: {ref_node}")
                                 

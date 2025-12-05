@@ -487,12 +487,12 @@ async def process_meta_job_chain(meta_job_hash: str):
                             if isinstance(item, str) and item.startswith("$ref:prev"):
                                 if i == 0:
                                     raise ValueError(f"Cannot use $ref:prev in first step of meta-job")
-                                
+
                                 prev_step = meta_job["chain"][i-1]
                                 prev_hash = prev_step.get("output_hash")
                                 if not prev_hash:
                                     raise ValueError(f"Previous step {i-1} has no output")
-                                
+
                                 # Check if path extraction needed
                                 if item.startswith("$ref:prev/"):
                                     ref_path = item[10:]  # Remove "$ref:prev/"
@@ -504,6 +504,12 @@ async def process_meta_job_chain(meta_job_hash: str):
                                 else:
                                     # Use full prev output
                                     resolved_array.append(prev_hash)
+                            elif isinstance(item, str) and item == "$ref:initial":
+                                # Reference to meta-job's initial file hash
+                                initial_hash = meta_job.get("initial_file_hash")
+                                if not initial_hash:
+                                    raise ValueError(f"Cannot use $ref:initial - meta-job has no initial_file_hash")
+                                resolved_array.append(initial_hash)
                             else:
                                 # Direct hash or other reference
                                 resolved_array.append(item)
@@ -512,12 +518,12 @@ async def process_meta_job_chain(meta_job_hash: str):
                         # Single file with $ref:prev
                         if i == 0:
                             raise ValueError(f"Cannot use $ref:prev in first step of meta-job")
-                        
+
                         prev_step = meta_job["chain"][i-1]
                         prev_hash = prev_step.get("output_hash")
                         if not prev_hash:
                             raise ValueError(f"Previous step {i-1} has no output")
-                        
+
                         # Check if path extraction needed
                         if ref_value.startswith("$ref:prev/"):
                             ref_path = ref_value[10:]  # Remove "$ref:prev/"
@@ -530,6 +536,12 @@ async def process_meta_job_chain(meta_job_hash: str):
                         else:
                             # Use full prev output
                             resolved_file_inputs[input_name] = prev_hash
+                    elif isinstance(ref_value, str) and ref_value == "$ref:initial":
+                        # Reference to meta-job's initial file hash
+                        initial_hash = meta_job.get("initial_file_hash")
+                        if not initial_hash:
+                            raise ValueError(f"Cannot use $ref:initial - meta-job has no initial_file_hash")
+                        resolved_file_inputs[input_name] = initial_hash
                     else:
                         # Direct hash (single file, no ref)
                         resolved_file_inputs[input_name] = ref_value
