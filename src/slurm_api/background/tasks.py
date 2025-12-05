@@ -68,18 +68,16 @@ def cascade_delete_meta_jobs(job_hash: str) -> tuple[int, int]:
 
 async def check_cancelled_jobs():
     """
-    Detect and clean up jobs that were cancelled externally (e.g., via scancel).
+    Detect and clean up jobs that were cancelled or killed externally.
 
-    A job is considered cancelled if:
-    1. It has a slurm_id (was submitted to Slurm)
-    2. It's not in a terminal state in our DB
-    3. It's no longer in the Slurm queue
-    4. It has no output files (meaning it was killed before completing)
+    Handles three cases:
+    1. Jobs that disappeared from Slurm queue with no output files (scancel)
+    2. Jobs that failed with "Exit code file not found" (killed before completion)
+    3. Jobs killed by signals: exit code 137 (SIGKILL/OOM), 139 (SIGSEGV), 143 (SIGTERM)
 
-    Also cleans up jobs that failed with "Exit code file not found" error,
-    which indicates they were killed before producing output.
-
-    When a job is deleted, also cascade-deletes any meta-jobs that reference it.
+    These are NOT logical errors in the jobs themselves, so they are deleted
+    to allow automatic retry. When a job is deleted, also cascade-deletes
+    any meta-jobs and pipelines that reference it.
     """
     try:
         cancelled_count = 0
@@ -129,6 +127,32 @@ async def check_cancelled_jobs():
             result = jobs_collection.delete_one({"job_hash": job_hash})
             if result.deleted_count > 0:
                 logger.info(f"🗑️ Deleted killed job {job_hash} from database (will retry)")
+                cancelled_count += 1
+                # Cascade delete meta-jobs and pipelines
+                meta_deleted, pipeline_deleted = cascade_delete_meta_jobs(job_hash)
+                meta_job_count += meta_deleted
+                pipeline_count += pipeline_deleted
+
+        # Part 3: Clean up jobs killed by signals (exit codes 137, 139, 143, etc.)
+        # These are jobs killed by SIGKILL (137=OOM), SIGSEGV (139), SIGTERM (143)
+        # Exit codes 128+ indicate the process was killed by a signal (128 + signal_number)
+        # These are NOT logical errors in the job itself, so delete them to allow retry
+        signal_killed_jobs = jobs_collection.find({
+            "status": {"$in": [JobStatus.FAILED, "FA", "F"]},
+            "$or": [
+                {"error": {"$regex": "non-zero code: 137"}},  # SIGKILL (OOM killer)
+                {"error": {"$regex": "non-zero code: 139"}},  # SIGSEGV
+                {"error": {"$regex": "non-zero code: 143"}},  # SIGTERM
+            ]
+        })
+
+        for job in signal_killed_jobs:
+            job_hash = job["job_hash"]
+            error_msg = job.get("error", "")
+            logger.warning(f"Found signal-killed job {job_hash}: {error_msg}")
+            result = jobs_collection.delete_one({"job_hash": job_hash})
+            if result.deleted_count > 0:
+                logger.info(f"🗑️ Deleted signal-killed job {job_hash} from database (will retry)")
                 cancelled_count += 1
                 # Cascade delete meta-jobs and pipelines
                 meta_deleted, pipeline_deleted = cascade_delete_meta_jobs(job_hash)
