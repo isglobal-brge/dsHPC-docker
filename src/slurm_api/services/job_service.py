@@ -226,14 +226,17 @@ def prepare_job_script(job_hash: str, job: JobSubmission) -> str:
                 cpus = 8  # Fallback if detection fails
         f.write(f"#SBATCH --cpus-per-task={cpus}\n")
 
-        # Memory: use method's setting or default to all available
-        # 0 or unset means use all available memory (--mem=0)
+        # Memory: use method's setting if specified
+        # If not specified (None), don't set --mem and let Slurm use DefMemPerCPU
+        # If explicitly 0, use --mem=0 for all available memory (single job per node)
         memory_mb = resources.get("memory_mb")
-        if memory_mb and memory_mb > 0:
-            f.write(f"#SBATCH --mem={memory_mb}M\n")
-        else:
-            # 0 or unset = all available memory
-            f.write("#SBATCH --mem=0\n")
+        if memory_mb is not None:
+            if memory_mb == 0:
+                # Explicit 0 = all available memory (single job per node)
+                f.write("#SBATCH --mem=0\n")
+            else:
+                f.write(f"#SBATCH --mem={memory_mb}M\n")
+        # If memory_mb is None, don't specify --mem, use Slurm's DefMemPerCPU
 
         # Time limit: use method's setting if specified
         time_limit = resources.get("time_limit")
