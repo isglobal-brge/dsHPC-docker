@@ -51,9 +51,10 @@ else
 DEFAULT_CPUS_PER_TASK=1
 
 # Default memory per CPU in MB
-# With DEFAULT_CPUS_PER_TASK=1, each job gets 1024 MB by default
-# Heavy methods should specify min_memory_mb in method.json
-# DEFAULT_MEM_PER_CPU=1024
+# With DEFAULT_CPUS_PER_TASK=1, each job gets 2048 MB (2GB) by default
+# This is generous to avoid OOM kills - users can't intervene remotely
+# Heavy methods should still specify min_memory_mb (gets +20% safety buffer)
+# DEFAULT_MEM_PER_CPU=2048
 
 # Default time limit (optional, format: HH:MM:SS)
 # DEFAULT_TIME_LIMIT=01:00:00
@@ -108,13 +109,14 @@ else
     fi
 
     # MEMORY PER CPU ALLOCATION:
-    # Default to 1024 MB (1GB) per CPU for general workloads
-    # Methods that need more memory should specify min_memory_mb in method.json
-    # With DEFAULT_CPUS_PER_TASK=1, each job gets 1GB by default
-    DEF_MEM_PER_CPU=1024
+    # PRIORITY: AVOID OOM KILLS! Users cannot intervene remotely.
+    # Default to 2048 MB (2GB) per CPU - generous to prevent OOM
+    # Methods that need more should specify min_memory_mb (gets +20% buffer)
+    # With DEFAULT_CPUS_PER_TASK=1, each job gets 2GB by default
+    DEF_MEM_PER_CPU=2048
 
     # Calculate max parallel jobs based on available memory
-    # With 1 CPU per job (default) and 1024 MB per CPU
+    # With 1 CPU per job (default) and 2048 MB per CPU
     MEM_PER_JOB=$((DEF_MEM_PER_CPU * 1))  # 1 CPU per job default
     MAX_PARALLEL_JOBS=$((SLURM_MEMORY_MB / MEM_PER_JOB))
 
@@ -130,8 +132,8 @@ else
 
     echo -e "${CYAN}>> Detected resources: ${DETECTED_CPUS} CPUs, ${TOTAL_MEMORY_MB} MB total RAM${NC}"
     echo -e "${CYAN}>> Memory allocation: ${SYSTEM_RESERVED_MB} MB reserved for system, ${SLURM_MEMORY_MB} MB for jobs${NC}"
-    echo -e "${CYAN}>> Default job: 1 CPU, ${DEF_MEM_PER_CPU} MB RAM → max ~${MAX_PARALLEL_JOBS} parallel jobs${NC}"
-    echo -e "${CYAN}>> Methods can override with 'resources.min_memory_mb' in method.json${NC}"
+    echo -e "${CYAN}>> Default job: 1 CPU, ${DEF_MEM_PER_CPU} MB RAM (2GB) → max ~${MAX_PARALLEL_JOBS} parallel jobs${NC}"
+    echo -e "${CYAN}>> OOM prevention: generous defaults + 20% safety buffer on min_memory_mb${NC}"
 
     cat > /etc/slurm/slurm.conf << EOF
 ClusterName=${CLUSTER_NAME:-dshpc-slurm}

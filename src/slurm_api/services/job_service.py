@@ -247,38 +247,45 @@ def prepare_job_script(job_hash: str, job: JobSubmission) -> str:
         f.write(f"#SBATCH --cpus-per-task={cpus}\n")
 
         # --- MEMORY ALLOCATION ---
-        # This is CRITICAL for preventing OOM kills!
-        # Priority:
-        # 1. memory_mb (explicit override)
-        # 2. min_memory_mb (method's minimum requirement)
-        # 3. Calculated from CPUs × default_mem_per_cpu
+        # PRIORITY: AVOID OOM KILLS AT ALL COSTS!
+        # Users cannot intervene, so jobs must not fail due to memory.
         #
-        # The key insight: methods that need lots of memory (like deep learning)
-        # should specify min_memory_mb in their method.json
+        # Strategy:
+        # 1. memory_mb (explicit override) - used as-is, user knows best
+        # 2. min_memory_mb (method's minimum) - add 20% safety buffer
+        # 3. Default: generous 2GB per CPU (was 1GB, too risky)
+        #
+        # The safety buffer ensures that even if a method slightly
+        # underestimates its needs, it won't get OOM killed.
 
-        memory_mb = resources.get("memory_mb")  # Explicit override
+        memory_mb = resources.get("memory_mb")  # Explicit override (no buffer)
         min_memory_mb = resources.get("min_memory_mb")  # Minimum requirement
 
-        # Default memory per CPU - conservative for general workloads
-        # 1GB per CPU is reasonable for most R/Python scripts
-        # Heavy methods should specify min_memory_mb
-        default_mem_per_cpu = 1024  # 1GB per CPU
+        # Default memory per CPU - GENEROUS to prevent OOM
+        # 2GB per CPU gives R/Python plenty of headroom
+        # This means fewer parallel jobs, but NO OOM kills
+        default_mem_per_cpu = 2048  # 2GB per CPU (was 1GB - too risky)
+
+        # Safety buffer: add 20% to min_memory_mb to prevent edge-case OOM
+        SAFETY_BUFFER = 1.2  # 20% extra
 
         if memory_mb is not None:
-            # Explicit memory setting takes precedence
+            # Explicit memory setting takes precedence - no buffer
+            # User explicitly set this, so trust it
             if memory_mb == 0:
                 # 0 = all available memory (single job per node)
                 f.write("#SBATCH --mem=0\n")
             else:
                 f.write(f"#SBATCH --mem={memory_mb}M\n")
         elif min_memory_mb is not None:
-            # Method specified minimum memory requirement - use it!
-            # This is the recommended way for methods to avoid OOM
-            f.write(f"#SBATCH --mem={min_memory_mb}M\n")
+            # Method specified minimum - add safety buffer!
+            # If method says "I need 2GB", we give it 2.4GB to be safe
+            safe_memory = int(min_memory_mb * SAFETY_BUFFER)
+            f.write(f"#SBATCH --mem={safe_memory}M\n")
         else:
-            # Calculate based on CPUs
-            # For 1 CPU: 1024 MB
-            # For 2 CPUs: 2048 MB, etc.
+            # No memory specified - use generous default
+            # For 1 CPU: 2048 MB (2GB)
+            # For 2 CPUs: 4096 MB (4GB), etc.
             calculated_mem = cpus * default_mem_per_cpu
             f.write(f"#SBATCH --mem={calculated_mem}M\n")
 
