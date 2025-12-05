@@ -95,7 +95,16 @@
                         
                         <div class="info-row">
                             <div class="label">Filename</div>
-                            <div class="value"><strong>{{ file.filename }}</strong></div>
+                            <div class="value">
+                                <div class="hash-display">
+                                    <div class="hash-scroll">
+                                        <strong>{{ file.filename }}</strong>
+                                    </div>
+                                    <button class="btn btn-sm btn-outline-secondary" onclick="copyToClipboard('{{ file.filename }}')">
+                                        <i class="bi bi-clipboard"></i>
+                                    </button>
+                                </div>
+                            </div>
                         </div>
                         
                         <div class="info-row">
