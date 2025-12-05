@@ -295,8 +295,12 @@ async def create_pipeline(pipeline_data: Dict[str, Any]) -> Tuple[str, str]:
     logger.info(f"Computed pipeline hash: {pipeline_hash[:16]}...")
     
     # Check if this exact pipeline already exists
+    # Exclude cancelled pipelines - they should be treated as non-existent for re-submission
     db = await get_jobs_db()
-    existing_pipeline = await db.pipelines.find_one({"pipeline_hash": pipeline_hash})
+    existing_pipeline = await db.pipelines.find_one({
+        "pipeline_hash": pipeline_hash,
+        "status": {"$nin": ["cancelled", "CANCELLED"]}
+    })
     
     if existing_pipeline:
         existing_status = existing_pipeline.get("status")

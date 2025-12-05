@@ -230,13 +230,17 @@ async def find_existing_job(
         sorted_params = sort_parameters(parameters)
         
         # Build query based on input type
+        # Exclude cancelled jobs - they should be treated as non-existent for re-submission
+        cancelled_statuses = ["CA", "cancelled", "CANCELLED"]
+
         if file_inputs:
             # Multi-file: sort file_inputs by key for deterministic comparison
             sorted_inputs = sort_file_inputs(file_inputs)
             query = {
                 "file_inputs": sorted_inputs,
                 "function_hash": function_hash,
-                "parameters": sorted_params
+                "parameters": sorted_params,
+                "status": {"$nin": cancelled_statuses}
             }
             logger.debug(f"🔍 Searching for multi-file job: {list(sorted_inputs.keys())}")
         else:
@@ -244,7 +248,8 @@ async def find_existing_job(
             query = {
                 "file_hash": file_hash,
                 "function_hash": function_hash,
-                "parameters": sorted_params
+                "parameters": sorted_params,
+                "status": {"$nin": cancelled_statuses}
             }
             logger.debug(f"🔍 Searching for single-file job: {file_hash[:8] if file_hash else 'none'}...")
         

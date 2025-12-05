@@ -258,9 +258,13 @@ async def submit_meta_job(request: MetaJobRequest) -> Tuple[bool, str, Optional[
         logger.info(f"  Computed hash: {meta_job_hash[:16]}...")
         
         # Check if this exact meta-job already exists
+        # Exclude cancelled meta-jobs - they should be treated as non-existent for re-submission
         meta_jobs_db = await get_meta_jobs_db()
-        existing_meta_job = await meta_jobs_db.meta_jobs.find_one({"meta_job_hash": meta_job_hash})
-        
+        existing_meta_job = await meta_jobs_db.meta_jobs.find_one({
+            "meta_job_hash": meta_job_hash,
+            "status": {"$nin": ["cancelled", "CANCELLED"]}
+        })
+
         if existing_meta_job:
             existing_status = existing_meta_job.get("status")
             logger.info(f"  ♻️  Found existing meta-job with status: {existing_status}")
