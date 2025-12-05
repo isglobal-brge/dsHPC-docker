@@ -1,12 +1,69 @@
 import asyncio
 import os
 
-from slurm_api.config.db_config import jobs_collection
+from slurm_api.config.db_config import jobs_collection, meta_jobs_collection, pipelines_collection
 from slurm_api.config.logging_config import logger
 from slurm_api.models.job import JobStatus
 from slurm_api.services.slurm_service import get_active_jobs, get_job_final_state
 from slurm_api.services.job_service import process_job_output
 from slurm_api.utils.db_utils import update_job_status
+
+
+def cascade_delete_pipelines(meta_job_hash: str) -> int:
+    """
+    Delete all pipelines that reference the given meta_job_hash in their nodes.
+    Returns the number of pipelines deleted.
+    """
+    deleted_count = 0
+
+    # Find pipelines that have this meta_job_hash in any of their nodes
+    pipelines = pipelines_collection.find({
+        "nodes": {"$exists": True}
+    })
+
+    for pipeline in pipelines:
+        pipeline_hash = pipeline.get("pipeline_hash")
+        nodes = pipeline.get("nodes", {})
+
+        # Check if any node references this meta_job_hash
+        for node_id, node in nodes.items():
+            if node.get("meta_job_hash") == meta_job_hash:
+                result = pipelines_collection.delete_one({"pipeline_hash": pipeline_hash})
+                if result.deleted_count > 0:
+                    logger.info(f"🗑️ Cascade deleted pipeline {pipeline_hash} (referenced deleted meta-job)")
+                    deleted_count += 1
+                break  # Pipeline already deleted, no need to check more nodes
+
+    return deleted_count
+
+
+def cascade_delete_meta_jobs(job_hash: str) -> tuple[int, int]:
+    """
+    Delete all meta-jobs that reference the given job_hash in their chain.
+    Also cascade-deletes pipelines that reference those meta-jobs.
+    Returns tuple of (meta_jobs_deleted, pipelines_deleted).
+    """
+    meta_deleted_count = 0
+    pipeline_deleted_count = 0
+
+    # Find meta-jobs that have this job_hash anywhere in their chain
+    meta_jobs = meta_jobs_collection.find({
+        "chain.job_hash": job_hash
+    })
+
+    for meta_job in meta_jobs:
+        meta_job_hash = meta_job["meta_job_hash"]
+
+        # First cascade-delete pipelines that reference this meta-job
+        pipeline_deleted_count += cascade_delete_pipelines(meta_job_hash)
+
+        # Then delete the meta-job itself
+        result = meta_jobs_collection.delete_one({"meta_job_hash": meta_job_hash})
+        if result.deleted_count > 0:
+            logger.info(f"🗑️ Cascade deleted meta-job {meta_job_hash} (referenced deleted job)")
+            meta_deleted_count += 1
+
+    return meta_deleted_count, pipeline_deleted_count
 
 
 async def check_cancelled_jobs():
@@ -21,9 +78,13 @@ async def check_cancelled_jobs():
 
     Also cleans up jobs that failed with "Exit code file not found" error,
     which indicates they were killed before producing output.
+
+    When a job is deleted, also cascade-deletes any meta-jobs that reference it.
     """
     try:
         cancelled_count = 0
+        meta_job_count = 0
+        pipeline_count = 0
 
         # Part 1: Check active jobs that disappeared from Slurm queue
         slurm_statuses = get_active_jobs()
@@ -48,6 +109,10 @@ async def check_cancelled_jobs():
                     if result.deleted_count > 0:
                         logger.info(f"🗑️ Deleted cancelled job {job_hash} from database")
                         cancelled_count += 1
+                        # Cascade delete meta-jobs and pipelines
+                        meta_deleted, pipeline_deleted = cascade_delete_meta_jobs(job_hash)
+                        meta_job_count += meta_deleted
+                        pipeline_count += pipeline_deleted
 
         # Part 2: Clean up failed jobs where the exit code file was not found
         # This means the job was killed externally (scancel, OOM, timeout, container restart)
@@ -65,12 +130,68 @@ async def check_cancelled_jobs():
             if result.deleted_count > 0:
                 logger.info(f"🗑️ Deleted killed job {job_hash} from database (will retry)")
                 cancelled_count += 1
+                # Cascade delete meta-jobs and pipelines
+                meta_deleted, pipeline_deleted = cascade_delete_meta_jobs(job_hash)
+                meta_job_count += meta_deleted
+                pipeline_count += pipeline_deleted
 
         if cancelled_count > 0:
             logger.info(f"🧹 Cleaned up {cancelled_count} cancelled/orphaned jobs")
+        if meta_job_count > 0:
+            logger.info(f"🧹 Cascade deleted {meta_job_count} meta-jobs")
+        if pipeline_count > 0:
+            logger.info(f"🧹 Cascade deleted {pipeline_count} pipelines")
 
     except Exception as e:
         logger.error(f"Error checking cancelled jobs: {e}")
+
+async def check_orphaned_meta_jobs():
+    """
+    Find and delete meta-jobs whose current job no longer exists in the database.
+    This handles the case where a job was deleted but its meta-job wasn't cascade-deleted.
+    Also cascade-deletes pipelines that reference those meta-jobs.
+    """
+    try:
+        deleted_count = 0
+        pipeline_count = 0
+
+        # Find meta-jobs that are running (not completed/failed)
+        running_meta_jobs = meta_jobs_collection.find({
+            "status": {"$in": ["running", "pending"]}
+        })
+
+        for meta_job in running_meta_jobs:
+            meta_job_hash = meta_job["meta_job_hash"]
+            current_step = meta_job.get("current_step", 0)
+            chain = meta_job.get("chain", [])
+
+            # Get the job_hash for the current step
+            if current_step < len(chain):
+                current_job_hash = chain[current_step].get("job_hash")
+
+                if current_job_hash:
+                    # Check if this job exists
+                    job_exists = jobs_collection.find_one({"job_hash": current_job_hash})
+                    if not job_exists:
+                        logger.warning(f"Found orphaned meta-job {meta_job_hash} - current job {current_job_hash} no longer exists")
+
+                        # First cascade-delete pipelines that reference this meta-job
+                        pipeline_count += cascade_delete_pipelines(meta_job_hash)
+
+                        # Then delete the meta-job
+                        result = meta_jobs_collection.delete_one({"meta_job_hash": meta_job_hash})
+                        if result.deleted_count > 0:
+                            logger.info(f"🗑️ Deleted orphaned meta-job {meta_job_hash}")
+                            deleted_count += 1
+
+        if deleted_count > 0:
+            logger.info(f"🧹 Cleaned up {deleted_count} orphaned meta-jobs")
+        if pipeline_count > 0:
+            logger.info(f"🧹 Cascade deleted {pipeline_count} pipelines")
+
+    except Exception as e:
+        logger.error(f"Error checking orphaned meta-jobs: {e}")
+
 
 async def check_orphaned_jobs():
     """Find and retry jobs that are pending but were never submitted to Slurm."""
@@ -162,6 +283,9 @@ async def check_jobs_once():
     try:
         # First, check for cancelled jobs and clean them up
         await check_cancelled_jobs()
+
+        # Check for orphaned meta-jobs (where referenced job no longer exists)
+        await check_orphaned_meta_jobs()
 
         # Then, check for orphaned jobs and retry them
         await check_orphaned_jobs()

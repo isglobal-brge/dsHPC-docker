@@ -52,5 +52,7 @@ methods_db = get_methods_db_client()
 
 # Collections
 jobs_collection = jobs_db["jobs"]
+meta_jobs_collection = jobs_db["meta_jobs"]
+pipelines_collection = jobs_db["pipelines"]
 files_collection = files_db["files"]
 methods_collection = methods_db["methods"] 
