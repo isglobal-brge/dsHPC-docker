@@ -483,21 +483,36 @@ def process_job_output(job_hash: str, slurm_id: str, final_state: str) -> bool:
     error = None
     job_status = JobStatus.FAILED # Default to FAILED
 
-    # Check if job was cancelled/killed (no output files exist at all)
-    # This typically happens when scancel is used or job is externally terminated
-    if final_state in ["CA", "CANCELLED"] or (not os.path.exists(exit_code_path) and not os.path.exists(output_path) and not os.path.exists(error_path)):
-        # Job was cancelled or has no traces - delete from database to allow retry
-        logger.warning(f"Job {job_hash} appears cancelled or orphaned (no output files). Deleting from database to allow retry.")
+    # Check if job was cancelled/killed
+    # This typically happens when:
+    # 1. scancel is used
+    # 2. Container/service restart during job execution
+    # 3. Job was externally terminated
+    #
+    # Detection criteria:
+    # - Slurm explicitly says CA/CANCELLED
+    # - No output files exist at all (job never wrote anything)
+    # - Exit code file doesn't exist (job was interrupted before completion)
+    #   AND slurm doesn't know the job (empty final_state or non-terminal state)
+    no_output_files = not os.path.exists(exit_code_path) and not os.path.exists(output_path) and not os.path.exists(error_path)
+    exit_code_missing = not os.path.exists(exit_code_path)
+    slurm_unknown = final_state in [None, "", "R", "PD", "CG"]  # Slurm doesn't know job or says it's still running
+
+    is_cancelled = (
+        final_state in ["CA", "CANCELLED"] or  # Explicit cancel
+        no_output_files or  # No traces at all
+        (exit_code_missing and slurm_unknown)  # Interrupted before completion and slurm lost track
+    )
+
+    if is_cancelled:
+        # Job was cancelled or interrupted - mark as CANCELLED to allow resubmission
+        logger.warning(f"Job {job_hash} appears cancelled or interrupted (final_state={final_state}, exit_code_exists={os.path.exists(exit_code_path)}). Marking as CANCELLED.")
         try:
-            # Delete job from database
-            result = jobs_collection.delete_one({"job_hash": job_hash})
-            if result.deleted_count > 0:
-                logger.info(f"Job {job_hash} deleted from database (was cancelled/orphaned)")
-            else:
-                logger.warning(f"Job {job_hash} not found in database for deletion")
-            return True  # Return success so we don't retry immediately
+            update_job_status(job_hash, JobStatus.CANCELLED, error="Job was cancelled or interrupted by service restart")
+            logger.info(f"Job {job_hash} marked as CANCELLED (allows resubmission)")
+            return True
         except Exception as e:
-            logger.error(f"Error deleting cancelled job {job_hash}: {e}")
+            logger.error(f"Error marking cancelled job {job_hash}: {e}")
             return False
 
     # Read exit code if file exists

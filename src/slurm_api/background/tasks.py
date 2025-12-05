@@ -176,6 +176,38 @@ async def check_cancelled_jobs():
                 meta_job_count += meta_cancelled
                 pipeline_count += pipeline_cancelled
 
+        # Part 4: Mark jobs that failed with empty error
+        # These are jobs that failed without a clear reason:
+        # - May have been interrupted by service restart
+        # - May have been killed externally without leaving error traces
+        # They should be CANCELLED to allow manual resubmission
+        empty_error_failed_jobs = jobs_collection.find({
+            "status": {"$in": [JobStatus.FAILED, "FA", "F"]},
+            "$or": [
+                {"error": ""},
+                {"error": None},
+                {"error": {"$exists": False}},
+            ]
+        })
+
+        for job in empty_error_failed_jobs:
+            job_hash = job["job_hash"]
+            logger.warning(f"Found failed job with empty error {job_hash} - marking as CANCELLED")
+            result = jobs_collection.update_one(
+                {"job_hash": job_hash},
+                {"$set": {
+                    "status": JobStatus.CANCELLED,
+                    "error": "Job failed without error details (likely interrupted by service restart)"
+                }}
+            )
+            if result.modified_count > 0:
+                logger.info(f"🚫 Marked empty-error job {job_hash} as CANCELLED")
+                cancelled_count += 1
+                # Cascade cancel meta-jobs and pipelines
+                meta_cancelled, pipeline_cancelled = cascade_cancel_meta_jobs(job_hash)
+                meta_job_count += meta_cancelled
+                pipeline_count += pipeline_cancelled
+
         if cancelled_count > 0:
             logger.info(f"🚫 Marked {cancelled_count} jobs as CANCELLED")
         if meta_job_count > 0:
@@ -310,20 +342,20 @@ async def check_orphaned_jobs():
                     )
                     logger.info(f"✅ Successfully submitted orphaned job {job_hash} to Slurm with ID {slurm_id}")
                 else:
-                    # Don't mark as failed yet - will retry based on last_submission_attempt
+                    # Don't mark as cancelled yet - will retry based on last_submission_attempt
                     logger.warning(f"⚠️ Could not submit job {job_hash} (attempt #{attempts + 1}): {message}")
-                    # Mark as failed after 5 attempts
+                    # Mark as CANCELLED after 5 attempts - submission failures are service issues, not job errors
                     if attempts >= 4:  # 5th attempt failed
-                        update_job_status(job_hash, JobStatus.FAILED, error=f"Failed after {attempts + 1} attempts: {message}")
-                        logger.error(f"❌ Job {job_hash} marked as FAILED after {attempts + 1} submission attempts")
+                        update_job_status(job_hash, JobStatus.CANCELLED, error=f"Submission failed after {attempts + 1} attempts (service unavailable): {message}")
+                        logger.error(f"❌ Job {job_hash} marked as CANCELLED after {attempts + 1} submission attempts (allows resubmission)")
                     
             except Exception as e:
                 # Log error but allow retries
                 logger.error(f"❌ Error retrying job {job_hash}: {e}")
-                # Mark as failed after 5 attempts
+                # Mark as CANCELLED after 5 attempts - submission failures are service issues, not job errors
                 if attempts >= 4:
-                    update_job_status(job_id, JobStatus.FAILED, error=f"Failed after {attempts + 1} attempts: {str(e)}")
-                    logger.error(f"Job {job_id} marked as FAILED after {attempts + 1} submission attempts")
+                    update_job_status(job_hash, JobStatus.CANCELLED, error=f"Submission error after {attempts + 1} attempts (service unavailable): {str(e)}")
+                    logger.error(f"Job {job_hash} marked as CANCELLED after {attempts + 1} submission attempts (allows resubmission)")
                 
     except Exception as e:
         # Never let this crash the background task

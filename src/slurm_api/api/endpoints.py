@@ -135,7 +135,9 @@ async def submit_job(job: JobSubmission):
             success, message, slurm_id = submit_slurm_job(script_path)
             
             if not success:
-                update_job_status(job_hash, JobStatus.FAILED, error=message)
+                # Mark as CANCELLED instead of FAILED - submission failures are typically
+                # service issues (restart, network, etc.) not job errors. CANCELLED allows resubmission.
+                update_job_status(job_hash, JobStatus.CANCELLED, error=f"Submission failed (service unavailable): {message}")
                 raise HTTPException(
                     status_code=400,
                     detail=f"Job submission failed: {message}"
@@ -153,7 +155,9 @@ async def submit_job(job: JobSubmission):
             return {"message": message, "job_hash": job_hash}
             
         except Exception as e:
-            update_job_status(job_hash, JobStatus.FAILED, error=str(e))
+            # Mark as CANCELLED instead of FAILED - exceptions during submission are typically
+            # service issues (restart, network, etc.) not job errors. CANCELLED allows resubmission.
+            update_job_status(job_hash, JobStatus.CANCELLED, error=f"Submission error (service unavailable): {str(e)}")
             raise HTTPException(
                 status_code=500,
                 detail=f"Job submission failed: {str(e)}"
