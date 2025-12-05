@@ -9,16 +9,17 @@ from slurm_api.services.job_service import process_job_output
 from slurm_api.utils.db_utils import update_job_status
 
 
-def cascade_delete_pipelines(meta_job_hash: str) -> int:
+def cascade_cancel_pipelines(meta_job_hash: str) -> int:
     """
-    Delete all pipelines that reference the given meta_job_hash in their nodes.
-    Returns the number of pipelines deleted.
+    Mark all pipelines that reference the given meta_job_hash as cancelled.
+    Returns the number of pipelines cancelled.
     """
-    deleted_count = 0
+    cancelled_count = 0
 
     # Find pipelines that have this meta_job_hash in any of their nodes
     pipelines = pipelines_collection.find({
-        "nodes": {"$exists": True}
+        "nodes": {"$exists": True},
+        "status": {"$nin": ["cancelled", "completed", "failed"]}
     })
 
     for pipeline in pipelines:
@@ -28,55 +29,62 @@ def cascade_delete_pipelines(meta_job_hash: str) -> int:
         # Check if any node references this meta_job_hash
         for node_id, node in nodes.items():
             if node.get("meta_job_hash") == meta_job_hash:
-                result = pipelines_collection.delete_one({"pipeline_hash": pipeline_hash})
-                if result.deleted_count > 0:
-                    logger.info(f"🗑️ Cascade deleted pipeline {pipeline_hash} (referenced deleted meta-job)")
-                    deleted_count += 1
-                break  # Pipeline already deleted, no need to check more nodes
+                result = pipelines_collection.update_one(
+                    {"pipeline_hash": pipeline_hash},
+                    {"$set": {"status": "cancelled"}}
+                )
+                if result.modified_count > 0:
+                    logger.info(f"🚫 Cascade cancelled pipeline {pipeline_hash} (referenced cancelled meta-job)")
+                    cancelled_count += 1
+                break  # Pipeline already updated, no need to check more nodes
 
-    return deleted_count
+    return cancelled_count
 
 
-def cascade_delete_meta_jobs(job_hash: str) -> tuple[int, int]:
+def cascade_cancel_meta_jobs(job_hash: str) -> tuple[int, int]:
     """
-    Delete all meta-jobs that reference the given job_hash in their chain.
-    Also cascade-deletes pipelines that reference those meta-jobs.
-    Returns tuple of (meta_jobs_deleted, pipelines_deleted).
+    Mark all meta-jobs that reference the given job_hash as cancelled.
+    Also cascade-cancels pipelines that reference those meta-jobs.
+    Returns tuple of (meta_jobs_cancelled, pipelines_cancelled).
     """
-    meta_deleted_count = 0
-    pipeline_deleted_count = 0
+    meta_cancelled_count = 0
+    pipeline_cancelled_count = 0
 
-    # Find meta-jobs that have this job_hash anywhere in their chain
+    # Find meta-jobs that have this job_hash anywhere in their chain and are not already cancelled
     meta_jobs = meta_jobs_collection.find({
-        "chain.job_hash": job_hash
+        "chain.job_hash": job_hash,
+        "status": {"$nin": ["cancelled", "completed", "failed"]}
     })
 
     for meta_job in meta_jobs:
         meta_job_hash = meta_job["meta_job_hash"]
 
-        # First cascade-delete pipelines that reference this meta-job
-        pipeline_deleted_count += cascade_delete_pipelines(meta_job_hash)
+        # First cascade-cancel pipelines that reference this meta-job
+        pipeline_cancelled_count += cascade_cancel_pipelines(meta_job_hash)
 
-        # Then delete the meta-job itself
-        result = meta_jobs_collection.delete_one({"meta_job_hash": meta_job_hash})
-        if result.deleted_count > 0:
-            logger.info(f"🗑️ Cascade deleted meta-job {meta_job_hash} (referenced deleted job)")
-            meta_deleted_count += 1
+        # Then mark the meta-job as cancelled
+        result = meta_jobs_collection.update_one(
+            {"meta_job_hash": meta_job_hash},
+            {"$set": {"status": "cancelled"}}
+        )
+        if result.modified_count > 0:
+            logger.info(f"🚫 Cascade cancelled meta-job {meta_job_hash} (referenced cancelled job)")
+            meta_cancelled_count += 1
 
-    return meta_deleted_count, pipeline_deleted_count
+    return meta_cancelled_count, pipeline_cancelled_count
 
 
 async def check_cancelled_jobs():
     """
-    Detect and clean up jobs that were cancelled or killed externally.
+    Detect and mark jobs that were cancelled or killed externally.
 
     Handles three cases:
     1. Jobs that disappeared from Slurm queue with no output files (scancel)
     2. Jobs that failed with "Exit code file not found" (killed before completion)
     3. Jobs killed by signals: exit code 137 (SIGKILL/OOM), 139 (SIGSEGV), 143 (SIGTERM)
 
-    These are NOT logical errors in the jobs themselves, so they are deleted
-    to allow automatic retry. When a job is deleted, also cascade-deletes
+    These are NOT logical errors in the jobs themselves, so they are marked as CANCELLED
+    to allow manual resubmission. When a job is cancelled, also cascade-cancels
     any meta-jobs and pipelines that reference it.
     """
     try:
@@ -103,19 +111,22 @@ async def check_cancelled_jobs():
 
                 if not os.path.exists(output_path) and not os.path.exists(exit_code_path) and not os.path.exists(error_path):
                     logger.warning(f"Detected cancelled job {job_hash} (slurm_id={slurm_id}) - no output files found")
-                    result = jobs_collection.delete_one({"job_hash": job_hash})
-                    if result.deleted_count > 0:
-                        logger.info(f"🗑️ Deleted cancelled job {job_hash} from database")
+                    result = jobs_collection.update_one(
+                        {"job_hash": job_hash},
+                        {"$set": {"status": JobStatus.CANCELLED}}
+                    )
+                    if result.modified_count > 0:
+                        logger.info(f"🚫 Marked job {job_hash} as CANCELLED")
                         cancelled_count += 1
-                        # Cascade delete meta-jobs and pipelines
-                        meta_deleted, pipeline_deleted = cascade_delete_meta_jobs(job_hash)
-                        meta_job_count += meta_deleted
-                        pipeline_count += pipeline_deleted
+                        # Cascade cancel meta-jobs and pipelines
+                        meta_cancelled, pipeline_cancelled = cascade_cancel_meta_jobs(job_hash)
+                        meta_job_count += meta_cancelled
+                        pipeline_count += pipeline_cancelled
 
-        # Part 2: Clean up failed jobs where the exit code file was not found
+        # Part 2: Mark failed jobs where the exit code file was not found
         # This means the job was killed externally (scancel, OOM, timeout, container restart)
         # before it could write its exit code - NOT a logical error in the job itself
-        # These jobs should be deleted so they can be retried
+        # These jobs are marked as CANCELLED so they can be manually resubmitted
         failed_external_jobs = jobs_collection.find({
             "status": {"$in": [JobStatus.FAILED, "FA", "F"]},
             "error": {"$regex": "Exit code file not found"}
@@ -124,19 +135,22 @@ async def check_cancelled_jobs():
         for job in failed_external_jobs:
             job_hash = job["job_hash"]
             logger.warning(f"Found externally-killed job {job_hash} (no exit code file)")
-            result = jobs_collection.delete_one({"job_hash": job_hash})
-            if result.deleted_count > 0:
-                logger.info(f"🗑️ Deleted killed job {job_hash} from database (will retry)")
+            result = jobs_collection.update_one(
+                {"job_hash": job_hash},
+                {"$set": {"status": JobStatus.CANCELLED}}
+            )
+            if result.modified_count > 0:
+                logger.info(f"🚫 Marked killed job {job_hash} as CANCELLED")
                 cancelled_count += 1
-                # Cascade delete meta-jobs and pipelines
-                meta_deleted, pipeline_deleted = cascade_delete_meta_jobs(job_hash)
-                meta_job_count += meta_deleted
-                pipeline_count += pipeline_deleted
+                # Cascade cancel meta-jobs and pipelines
+                meta_cancelled, pipeline_cancelled = cascade_cancel_meta_jobs(job_hash)
+                meta_job_count += meta_cancelled
+                pipeline_count += pipeline_cancelled
 
-        # Part 3: Clean up jobs killed by signals (exit codes 137, 139, 143, etc.)
+        # Part 3: Mark jobs killed by signals (exit codes 137, 139, 143, etc.)
         # These are jobs killed by SIGKILL (137=OOM), SIGSEGV (139), SIGTERM (143)
         # Exit codes 128+ indicate the process was killed by a signal (128 + signal_number)
-        # These are NOT logical errors in the job itself, so delete them to allow retry
+        # These are NOT logical errors in the job itself, mark as CANCELLED for manual retry
         signal_killed_jobs = jobs_collection.find({
             "status": {"$in": [JobStatus.FAILED, "FA", "F"]},
             "$or": [
@@ -150,36 +164,40 @@ async def check_cancelled_jobs():
             job_hash = job["job_hash"]
             error_msg = job.get("error", "")
             logger.warning(f"Found signal-killed job {job_hash}: {error_msg}")
-            result = jobs_collection.delete_one({"job_hash": job_hash})
-            if result.deleted_count > 0:
-                logger.info(f"🗑️ Deleted signal-killed job {job_hash} from database (will retry)")
+            result = jobs_collection.update_one(
+                {"job_hash": job_hash},
+                {"$set": {"status": JobStatus.CANCELLED}}
+            )
+            if result.modified_count > 0:
+                logger.info(f"🚫 Marked signal-killed job {job_hash} as CANCELLED")
                 cancelled_count += 1
-                # Cascade delete meta-jobs and pipelines
-                meta_deleted, pipeline_deleted = cascade_delete_meta_jobs(job_hash)
-                meta_job_count += meta_deleted
-                pipeline_count += pipeline_deleted
+                # Cascade cancel meta-jobs and pipelines
+                meta_cancelled, pipeline_cancelled = cascade_cancel_meta_jobs(job_hash)
+                meta_job_count += meta_cancelled
+                pipeline_count += pipeline_cancelled
 
         if cancelled_count > 0:
-            logger.info(f"🧹 Cleaned up {cancelled_count} cancelled/orphaned jobs")
+            logger.info(f"🚫 Marked {cancelled_count} jobs as CANCELLED")
         if meta_job_count > 0:
-            logger.info(f"🧹 Cascade deleted {meta_job_count} meta-jobs")
+            logger.info(f"🚫 Cascade cancelled {meta_job_count} meta-jobs")
         if pipeline_count > 0:
-            logger.info(f"🧹 Cascade deleted {pipeline_count} pipelines")
+            logger.info(f"🚫 Cascade cancelled {pipeline_count} pipelines")
 
     except Exception as e:
         logger.error(f"Error checking cancelled jobs: {e}")
 
 async def check_orphaned_meta_jobs():
     """
-    Find and delete meta-jobs whose current job no longer exists in the database.
-    This handles the case where a job was deleted but its meta-job wasn't cascade-deleted.
-    Also cascade-deletes pipelines that reference those meta-jobs.
+    Find and cancel meta-jobs whose current job no longer exists in the database
+    OR whose current job has been cancelled.
+    This handles the case where a job was cancelled but its meta-job wasn't cascade-cancelled.
+    Also cascade-cancels pipelines that reference those meta-jobs.
     """
     try:
-        deleted_count = 0
+        cancelled_count = 0
         pipeline_count = 0
 
-        # Find meta-jobs that are running (not completed/failed)
+        # Find meta-jobs that are running (not completed/failed/cancelled)
         running_meta_jobs = meta_jobs_collection.find({
             "status": {"$in": ["running", "pending"]}
         })
@@ -194,24 +212,34 @@ async def check_orphaned_meta_jobs():
                 current_job_hash = chain[current_step].get("job_hash")
 
                 if current_job_hash:
-                    # Check if this job exists
-                    job_exists = jobs_collection.find_one({"job_hash": current_job_hash})
-                    if not job_exists:
+                    # Check if this job exists and its status
+                    job = jobs_collection.find_one({"job_hash": current_job_hash})
+                    should_cancel = False
+
+                    if not job:
                         logger.warning(f"Found orphaned meta-job {meta_job_hash} - current job {current_job_hash} no longer exists")
+                        should_cancel = True
+                    elif job.get("status") in [JobStatus.CANCELLED, "CA"]:
+                        logger.warning(f"Found meta-job {meta_job_hash} with cancelled job {current_job_hash}")
+                        should_cancel = True
 
-                        # First cascade-delete pipelines that reference this meta-job
-                        pipeline_count += cascade_delete_pipelines(meta_job_hash)
+                    if should_cancel:
+                        # First cascade-cancel pipelines that reference this meta-job
+                        pipeline_count += cascade_cancel_pipelines(meta_job_hash)
 
-                        # Then delete the meta-job
-                        result = meta_jobs_collection.delete_one({"meta_job_hash": meta_job_hash})
-                        if result.deleted_count > 0:
-                            logger.info(f"🗑️ Deleted orphaned meta-job {meta_job_hash}")
-                            deleted_count += 1
+                        # Then mark the meta-job as cancelled
+                        result = meta_jobs_collection.update_one(
+                            {"meta_job_hash": meta_job_hash},
+                            {"$set": {"status": "cancelled"}}
+                        )
+                        if result.modified_count > 0:
+                            logger.info(f"🚫 Marked orphaned meta-job {meta_job_hash} as cancelled")
+                            cancelled_count += 1
 
-        if deleted_count > 0:
-            logger.info(f"🧹 Cleaned up {deleted_count} orphaned meta-jobs")
+        if cancelled_count > 0:
+            logger.info(f"🚫 Marked {cancelled_count} orphaned meta-jobs as cancelled")
         if pipeline_count > 0:
-            logger.info(f"🧹 Cascade deleted {pipeline_count} pipelines")
+            logger.info(f"🚫 Cascade cancelled {pipeline_count} pipelines")
 
     except Exception as e:
         logger.error(f"Error checking orphaned meta-jobs: {e}")

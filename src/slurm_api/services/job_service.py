@@ -227,8 +227,9 @@ def prepare_job_script(job_hash: str, job: JobSubmission) -> str:
         f.write(f"#SBATCH --cpus-per-task={cpus}\n")
 
         # Memory: use method's setting if specified
-        # If not specified (None), don't set --mem and let Slurm use DefMemPerCPU
+        # If not specified (None), calculate based on CPUs × DefMemPerCPU
         # If explicitly 0, use --mem=0 for all available memory (single job per node)
+        # IMPORTANT: Always specify --mem explicitly so Slurm tracks memory allocation
         memory_mb = resources.get("memory_mb")
         if memory_mb is not None:
             if memory_mb == 0:
@@ -236,7 +237,12 @@ def prepare_job_script(job_hash: str, job: JobSubmission) -> str:
                 f.write("#SBATCH --mem=0\n")
             else:
                 f.write(f"#SBATCH --mem={memory_mb}M\n")
-        # If memory_mb is None, don't specify --mem, use Slurm's DefMemPerCPU
+        else:
+            # Calculate default memory based on CPUs × DefMemPerCPU (default 1500 MB/CPU)
+            # This ensures Slurm tracks memory allocation correctly for scheduling
+            default_mem_per_cpu = 1500  # Must match slurm.conf DefMemPerCPU
+            calculated_mem = cpus * default_mem_per_cpu
+            f.write(f"#SBATCH --mem={calculated_mem}M\n")
 
         # Time limit: use method's setting if specified
         time_limit = resources.get("time_limit")

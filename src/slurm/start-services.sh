@@ -69,12 +69,54 @@ else
     # Detect system resources
     DETECTED_CPUS=$(nproc 2>/dev/null || echo 8)
     DETECTED_MEMORY_KB=$(grep MemTotal /proc/meminfo 2>/dev/null | awk '{print $2}' || echo 16777216)
-    DETECTED_MEMORY=$((DETECTED_MEMORY_KB / 1024 * 90 / 100))  # 90% of available memory in MB
-    MEMORY_PER_CPU=$((DETECTED_MEMORY / DETECTED_CPUS))
-    MAX_MEMORY_PER_CPU=$((MEMORY_PER_CPU * 2))
-    
-    echo -e "${CYAN}>> Detected resources: ${DETECTED_CPUS} CPUs, ${DETECTED_MEMORY} MB RAM${NC}"
-    
+    TOTAL_MEMORY_MB=$((DETECTED_MEMORY_KB / 1024))
+
+    # CONSERVATIVE MEMORY ALLOCATION:
+    # Reserve memory for system services (MongoDB, Slurm daemons, OS, etc.)
+    # - Base reservation: 2 GB for OS/Slurm
+    # - Per-container reservation: ~500 MB each for 3 MongoDB instances = 1.5 GB
+    # - Buffer for spikes: 500 MB
+    # Total reserved: ~4 GB (4096 MB)
+    SYSTEM_RESERVED_MB=4096
+
+    # If system has less than 8 GB, reserve 50% for system instead
+    if [ $TOTAL_MEMORY_MB -lt 8192 ]; then
+        SYSTEM_RESERVED_MB=$((TOTAL_MEMORY_MB / 2))
+    fi
+
+    # Memory available for Slurm jobs
+    SLURM_MEMORY_MB=$((TOTAL_MEMORY_MB - SYSTEM_RESERVED_MB))
+
+    # Ensure at least 1 GB for jobs
+    if [ $SLURM_MEMORY_MB -lt 1024 ]; then
+        SLURM_MEMORY_MB=1024
+    fi
+
+    # CONSERVATIVE DEFAULT MEMORY PER CPU:
+    # Deep learning methods (like lungmask) can use 2-3 GB per process
+    # Set default to 1500 MB per CPU to be safe for most workloads
+    # With 2 CPUs per job (default), each job gets 3 GB
+    DEF_MEM_PER_CPU=1500
+
+    # Calculate max parallel jobs based on available memory
+    # Assuming 2 CPUs per job and DEF_MEM_PER_CPU per CPU
+    MEM_PER_JOB=$((DEF_MEM_PER_CPU * 2))
+    MAX_PARALLEL_JOBS=$((SLURM_MEMORY_MB / MEM_PER_JOB))
+
+    # Ensure at least 1 job can run
+    if [ $MAX_PARALLEL_JOBS -lt 1 ]; then
+        MAX_PARALLEL_JOBS=1
+        # Recalculate DEF_MEM_PER_CPU if not enough memory
+        DEF_MEM_PER_CPU=$((SLURM_MEMORY_MB / 2))
+    fi
+
+    # Max memory per CPU is 2x the default (for memory-intensive jobs)
+    MAX_MEM_PER_CPU=$((DEF_MEM_PER_CPU * 2))
+
+    echo -e "${CYAN}>> Detected resources: ${DETECTED_CPUS} CPUs, ${TOTAL_MEMORY_MB} MB total RAM${NC}"
+    echo -e "${CYAN}>> Memory allocation: ${SYSTEM_RESERVED_MB} MB reserved for system, ${SLURM_MEMORY_MB} MB for jobs${NC}"
+    echo -e "${CYAN}>> Job resources: ${DEF_MEM_PER_CPU} MB per CPU (default), max ~${MAX_PARALLEL_JOBS} parallel jobs${NC}"
+
     cat > /etc/slurm/slurm.conf << EOF
 ClusterName=${CLUSTER_NAME:-dshpc-slurm}
 SlurmctldHost=localhost
@@ -87,12 +129,15 @@ SlurmctldDebug=debug5
 
 # SCHEDULER - Allow multiple jobs to run simultaneously
 SelectType=select/cons_tres
-SelectTypeParameters=CR_Core
+SelectTypeParameters=CR_Core_Memory
 
 # COMPUTE NODES - Auto-configured based on system resources
-# Detected: ${DETECTED_CPUS} CPUs, ${DETECTED_MEMORY} MB RAM
-NodeName=localhost CPUs=${DETECTED_CPUS} RealMemory=${DETECTED_MEMORY} TmpDisk=100000 State=UNKNOWN
-PartitionName=debug Nodes=localhost Default=YES MaxTime=INFINITE State=UP DefMemPerCPU=${MEMORY_PER_CPU} MaxMemPerCPU=${MAX_MEMORY_PER_CPU}
+# Total system: ${DETECTED_CPUS} CPUs, ${TOTAL_MEMORY_MB} MB RAM
+# Reserved for system (MongoDB, Slurm, OS): ${SYSTEM_RESERVED_MB} MB
+# Available for jobs: ${SLURM_MEMORY_MB} MB
+# Estimated max parallel jobs (2 CPUs each): ${MAX_PARALLEL_JOBS}
+NodeName=localhost CPUs=${DETECTED_CPUS} RealMemory=${SLURM_MEMORY_MB} TmpDisk=100000 State=UNKNOWN
+PartitionName=debug Nodes=localhost Default=YES MaxTime=INFINITE State=UP DefMemPerCPU=${DEF_MEM_PER_CPU} MaxMemPerCPU=${MAX_MEM_PER_CPU}
 
 # PROCESS TRACKING
 ProctrackType=proctrack/linuxproc

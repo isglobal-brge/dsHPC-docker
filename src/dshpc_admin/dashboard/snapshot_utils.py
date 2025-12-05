@@ -141,13 +141,37 @@ def get_environment_info():
 def get_method_source(function_hash):
     """Get source code for a specific method."""
     snapshot = get_latest_snapshot()
-    
+
     if not snapshot or 'method_sources' not in snapshot:
         return None
-    
+
     for method in snapshot['method_sources']:
         if method.get('function_hash') == function_hash:
             return method
-    
+
     return None
+
+
+def get_jobs_list():
+    """Get pre-enriched jobs list from latest snapshot."""
+    snapshot = get_latest_snapshot()
+    if not snapshot or 'jobs_list' not in snapshot:
+        return None
+    return snapshot['jobs_list']
+
+
+def get_meta_jobs_list():
+    """Get pre-enriched meta-jobs list from latest snapshot."""
+    snapshot = get_latest_snapshot()
+    if not snapshot or 'meta_jobs_list' not in snapshot:
+        return None
+    return snapshot['meta_jobs_list']
+
+
+def get_files_list():
+    """Get pre-enriched files list from latest snapshot."""
+    snapshot = get_latest_snapshot()
+    if not snapshot or 'files_list' not in snapshot:
+        return None
+    return snapshot['files_list']
 

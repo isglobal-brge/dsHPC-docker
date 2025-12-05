@@ -7,7 +7,7 @@ from django.urls import reverse
 from django.contrib import messages
 from .db_connections import MongoDBConnections, get_stats
 from .auth import login_required_simple
-from .snapshot_utils import get_container_status, get_system_resources, get_job_logs, get_environment_info, get_slurm_queue, get_latest_snapshot
+from .snapshot_utils import get_container_status, get_system_resources, get_job_logs, get_environment_info, get_slurm_queue, get_latest_snapshot, get_jobs_list, get_meta_jobs_list, get_files_list
 import requests
 from django.conf import settings
 import logging
@@ -162,19 +162,39 @@ def files_list(request):
     """List all files with advanced filtering."""
     from datetime import datetime
     from django.utils import timezone
-    
-    files_db = MongoDBConnections.get_files_db()
-    
+
     # Get filter parameters
     search = request.GET.get('search', '').strip()
     size_min = request.GET.get('size_min', '').strip()
     size_max = request.GET.get('size_max', '').strip()
     date_from = request.GET.get('date_from', '')
     date_to = request.GET.get('date_to', '')
-    
-    # Pagination
     page = int(request.GET.get('page', 1))
     per_page = int(request.GET.get('per_page', 50))
+
+    # FAST PATH: If page 1 with no filters, use pre-computed snapshot
+    has_filters = search or size_min or size_max or date_from or date_to
+    if page == 1 and not has_filters:
+        snapshot_data = get_files_list()
+        if snapshot_data and snapshot_data.get('items'):
+            return render(request, 'dashboard/files_list.html', {
+                'files': snapshot_data['items'],
+                'page': 1,
+                'total_pages': max(1, (snapshot_data['total'] + per_page - 1) // per_page),
+                'total_files': snapshot_data['total'],
+                'per_page': per_page,
+                'page_range': list(range(1, min(6, max(1, (snapshot_data['total'] + per_page - 1) // per_page) + 1))),
+                'search': '',
+                'size_min': '',
+                'size_max': '',
+                'date_from': '',
+                'date_to': '',
+                'page_title': 'Files',
+                'from_snapshot': True,
+            })
+
+    # SLOW PATH: Query with filters or pagination beyond page 1
+    files_db = MongoDBConnections.get_files_db()
     
     # Build query
     query = {}
@@ -244,64 +264,60 @@ def files_list(request):
         if 'status' not in f or f['status'] is None:
             f['status'] = 'completed'  # Default for old files without status
         
-        # Add content preview for ALL files (text and binary)
+        # Add content preview only for small text files to improve performance
+        # Skip preview for large/binary files - user can click to view details
+        PREVIEW_SIZE = 500
         try:
-            content_bytes = None
+            filename = f.get('filename', '').lower()
             content_type = f.get('content_type', '')
-            
-            # Get content based on storage type
-            if f.get('storage_type') == 'gridfs' and f.get('gridfs_id'):
-                try:
-                    from gridfs import GridFS
-                    from bson import ObjectId
-                    fs = GridFS(files_db, collection='fs')
-                    
-                    grid_id = f['gridfs_id']
-                    if isinstance(grid_id, str):
-                        grid_id = ObjectId(grid_id)
-                    
-                    # Read first 10KB for preview
-                    grid_out = fs.get(grid_id)
-                    content_bytes = grid_out.read(10000)
-                    grid_out.close()
-                except Exception as e:
-                    logger.debug(f"Could not load GridFS content for {f.get('filename')}: {e}")
-            
-            elif f.get('storage_type') in ['mongodb', 'inline'] and f.get('content'):
-                import base64
-                try:
-                    # Decode base64 content
-                    content_bytes = base64.b64decode(f.get('content'))[:10000]
-                except Exception as e:
-                    logger.debug(f"Could not decode content for {f.get('filename')}: {e}")
-            
-            # Generate preview
-            if content_bytes:
-                # Try to decode as text first
-                is_text = content_type.startswith('text/') or content_type in ['application/json', 'application/x-r', '']
-                
-                if is_text:
+            file_size = f.get('file_size', 0)
+
+            # Skip preview for known binary formats and large files
+            binary_extensions = ['.nii', '.nii.gz', '.gz', '.zip', '.tar', '.png', '.jpg', '.jpeg', '.gif', '.dcm', '.nrrd']
+            is_binary = any(filename.endswith(ext) for ext in binary_extensions)
+            is_large = file_size > 100000  # > 100KB
+
+            if is_binary:
+                f['content_preview'] = '[Binary file - click to view details]'
+                f['preview_type'] = 'binary'
+            elif is_large:
+                f['content_preview'] = f'[Large file ({file_size:,} bytes) - click to view]'
+                f['preview_type'] = 'large'
+            else:
+                # Only load content for small text files
+                content_bytes = None
+
+                if f.get('storage_type') == 'gridfs' and f.get('gridfs_id'):
                     try:
-                        content_str = content_bytes.decode('utf-8', errors='replace')
-                        max_preview = 5000
-                        f['content_preview'] = content_str[:max_preview]
-                        f['content_truncated'] = len(content_bytes) > max_preview
+                        from gridfs import GridFS
+                        from bson import ObjectId
+                        fs = GridFS(files_db, collection='fs')
+
+                        grid_id = f['gridfs_id']
+                        if isinstance(grid_id, str):
+                            grid_id = ObjectId(grid_id)
+
+                        grid_out = fs.get(grid_id)
+                        content_bytes = grid_out.read(PREVIEW_SIZE)
+                        grid_out.close()
+                    except Exception as e:
+                        logger.debug(f"Could not load GridFS content for {filename}: {e}")
+
+                elif f.get('storage_type') in ['mongodb', 'inline'] and f.get('content'):
+                    import base64
+                    try:
+                        content_bytes = base64.b64decode(f.get('content'))[:PREVIEW_SIZE]
+                    except Exception:
+                        pass
+
+                if content_bytes:
+                    try:
+                        f['content_preview'] = content_bytes.decode('utf-8', errors='replace')
+                        f['content_truncated'] = file_size > PREVIEW_SIZE
                         f['preview_type'] = 'text'
                     except:
-                        is_text = False
-                
-                if not is_text:
-                    # Show hex dump for binary files
-                    hex_lines = []
-                    for i in range(0, min(512, len(content_bytes)), 16):
-                        chunk = content_bytes[i:i+16]
-                        hex_part = ' '.join(f'{b:02x}' for b in chunk)
-                        ascii_part = ''.join(chr(b) if 32 <= b < 127 else '.' for b in chunk)
-                        hex_lines.append(f'{i:08x}  {hex_part:<48}  {ascii_part}')
-                    
-                    f['content_preview'] = '\n'.join(hex_lines)
-                    f['content_truncated'] = len(content_bytes) > 512
-                    f['preview_type'] = 'hex'
+                        f['content_preview'] = '[Binary content]'
+                        f['preview_type'] = 'binary'
         except Exception as e:
             logger.debug(f"Error adding preview for {f.get('filename')}: {e}")
     
@@ -346,11 +362,7 @@ def jobs_list(request):
     """List all jobs with advanced filtering."""
     from datetime import datetime
     from django.utils import timezone
-    
-    jobs_db = MongoDBConnections.get_jobs_db()
-    methods_db = MongoDBConnections.get_methods_db()
-    files_db = MongoDBConnections.get_files_db()
-    
+
     # Get filter and pagination params
     status_filter = request.GET.get('status', '')
     search = request.GET.get('search', '').strip()
@@ -359,6 +371,32 @@ def jobs_list(request):
     date_to = request.GET.get('date_to', '')
     page = int(request.GET.get('page', 1))
     per_page = int(request.GET.get('per_page', 50))
+
+    # FAST PATH: If page 1 with no filters, use pre-computed snapshot
+    has_filters = status_filter or search or method_filter or date_from or date_to
+    if page == 1 and not has_filters:
+        snapshot_data = get_jobs_list()
+        if snapshot_data and snapshot_data.get('items'):
+            return render(request, 'dashboard/jobs_list.html', {
+                'jobs': snapshot_data['items'],
+                'page': 1,
+                'total_pages': max(1, (snapshot_data['total'] + per_page - 1) // per_page),
+                'total_jobs': snapshot_data['total'],
+                'per_page': per_page,
+                'page_range': list(range(1, min(6, max(1, (snapshot_data['total'] + per_page - 1) // per_page) + 1))),
+                'status_filter': '',
+                'search': '',
+                'method_filter': '',
+                'date_from': '',
+                'date_to': '',
+                'page_title': 'Jobs',
+                'from_snapshot': True,
+            })
+
+    # SLOW PATH: Query with filters or pagination beyond page 1
+    jobs_db = MongoDBConnections.get_jobs_db()
+    methods_db = MongoDBConnections.get_methods_db()
+    files_db = MongoDBConnections.get_files_db()
     
     # Build query
     query = {}
@@ -407,16 +445,43 @@ def jobs_list(request):
     # Get jobs from database with pagination
     skip = (page - 1) * per_page
     jobs = list(jobs_db.jobs.find(query).sort('created_at', -1).skip(skip).limit(per_page))
-    
-    # Enrich jobs with method names from methods DB
+
+    # BATCH LOAD: Collect all unique function_hashes and file_hashes to avoid N+1 queries
+    function_hashes = set()
+    file_hashes = set()
+    for j in jobs:
+        if j.get('function_hash'):
+            function_hashes.add(j['function_hash'])
+        if j.get('file_inputs'):
+            for input_val in j['file_inputs'].values():
+                if isinstance(input_val, list):
+                    file_hashes.update(input_val)
+                elif input_val:
+                    file_hashes.add(input_val)
+        if j.get('file_hash'):
+            file_hashes.add(j['file_hash'])
+
+    # Single query for all methods
+    methods_lookup = {}
+    if function_hashes:
+        for m in methods_db.methods.find({'function_hash': {'$in': list(function_hashes)}}):
+            methods_lookup[m['function_hash']] = m
+
+    # Single query for all files
+    files_lookup = {}
+    if file_hashes:
+        for f in files_db.files.find({'file_hash': {'$in': list(file_hashes)}}):
+            files_lookup[f['file_hash']] = f
+
+    # Enrich jobs using batch-loaded lookups
     for j in jobs:
         if '_id' in j:
             j['id'] = str(j['_id'])
             del j['_id']
         
-        # Get method name from function_hash
+        # Get method name from batch-loaded lookup
         if 'function_hash' in j and j['function_hash']:
-            method = methods_db.methods.find_one({'function_hash': j['function_hash']})
+            method = methods_lookup.get(j['function_hash'])
             if method:
                 j['method_name'] = method.get('name', 'unknown')
                 j['method_version'] = method.get('version', '')
@@ -426,76 +491,13 @@ def jobs_list(request):
             duration = (j['completed_at'] - j['created_at']).total_seconds()
             j['duration_seconds'] = duration
         
-        # Retrieve output from GridFS if stored there
-        if j.get('output_storage') == 'gridfs' and j.get('output_gridfs_id'):
-            try:
-                from gridfs import GridFS
-                from bson import ObjectId
-                fs = GridFS(jobs_db, collection='job_outputs')
-                
-                grid_id = j['output_gridfs_id']
-                if isinstance(grid_id, str):
-                    grid_id = ObjectId(grid_id)
-                
-                # Retrieve first 10KB
-                grid_out = fs.get(grid_id)
-                output_bytes = grid_out.read(10000)
-                grid_out.close()
-                
-                # Try to decode as text, fallback to hex
-                try:
-                    j['output'] = output_bytes.decode('utf-8', errors='strict')
-                    j['output_type'] = 'text'
-                except UnicodeDecodeError:
-                    # Binary data - show hex dump
-                    hex_lines = []
-                    for i in range(0, min(512, len(output_bytes)), 16):
-                        chunk = output_bytes[i:i+16]
-                        hex_part = ' '.join(f'{b:02x}' for b in chunk)
-                        ascii_part = ''.join(chr(b) if 32 <= b < 127 else '.' for b in chunk)
-                        hex_lines.append(f'{i:08x}  {hex_part:<48}  {ascii_part}')
-                    j['output'] = '\n'.join(hex_lines)
-                    j['output_type'] = 'hex'
-                
-                j['output_truncated'] = True
-            except Exception as e:
-                j['output'] = f"[Error retrieving output from GridFS: {str(e)}]"
-                j['output_type'] = 'error'
-        
-        # Retrieve error from GridFS if stored there
-        if j.get('error_storage') == 'gridfs' and j.get('error_gridfs_id'):
-            try:
-                from gridfs import GridFS
-                from bson import ObjectId
-                fs = GridFS(jobs_db, collection='job_outputs')
-                
-                grid_id = j['error_gridfs_id']
-                if isinstance(grid_id, str):
-                    grid_id = ObjectId(grid_id)
-                
-                grid_out = fs.get(grid_id)
-                error_bytes = grid_out.read(10000)
-                grid_out.close()
-                
-                # Try to decode as text, fallback to hex
-                try:
-                    j['error'] = error_bytes.decode('utf-8', errors='strict')
-                    j['error_type'] = 'text'
-                except UnicodeDecodeError:
-                    # Binary data - show hex dump
-                    hex_lines = []
-                    for i in range(0, min(512, len(error_bytes)), 16):
-                        chunk = error_bytes[i:i+16]
-                        hex_part = ' '.join(f'{b:02x}' for b in chunk)
-                        ascii_part = ''.join(chr(b) if 32 <= b < 127 else '.' for b in chunk)
-                        hex_lines.append(f'{i:08x}  {hex_part:<48}  {ascii_part}')
-                    j['error'] = '\n'.join(hex_lines)
-                    j['error_type'] = 'hex'
-                
-                j['error_truncated'] = True
-            except Exception as e:
-                j['error'] = f"[Error retrieving error from GridFS: {str(e)}]"
-                j['error_type'] = 'error'
+        # PERFORMANCE: Don't load output/error content in list view
+        # Just indicate if they exist - full content loaded in detail view
+        j['has_output'] = bool(j.get('output') or j.get('output_gridfs_id'))
+        j['has_error'] = bool(j.get('error') or j.get('error_gridfs_id'))
+        # Clear any inline content to reduce page size
+        j['output'] = None
+        j['error'] = None
         
         # Parse file_inputs arrays (if stored as strings)
         if j.get('file_inputs'):
@@ -507,15 +509,15 @@ def jobs_list(request):
                     except:
                         pass  # Keep as string if parse fails
         
-        # Enrich with file info (handle both single files and arrays)
+        # Enrich with file info using batch-loaded lookup
         if j.get('file_inputs'):
             j['file_info'] = {}
             for name, hash_val in j['file_inputs'].items():
                 if isinstance(hash_val, list):
-                    # Array of files - enrich each one
+                    # Array of files
                     j['file_info'][name] = []
                     for h in hash_val:
-                        file_doc = files_db.files.find_one({'file_hash': h})
+                        file_doc = files_lookup.get(h)
                         if file_doc:
                             j['file_info'][name].append({
                                 'filename': file_doc.get('filename', 'unknown'),
@@ -524,14 +526,14 @@ def jobs_list(request):
                             })
                 else:
                     # Single file
-                    file_doc = files_db.files.find_one({'file_hash': hash_val})
+                    file_doc = files_lookup.get(hash_val)
                     if file_doc:
                         j['file_info'][name] = {
                             'filename': file_doc.get('filename', 'unknown'),
                             'size': file_doc.get('file_size', 0)
                         }
         elif j.get('file_hash'):
-            file_doc = files_db.files.find_one({'file_hash': j['file_hash']})
+            file_doc = files_lookup.get(j['file_hash'])
             if file_doc:
                 j['input_filename'] = file_doc.get('filename', 'unknown')
                 j['input_size'] = file_doc.get('file_size', 0)
@@ -577,21 +579,40 @@ def meta_jobs_list(request):
     """List all meta-jobs with advanced filtering."""
     from datetime import datetime
     from django.utils import timezone
-    
-    jobs_db = MongoDBConnections.get_jobs_db()
-    methods_db = MongoDBConnections.get_methods_db()
-    files_db = MongoDBConnections.get_files_db()
-    
+
     # Get filter parameters
     search = request.GET.get('search', '').strip()
     status_filter = request.GET.get('status', '')
     date_from = request.GET.get('date_from', '')
     date_to = request.GET.get('date_to', '')
-    
-    # Pagination
     page = int(request.GET.get('page', 1))
     per_page = int(request.GET.get('per_page', 50))
-    
+
+    # FAST PATH: If page 1 with no filters, use pre-computed snapshot
+    has_filters = search or status_filter or date_from or date_to
+    if page == 1 and not has_filters:
+        snapshot_data = get_meta_jobs_list()
+        if snapshot_data and snapshot_data.get('items'):
+            return render(request, 'dashboard/meta_jobs_list.html', {
+                'meta_jobs': snapshot_data['items'],
+                'page': 1,
+                'total_pages': max(1, (snapshot_data['total'] + per_page - 1) // per_page),
+                'total_meta_jobs': snapshot_data['total'],
+                'per_page': per_page,
+                'page_range': list(range(1, min(6, max(1, (snapshot_data['total'] + per_page - 1) // per_page) + 1))),
+                'search': '',
+                'status_filter': '',
+                'date_from': '',
+                'date_to': '',
+                'page_title': 'Meta-Jobs',
+                'from_snapshot': True,
+            })
+
+    # SLOW PATH: Query with filters or pagination beyond page 1
+    jobs_db = MongoDBConnections.get_jobs_db()
+    methods_db = MongoDBConnections.get_methods_db()
+    files_db = MongoDBConnections.get_files_db()
+
     # Build query
     query = {}
     
@@ -672,76 +693,75 @@ def meta_jobs_list(request):
                 if step.get('job_hash'):
                     job = jobs_db.jobs.find_one({'job_hash': step['job_hash']})
                     if job:
-                        # Retrieve output from GridFS if stored there
+                        # For list view, only show small preview to reduce page size
+                        PREVIEW_SIZE = 500
+
+                        # Retrieve output preview from GridFS if stored there
                         if job.get('output_storage') == 'gridfs' and job.get('output_gridfs_id'):
                             try:
                                 from gridfs import GridFS
                                 from bson import ObjectId
                                 fs = GridFS(jobs_db, collection='job_outputs')
-                                
+
                                 grid_id = job['output_gridfs_id']
                                 if isinstance(grid_id, str):
                                     grid_id = ObjectId(grid_id)
-                                
+
                                 grid_out = fs.get(grid_id)
-                                output_bytes = grid_out.read(10000)
+                                output_bytes = grid_out.read(PREVIEW_SIZE)
                                 grid_out.close()
-                                
-                                # Try to decode as text, fallback to hex
+
                                 try:
                                     job['output'] = output_bytes.decode('utf-8', errors='strict')
                                     job['output_type'] = 'text'
                                 except UnicodeDecodeError:
-                                    # Binary - show hex dump
-                                    hex_lines = []
-                                    for i in range(0, min(512, len(output_bytes)), 16):
-                                        chunk = output_bytes[i:i+16]
-                                        hex_part = ' '.join(f'{b:02x}' for b in chunk)
-                                        ascii_part = ''.join(chr(b) if 32 <= b < 127 else '.' for b in chunk)
-                                        hex_lines.append(f'{i:08x}  {hex_part:<48}  {ascii_part}')
-                                    job['output'] = '\n'.join(hex_lines)
-                                    job['output_type'] = 'hex'
-                                
+                                    job['output'] = '[Binary data]'
+                                    job['output_type'] = 'binary'
+
                                 job['output_truncated'] = True
+                                job['has_full_output'] = True
                             except Exception as e:
-                                job['output'] = f"[Error retrieving output from GridFS: {str(e)}]"
+                                job['output'] = f"[Error: {str(e)[:50]}]"
                                 job['output_type'] = 'error'
-                        
-                        # Retrieve error from GridFS if stored there
+
+                        # Truncate inline output if too long
+                        if job.get('output') and len(job.get('output', '')) > PREVIEW_SIZE:
+                            job['output'] = job['output'][:PREVIEW_SIZE]
+                            job['output_truncated'] = True
+
+                        # Retrieve error preview from GridFS if stored there
                         if job.get('error_storage') == 'gridfs' and job.get('error_gridfs_id'):
                             try:
                                 from gridfs import GridFS
                                 from bson import ObjectId
                                 fs = GridFS(jobs_db, collection='job_outputs')
-                                
+
                                 grid_id = job['error_gridfs_id']
                                 if isinstance(grid_id, str):
                                     grid_id = ObjectId(grid_id)
-                                
+
                                 grid_out = fs.get(grid_id)
-                                error_bytes = grid_out.read(10000)
+                                error_bytes = grid_out.read(PREVIEW_SIZE)
                                 grid_out.close()
-                                
-                                # Try to decode as text
+
                                 try:
                                     job['error'] = error_bytes.decode('utf-8', errors='strict')
                                     job['error_type'] = 'text'
                                 except UnicodeDecodeError:
-                                    # Binary - show hex dump
-                                    hex_lines = []
-                                    for i in range(0, min(512, len(error_bytes)), 16):
-                                        chunk = error_bytes[i:i+16]
-                                        hex_part = ' '.join(f'{b:02x}' for b in chunk)
-                                        ascii_part = ''.join(chr(b) if 32 <= b < 127 else '.' for b in chunk)
-                                        hex_lines.append(f'{i:08x}  {hex_part:<48}  {ascii_part}')
-                                    job['error'] = '\n'.join(hex_lines)
-                                    job['error_type'] = 'hex'
-                                
+                                    job['error'] = '[Binary data]'
+                                    job['error_type'] = 'binary'
+
                                 job['error_truncated'] = True
+                                job['has_full_error'] = True
                             except Exception as e:
-                                job['error'] = f"[Error retrieving error from GridFS: {str(e)}]"
+                                job['error'] = f"[Error: {str(e)[:50]}]"
                                 job['error_type'] = 'error'
-                        
+
+                        # Truncate inline error if too long
+                        if job.get('error') and len(job.get('error', '')) > PREVIEW_SIZE:
+                            job['error'] = job['error'][:PREVIEW_SIZE]
+                            job['error_truncated'] = True
+
                         step['job_data'] = job
                         # Get method name
                         if job.get('function_hash'):

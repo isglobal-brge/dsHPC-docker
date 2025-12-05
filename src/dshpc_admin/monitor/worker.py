@@ -16,18 +16,27 @@ logger = logging.getLogger(__name__)
 
 class MonitorWorker:
     """Background worker that monitors system and stores snapshots."""
-    
+
     def __init__(self):
-        # MongoDB connection for snapshots
-        self.mongo_uri = os.environ.get('MONGO_JOBS_URI', 'mongodb://localhost:27017/')
-        self.mongo_db_name = os.environ.get('MONGO_JOBS_DB', 'dshpc-jobs')
-        self.client = None
-        self.db = None
+        # MongoDB connections
+        self.mongo_jobs_uri = os.environ.get('MONGO_JOBS_URI', 'mongodb://localhost:27017/')
+        self.mongo_files_uri = os.environ.get('MONGO_FILES_URI', 'mongodb://localhost:27017/')
+        self.mongo_methods_uri = os.environ.get('MONGO_METHODS_URI', 'mongodb://localhost:27017/')
+        self.mongo_jobs_db_name = os.environ.get('MONGO_JOBS_DB', 'dshpc-jobs')
+        self.mongo_files_db_name = os.environ.get('MONGO_FILES_DB', 'dshpc-files')
+        self.mongo_methods_db_name = os.environ.get('MONGO_METHODS_DB', 'dshpc-methods')
+
+        self.jobs_client = None
+        self.files_client = None
+        self.methods_client = None
+        self.jobs_db = None
+        self.files_db = None
+        self.methods_db = None
         self.snapshots_collection = None
-        
+
         # Docker client
         self.docker_client = None
-        
+
         # Config
         self.docker_prefix = 'dshpc'
         self.load_config()
@@ -44,16 +53,28 @@ class MonitorWorker:
             logger.warning(f"Could not load config: {e}")
     
     def connect(self):
-        """Connect to MongoDB and Docker."""
+        """Connect to MongoDB databases and Docker."""
         try:
-            self.client = MongoClient(self.mongo_uri)
-            self.db = self.client[self.mongo_db_name]
-            self.snapshots_collection = self.db['system_snapshots']
-            logger.info(f"Connected to MongoDB: {self.mongo_db_name}")
+            self.jobs_client = MongoClient(self.mongo_jobs_uri)
+            self.jobs_db = self.jobs_client[self.mongo_jobs_db_name]
+            self.snapshots_collection = self.jobs_db['system_snapshots']
+            logger.info(f"Connected to Jobs DB: {self.mongo_jobs_db_name}")
+
+            self.files_client = MongoClient(self.mongo_files_uri)
+            self.files_db = self.files_client[self.mongo_files_db_name]
+            logger.info(f"Connected to Files DB: {self.mongo_files_db_name}")
+
+            self.methods_client = MongoClient(self.mongo_methods_uri)
+            self.methods_db = self.methods_client[self.mongo_methods_db_name]
+            logger.info(f"Connected to Methods DB: {self.mongo_methods_db_name}")
+
+            # Aliases for backward compatibility with existing code
+            self.client = self.jobs_client
+            self.db = self.jobs_db
         except Exception as e:
             logger.error(f"Failed to connect to MongoDB: {e}")
             raise
-        
+
         try:
             self.docker_client = docker.from_env()
             logger.info("Connected to Docker")
@@ -603,7 +624,146 @@ class MonitorWorker:
             logger.error(f"Error collecting pipelines: {e}")
         
         return pipelines_data
-    
+
+    def collect_jobs_list(self, limit=50):
+        """Collect pre-enriched jobs list for admin panel."""
+        jobs_data = {'items': [], 'total': 0}
+        try:
+            jobs_collection = self.jobs_db['jobs']
+            methods_collection = self.methods_db['methods']
+            files_collection = self.files_db['files']
+
+            # Get total count
+            jobs_data['total'] = jobs_collection.count_documents({})
+
+            # Get jobs sorted by created_at desc
+            jobs = list(jobs_collection.find().sort('created_at', -1).limit(limit))
+
+            # Batch load methods and files
+            function_hashes = set()
+            file_hashes = set()
+            for j in jobs:
+                if j.get('function_hash'):
+                    function_hashes.add(j['function_hash'])
+                if j.get('file_inputs'):
+                    for v in j['file_inputs'].values():
+                        if isinstance(v, list):
+                            file_hashes.update(v)
+                        elif v:
+                            file_hashes.add(v)
+                if j.get('file_hash'):
+                    file_hashes.add(j['file_hash'])
+
+            methods_lookup = {}
+            if function_hashes:
+                for m in methods_collection.find({'function_hash': {'$in': list(function_hashes)}}):
+                    methods_lookup[m['function_hash']] = {'name': m.get('name'), 'version': m.get('version')}
+
+            files_lookup = {}
+            if file_hashes:
+                for f in files_collection.find({'file_hash': {'$in': list(file_hashes)}}):
+                    files_lookup[f['file_hash']] = {'filename': f.get('filename'), 'file_size': f.get('file_size')}
+
+            # Enrich jobs
+            for j in jobs:
+                job = {
+                    'id': str(j['_id']),
+                    'job_hash': j.get('job_hash'),
+                    'status': j.get('status'),
+                    'slurm_job_id': j.get('slurm_job_id'),
+                    'created_at': j.get('created_at'),
+                    'completed_at': j.get('completed_at'),
+                    'has_output': bool(j.get('output') or j.get('output_gridfs_id')),
+                    'has_error': bool(j.get('error') or j.get('error_gridfs_id')),
+                }
+                # Method info
+                if j.get('function_hash') and j['function_hash'] in methods_lookup:
+                    job['method_name'] = methods_lookup[j['function_hash']]['name']
+                    job['method_version'] = methods_lookup[j['function_hash']]['version']
+                # Duration
+                if j.get('created_at') and j.get('completed_at'):
+                    job['duration_seconds'] = (j['completed_at'] - j['created_at']).total_seconds()
+                # File info (simplified)
+                if j.get('file_inputs'):
+                    job['file_info'] = {}
+                    for name, hash_val in j['file_inputs'].items():
+                        if isinstance(hash_val, list):
+                            job['file_info'][name] = [files_lookup.get(h, {}).get('filename', 'unknown') for h in hash_val]
+                        elif hash_val in files_lookup:
+                            job['file_info'][name] = files_lookup[hash_val].get('filename', 'unknown')
+
+                jobs_data['items'].append(job)
+
+            logger.debug(f"Collected {len(jobs_data['items'])} jobs for snapshot")
+        except Exception as e:
+            logger.error(f"Error collecting jobs list: {e}")
+        return jobs_data
+
+    def collect_meta_jobs_list(self, limit=50):
+        """Collect pre-enriched meta-jobs list for admin panel."""
+        meta_jobs_data = {'items': [], 'total': 0}
+        try:
+            meta_jobs_collection = self.jobs_db['meta_jobs']
+            methods_collection = self.methods_db['methods']
+
+            meta_jobs_data['total'] = meta_jobs_collection.count_documents({})
+            meta_jobs = list(meta_jobs_collection.find().sort('created_at', -1).limit(limit))
+
+            # Batch load methods
+            function_hashes = set(m.get('function_hash') for m in meta_jobs if m.get('function_hash'))
+            methods_lookup = {}
+            if function_hashes:
+                for m in methods_collection.find({'function_hash': {'$in': list(function_hashes)}}):
+                    methods_lookup[m['function_hash']] = {'name': m.get('name'), 'version': m.get('version')}
+
+            for mj in meta_jobs:
+                meta_job = {
+                    'id': str(mj['_id']),
+                    'meta_job_hash': mj.get('meta_job_hash'),
+                    'status': mj.get('status'),
+                    'created_at': mj.get('created_at'),
+                    'completed_at': mj.get('completed_at'),
+                    'job_hashes': mj.get('job_hashes', []),
+                    'job_count': len(mj.get('job_hashes', [])),
+                }
+                if mj.get('function_hash') and mj['function_hash'] in methods_lookup:
+                    meta_job['method_name'] = methods_lookup[mj['function_hash']]['name']
+                if mj.get('created_at') and mj.get('completed_at'):
+                    meta_job['duration_seconds'] = (mj['completed_at'] - mj['created_at']).total_seconds()
+
+                meta_jobs_data['items'].append(meta_job)
+
+            logger.debug(f"Collected {len(meta_jobs_data['items'])} meta-jobs for snapshot")
+        except Exception as e:
+            logger.error(f"Error collecting meta-jobs list: {e}")
+        return meta_jobs_data
+
+    def collect_files_list(self, limit=50):
+        """Collect pre-processed files list for admin panel."""
+        files_data = {'items': [], 'total': 0}
+        try:
+            files_collection = self.files_db['files']
+
+            files_data['total'] = files_collection.count_documents({})
+            files = list(files_collection.find().sort('created_at', -1).limit(limit))
+
+            for f in files:
+                file_item = {
+                    'id': str(f['_id']),
+                    'file_hash': f.get('file_hash'),
+                    'filename': f.get('filename'),
+                    'file_size': f.get('file_size', 0),
+                    'content_type': f.get('content_type'),
+                    'created_at': f.get('created_at'),
+                    'storage_type': f.get('storage_type', 'inline'),
+                }
+                files_data['items'].append(file_item)
+
+            logger.debug(f"Collected {len(files_data['items'])} files for snapshot")
+        except Exception as e:
+            logger.error(f"Error collecting files list: {e}")
+        return files_data
+
     def store_snapshot(self):
         """Collect all data and store a snapshot in MongoDB."""
         try:
@@ -615,7 +775,11 @@ class MonitorWorker:
                 'environment': self.collect_environment_info(),
                 'slurm_queue': self.collect_slurm_queue(),
                 'method_sources': self.collect_method_sources(),
-                'pipelines': self.collect_pipelines()
+                'pipelines': self.collect_pipelines(),
+                # Pre-enriched lists for fast admin panel loading
+                'jobs_list': self.collect_jobs_list(limit=50),
+                'meta_jobs_list': self.collect_meta_jobs_list(limit=50),
+                'files_list': self.collect_files_list(limit=50),
             }
             
             # Store snapshot
