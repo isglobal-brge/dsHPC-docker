@@ -110,10 +110,15 @@ async def check_cancelled_jobs():
                 error_path = f"/tmp/error_{job_hash}.txt"
 
                 if not os.path.exists(output_path) and not os.path.exists(exit_code_path) and not os.path.exists(error_path):
+                    # No output files = job disappeared without trace (service restart, scancel, etc.)
+                    # Mark with specific error so auto-retry can identify service failures
                     logger.warning(f"Detected cancelled job {job_hash} (slurm_id={slurm_id}) - no output files found")
                     result = jobs_collection.update_one(
                         {"job_hash": job_hash},
-                        {"$set": {"status": JobStatus.CANCELLED}}
+                        {"$set": {
+                            "status": JobStatus.CANCELLED,
+                            "error": "Job disappeared from Slurm without output (likely service restart or scancel)"
+                        }}
                     )
                     if result.modified_count > 0:
                         logger.info(f"🚫 Marked job {job_hash} as CANCELLED")
@@ -135,9 +140,14 @@ async def check_cancelled_jobs():
         for job in failed_external_jobs:
             job_hash = job["job_hash"]
             logger.warning(f"Found externally-killed job {job_hash} (no exit code file)")
+            # Job was killed before writing exit code - could be service restart
+            # Mark with error that allows auto-retry
             result = jobs_collection.update_one(
                 {"job_hash": job_hash},
-                {"$set": {"status": JobStatus.CANCELLED}}
+                {"$set": {
+                    "status": JobStatus.CANCELLED,
+                    "error": "Job killed before completion - no exit code (likely service restart)"
+                }}
             )
             if result.modified_count > 0:
                 logger.info(f"🚫 Marked killed job {job_hash} as CANCELLED")
@@ -164,9 +174,23 @@ async def check_cancelled_jobs():
             job_hash = job["job_hash"]
             error_msg = job.get("error", "")
             logger.warning(f"Found signal-killed job {job_hash}: {error_msg}")
+            # Determine signal type for specific error message
+            # These should NOT be auto-retried - they need manual intervention
+            if "137" in error_msg:
+                cancel_reason = "Job killed by OOM (exit code 137) - needs more memory or optimization"
+            elif "139" in error_msg:
+                cancel_reason = "Job crashed with SIGSEGV (exit code 139) - needs debugging"
+            elif "143" in error_msg:
+                cancel_reason = "Job terminated by SIGTERM (exit code 143) - manual termination"
+            else:
+                cancel_reason = f"Job killed by signal: {error_msg}"
+
             result = jobs_collection.update_one(
                 {"job_hash": job_hash},
-                {"$set": {"status": JobStatus.CANCELLED}}
+                {"$set": {
+                    "status": JobStatus.CANCELLED,
+                    "error": cancel_reason
+                }}
             )
             if result.modified_count > 0:
                 logger.info(f"🚫 Marked signal-killed job {job_hash} as CANCELLED")
@@ -278,45 +302,108 @@ async def check_orphaned_meta_jobs():
 
 
 async def check_orphaned_jobs():
-    """Find and retry jobs that are pending but were never submitted to Slurm."""
-    from slurm_api.services.job_service import prepare_job_script, submit_slurm_job
+    """
+    Find and retry jobs that need (re)submission to Slurm.
+
+    This handles:
+    1. PENDING jobs that were never submitted (no slurm_id)
+    2. CANCELLED jobs that failed due to service issues (not job logic errors)
+
+    Jobs cancelled due to service unavailability can be retried automatically
+    because the failure wasn't caused by the job itself.
+    """
+    from slurm_api.services.job_service import prepare_job_script
+    from slurm_api.services.slurm_service import submit_slurm_job
     from slurm_api.models.job import JobSubmission
     from datetime import datetime, timedelta
-    
+
     try:
-        # Find jobs that are pending but have no slurm_id (orphaned jobs)
-        # Use last_submission_attempt to determine if job needs retry
-        # Two cases:
-        # 1. last_submission_attempt is None (never tried) - retry immediately
-        # 2. last_submission_attempt exists - retry if >2 minutes ago (exponential backoff could be added)
         two_minutes_ago = datetime.utcnow() - timedelta(minutes=2)
-        
+
+        # Patterns that indicate service/infrastructure failure
+        # ONLY these jobs should be auto-retried because the failure wasn't caused by the job itself
+        #
+        # NOT auto-retried (but can be manually resubmitted via API):
+        # - "scancel" / "cancelled by user" - user intentionally cancelled
+        # - "OOM" / "SIGKILL" / "exit code 137" - job exceeded memory (needs manual intervention)
+        # - "SIGSEGV" / "exit code 139" - job crashed (needs debugging)
+        # - "SIGTERM" / "exit code 143" - job was terminated
+        #
+        # Auto-retried:
+        # - Service unavailable / connection errors - infrastructure issue
+        # - Memory specification errors - will work now with dynamic memory
+        # - Submission errors - temporary service issue
+        service_failure_patterns = [
+            # Submission/service errors
+            "service unavailable",
+            "Submission failed",
+            "Submission error",
+            "Connection refused",
+            "Connection reset",
+            "Internal server error",
+            # Infrastructure errors that will work now with dynamic memory
+            "Memory specification can not be satisfied",
+            # Jobs that disappeared during service restart
+            "failed without error details",
+            "likely service restart",
+            "no exit code",
+            "disappeared from Slurm",
+        ]
+
+        # Build regex for service failures ONLY
+        service_failure_regex = "|".join(service_failure_patterns)
+
+        # Find jobs that need submission:
+        # 1. PENDING with no slurm_id (never submitted)
+        # 2. CANCELLED due to service failure (can retry)
         orphaned_jobs = jobs_collection.find({
-            "$and": [
-                {"status": JobStatus.PENDING},
-                {"slurm_id": None},
-                {"$or": [
-                    {"last_submission_attempt": None},  # Never attempted
-                    {"last_submission_attempt": {"$lt": two_minutes_ago}}  # Last attempt >2 min ago
-                ]}
+            "$or": [
+                # Case 1: Pending jobs never submitted
+                {
+                    "status": JobStatus.PENDING,
+                    "slurm_id": None,
+                    "$or": [
+                        {"last_submission_attempt": None},
+                        {"last_submission_attempt": {"$lt": two_minutes_ago}}
+                    ]
+                },
+                # Case 2: Cancelled due to service failure (retry them)
+                {
+                    "status": JobStatus.CANCELLED,
+                    "error": {"$regex": service_failure_regex, "$options": "i"},
+                    "$or": [
+                        {"last_submission_attempt": None},
+                        {"last_submission_attempt": {"$lt": two_minutes_ago}}
+                    ]
+                }
             ]
         }).sort("created_at", 1).limit(10)  # Process max 10 at a time, oldest first (FIFO)
         
         for job in orphaned_jobs:
             job_hash = job["job_hash"]
+            previous_status = job.get("status")
             attempts = job.get("submission_attempts", 0)
+
+            # If job was cancelled, reset attempts counter for fresh start
+            if previous_status == JobStatus.CANCELLED:
+                attempts = 0
+                logger.info(f"🔄 Reactivating cancelled job {job_hash} for retry...")
+
             logger.warning(f"Found orphaned job {job_hash} (attempt #{attempts + 1}), submitting to Slurm...")
-            
+
             try:
-                # Update last_submission_attempt timestamp BEFORE attempting
+                # Update status to PENDING and track submission attempt
                 jobs_collection.update_one(
                     {"job_hash": job_hash},
                     {"$set": {
+                        "status": JobStatus.PENDING,  # Reset to PENDING
+                        "slurm_id": None,  # Clear any old slurm_id
+                        "error": None,  # Clear previous error
                         "last_submission_attempt": datetime.utcnow(),
                         "submission_attempts": attempts + 1
                     }}
                 )
-                
+
                 # Reconstruct JobSubmission from database document
                 job_submission = JobSubmission(
                     file_hash=job.get("file_hash"),
@@ -326,36 +413,37 @@ async def check_orphaned_jobs():
                     name=job.get("name"),
                     job_hash=job_hash
                 )
-                
+
                 # Prepare and submit job script
                 script_path = prepare_job_script(job_hash, job_submission)
                 success, message, slurm_id = submit_slurm_job(script_path)
-                
+
                 if success:
-                    # Update job with slurm_id and clear retry tracking
+                    # Update job with slurm_id and set to RUNNING
                     jobs_collection.update_one(
                         {"job_hash": job_hash},
                         {"$set": {
+                            "status": JobStatus.RUNNING,
                             "slurm_id": slurm_id,
                             "last_submission_attempt": None  # Clear since now submitted
                         }}
                     )
-                    logger.info(f"✅ Successfully submitted orphaned job {job_hash} to Slurm with ID {slurm_id}")
+                    logger.info(f"✅ Successfully submitted job {job_hash} to Slurm with ID {slurm_id}")
                 else:
-                    # Don't mark as cancelled yet - will retry based on last_submission_attempt
+                    # Keep as PENDING for retry, but log the failure
                     logger.warning(f"⚠️ Could not submit job {job_hash} (attempt #{attempts + 1}): {message}")
-                    # Mark as CANCELLED after 5 attempts - submission failures are service issues, not job errors
+                    # Mark as CANCELLED after 5 attempts
                     if attempts >= 4:  # 5th attempt failed
-                        update_job_status(job_hash, JobStatus.CANCELLED, error=f"Submission failed after {attempts + 1} attempts (service unavailable): {message}")
-                        logger.error(f"❌ Job {job_hash} marked as CANCELLED after {attempts + 1} submission attempts (allows resubmission)")
+                        update_job_status(job_hash, JobStatus.CANCELLED, error=f"Submission failed after {attempts + 1} attempts: {message}")
+                        logger.error(f"❌ Job {job_hash} marked as CANCELLED after {attempts + 1} submission attempts")
                     
             except Exception as e:
                 # Log error but allow retries
                 logger.error(f"❌ Error retrying job {job_hash}: {e}")
-                # Mark as CANCELLED after 5 attempts - submission failures are service issues, not job errors
+                # Mark as CANCELLED after 5 attempts
                 if attempts >= 4:
-                    update_job_status(job_hash, JobStatus.CANCELLED, error=f"Submission error after {attempts + 1} attempts (service unavailable): {str(e)}")
-                    logger.error(f"Job {job_hash} marked as CANCELLED after {attempts + 1} submission attempts (allows resubmission)")
+                    update_job_status(job_hash, JobStatus.CANCELLED, error=f"Submission error after {attempts + 1} attempts: {str(e)}")
+                    logger.error(f"❌ Job {job_hash} marked as CANCELLED after {attempts + 1} submission attempts")
                 
     except Exception as e:
         # Never let this crash the background task

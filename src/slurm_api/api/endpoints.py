@@ -115,12 +115,62 @@ async def submit_job(job: JobSubmission):
                     "job_hash": existing_job['job_hash'],
                     "duplicate": True
                 }
-            # If the existing job failed or was cancelled, allow resubmission (don't return duplicate)
+            # If the existing job failed or was cancelled, reuse it (reset status to PENDING)
             else:
-                 logger.info(f"Found previous identical job (status: {existing_job['status']}) but allowing resubmission.")
-                 # Proceed to create new job below
-        
-        # If no completed or active duplicate found, create job in database
+                logger.info(f"Found previous identical job (status: {existing_job['status']}), resetting to PENDING for resubmission.")
+                # Reset the existing job instead of creating a duplicate
+                jobs_collection.update_one(
+                    {"job_hash": existing_job['job_hash']},
+                    {"$set": {
+                        "status": JobStatus.PENDING,
+                        "slurm_id": None,
+                        "error": None,
+                        "output": None,
+                        "last_submission_attempt": None,
+                        "submission_attempts": 0
+                    }}
+                )
+                job_hash = existing_job['job_hash']
+                job_doc = existing_job
+                job_doc["status"] = JobStatus.PENDING
+                # Skip to submission (don't create new job)
+                logger.info(f"Job reset: {job_hash}")
+
+                try:
+                    # Prepare job script file
+                    logger.info(f"Preparing job script...")
+                    script_path = prepare_job_script(job_hash, job)
+                    logger.info(f"Script prepared: {script_path}")
+
+                    # Submit job to Slurm
+                    success, message, slurm_id = submit_slurm_job(script_path)
+
+                    if not success:
+                        update_job_status(job_hash, JobStatus.CANCELLED, error=f"Submission failed (service unavailable): {message}")
+                        raise HTTPException(
+                            status_code=400,
+                            detail=f"Job submission failed: {message}"
+                        )
+
+                    # Update job document with Slurm ID
+                    jobs_collection.update_one(
+                        {"job_hash": job_hash},
+                        {"$set": {"slurm_id": slurm_id}}
+                    )
+
+                    await check_jobs_once()
+                    return {"message": message, "job_hash": job_hash, "resubmitted": True}
+
+                except HTTPException:
+                    raise
+                except Exception as e:
+                    update_job_status(job_hash, JobStatus.CANCELLED, error=f"Submission error (service unavailable): {str(e)}")
+                    raise HTTPException(
+                        status_code=500,
+                        detail=f"Job submission failed: {str(e)}"
+                    )
+
+        # No existing job found - create new job in database
         logger.info(f"Creating job in DB...")
         job_hash, job_doc = create_job(job)
         logger.info(f"Job created: {job_hash}")

@@ -3,6 +3,7 @@ import uuid
 import json
 import hashlib
 import base64
+import subprocess
 from datetime import datetime
 from typing import Dict, Any, Tuple, Optional
 from gridfs import GridFS
@@ -18,6 +19,91 @@ from slurm_api.services.method_service import find_method_by_hash, prepare_metho
 from slurm_api.models.method import MethodExecution
 from slurm_api.utils.parameter_utils import sort_parameters
 from slurm_api.utils.sorting_utils import sort_file_inputs
+
+
+# Cache for node memory capacity (refreshed periodically)
+_node_memory_cache = {"memory_mb": None, "last_check": None}
+
+
+def get_slurm_node_memory() -> Optional[int]:
+    """
+    Get the maximum memory available on Slurm nodes.
+
+    Returns the memory in MB, or None if unable to determine.
+    Uses caching to avoid calling sinfo too frequently.
+    """
+    import time
+
+    # Cache for 60 seconds
+    cache_ttl = 60
+    now = time.time()
+
+    if (_node_memory_cache["memory_mb"] is not None and
+        _node_memory_cache["last_check"] is not None and
+        now - _node_memory_cache["last_check"] < cache_ttl):
+        return _node_memory_cache["memory_mb"]
+
+    try:
+        # Get memory from sinfo (in MB)
+        # Format: MEMORY column shows available memory per node
+        result = subprocess.run(
+            ["sinfo", "-N", "-h", "-o", "%m"],
+            capture_output=True,
+            text=True,
+            timeout=5
+        )
+
+        if result.returncode == 0 and result.stdout.strip():
+            # Get the minimum memory across all nodes (most conservative)
+            memories = []
+            for line in result.stdout.strip().split('\n'):
+                try:
+                    mem = int(line.strip())
+                    memories.append(mem)
+                except ValueError:
+                    continue
+
+            if memories:
+                min_memory = min(memories)
+                _node_memory_cache["memory_mb"] = min_memory
+                _node_memory_cache["last_check"] = now
+                logger.debug(f"Slurm node memory: {min_memory} MB")
+                return min_memory
+    except Exception as e:
+        logger.warning(f"Could not get Slurm node memory: {e}")
+
+    return None
+
+
+def calculate_safe_memory(requested_mb: int, safety_buffer: float = 1.2) -> int:
+    """
+    Calculate safe memory allocation, capped by node capacity.
+
+    Args:
+        requested_mb: Requested memory in MB
+        safety_buffer: Multiplier for safety margin (e.g., 1.2 = 20% extra)
+
+    Returns:
+        Memory allocation in MB that fits within node capacity
+    """
+    # Apply safety buffer
+    with_buffer = int(requested_mb * safety_buffer)
+
+    # Get node capacity
+    node_memory = get_slurm_node_memory()
+
+    if node_memory is not None:
+        # Leave 5% headroom for system processes
+        max_usable = int(node_memory * 0.95)
+
+        if with_buffer > max_usable:
+            logger.warning(
+                f"Requested memory {with_buffer}MB exceeds node capacity {node_memory}MB. "
+                f"Capping to {max_usable}MB (95% of node memory)."
+            )
+            return max_usable
+
+    return with_buffer
 
 def prepare_job_script(job_hash: str, job: JobSubmission) -> str:
     """Prepare a job script file and return its path."""
@@ -252,19 +338,18 @@ def prepare_job_script(job_hash: str, job: JobSubmission) -> str:
         #
         # Strategy:
         # 1. memory_mb (explicit override) - used as-is, user knows best
-        # 2. min_memory_mb (method's minimum) - add 20% safety buffer
-        # 3. Default: generous 2GB per CPU (was 1GB, too risky)
+        # 2. min_memory_mb (method's minimum) - add safety buffer, capped by node capacity
+        # 3. Default: generous 2GB per CPU, capped by node capacity
         #
-        # The safety buffer ensures that even if a method slightly
-        # underestimates its needs, it won't get OOM killed.
+        # DYNAMIC: Memory is automatically capped to fit within node capacity.
+        # This prevents "Memory specification can not be satisfied" errors.
 
         memory_mb = resources.get("memory_mb")  # Explicit override (no buffer)
         min_memory_mb = resources.get("min_memory_mb")  # Minimum requirement
 
         # Default memory per CPU - GENEROUS to prevent OOM
         # 2GB per CPU gives R/Python plenty of headroom
-        # This means fewer parallel jobs, but NO OOM kills
-        default_mem_per_cpu = 2048  # 2GB per CPU (was 1GB - too risky)
+        default_mem_per_cpu = 2048  # 2GB per CPU
 
         # Safety buffer: add 20% to min_memory_mb to prevent edge-case OOM
         SAFETY_BUFFER = 1.2  # 20% extra
@@ -276,18 +361,18 @@ def prepare_job_script(job_hash: str, job: JobSubmission) -> str:
                 # 0 = all available memory (single job per node)
                 f.write("#SBATCH --mem=0\n")
             else:
-                f.write(f"#SBATCH --mem={memory_mb}M\n")
+                # Cap explicit memory to node capacity
+                safe_memory = calculate_safe_memory(memory_mb, safety_buffer=1.0)
+                f.write(f"#SBATCH --mem={safe_memory}M\n")
         elif min_memory_mb is not None:
-            # Method specified minimum - add safety buffer!
-            # If method says "I need 2GB", we give it 2.4GB to be safe
-            safe_memory = int(min_memory_mb * SAFETY_BUFFER)
+            # Method specified minimum - add safety buffer, cap to node capacity
+            safe_memory = calculate_safe_memory(min_memory_mb, safety_buffer=SAFETY_BUFFER)
             f.write(f"#SBATCH --mem={safe_memory}M\n")
         else:
-            # No memory specified - use generous default
-            # For 1 CPU: 2048 MB (2GB)
-            # For 2 CPUs: 4096 MB (4GB), etc.
+            # No memory specified - use generous default, cap to node capacity
             calculated_mem = cpus * default_mem_per_cpu
-            f.write(f"#SBATCH --mem={calculated_mem}M\n")
+            safe_memory = calculate_safe_memory(calculated_mem, safety_buffer=1.0)
+            f.write(f"#SBATCH --mem={safe_memory}M\n")
 
         # Time limit: use method's setting if specified
         time_limit = resources.get("time_limit")
