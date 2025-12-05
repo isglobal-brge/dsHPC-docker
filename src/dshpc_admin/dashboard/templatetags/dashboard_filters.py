@@ -132,18 +132,58 @@ def pretty_bytes(bytes_value):
 def truncate_hash(hash_value, length=8):
     """
     Truncate a hash to specified length with ellipsis.
-    
+
     Usage in template:
         {{ file.hash|truncate_hash:12 }}
     """
     if not hash_value:
         return ''
-    
+
     hash_str = str(hash_value)
     if len(hash_str) <= length:
         return hash_str
-    
+
     return f"{hash_str[:length]}..."
+
+
+@register.filter(name='truncate_filename')
+def truncate_filename(filename, max_length=30):
+    """
+    Truncate a filename preserving the extension.
+
+    Usage in template:
+        {{ file.filename|truncate_filename:25 }}
+
+    Examples:
+        "very_long_filename_here.nii.gz" -> "very_long_filen...nii.gz"
+        "short.txt" -> "short.txt"
+    """
+    if not filename:
+        return ''
+
+    filename_str = str(filename)
+    if len(filename_str) <= max_length:
+        return filename_str
+
+    # Find the extension (handle compound extensions like .nii.gz)
+    import os
+    name, ext = os.path.splitext(filename_str)
+
+    # Check for compound extensions
+    if name.endswith('.nii') or name.endswith('.tar'):
+        name2, ext2 = os.path.splitext(name)
+        ext = ext2 + ext
+        name = name2
+
+    # Calculate how much space we have for the name
+    # Format: "name...ext" -> need 3 chars for "..."
+    available = max_length - len(ext) - 3
+
+    if available < 4:
+        # Not enough space, just truncate at max_length
+        return f"{filename_str[:max_length-3]}..."
+
+    return f"{name[:available]}...{ext}"
 
 
 @register.filter(name='status_badge_class')
