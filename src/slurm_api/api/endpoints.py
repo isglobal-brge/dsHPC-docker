@@ -131,6 +131,7 @@ async def submit_job(job: JobSubmission):
             elif existing_job['status'] in [JobStatus.CANCELLED, "CA", "C"]:
                 logger.info(f"Found previous identical job (status: {existing_job['status']}), resetting to PENDING for resubmission.")
                 # Reset the existing job instead of creating a duplicate
+                # Also reset OOM retry state to give fresh retries on manual resubmission
                 jobs_collection.update_one(
                     {"job_hash": existing_job['job_hash']},
                     {"$set": {
@@ -139,7 +140,10 @@ async def submit_job(job: JobSubmission):
                         "error": None,
                         "output": None,
                         "last_submission_attempt": None,
-                        "submission_attempts": 0
+                        "submission_attempts": 0,
+                        "oom_retry_count": 0,  # Reset OOM retries for fresh start
+                        "memory_override_mb": None,  # Clear memory override
+                        "last_memory_mb": None
                     }}
                 )
                 job_hash = existing_job['job_hash']
