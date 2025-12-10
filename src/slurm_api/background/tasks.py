@@ -227,7 +227,10 @@ async def check_cancelled_jobs():
         # Part 3: Mark jobs killed by signals (exit codes 137, 139, 143, etc.)
         # These are jobs killed by SIGKILL (137=OOM), SIGSEGV (139), SIGTERM (143)
         # Exit codes 128+ indicate the process was killed by a signal (128 + signal_number)
-        # These are NOT logical errors in the job itself, mark as CANCELLED for manual retry
+        #
+        # OOM RETRY MECHANISM:
+        # - OOM kills (137) can be auto-retried with MORE MEMORY (up to 2 times)
+        # - Other signals are NOT auto-retried - they need manual intervention
         signal_killed_jobs = jobs_collection.find({
             "status": {"$in": [JobStatus.FAILED, "FA", "F"]},
             "$or": [
@@ -241,10 +244,50 @@ async def check_cancelled_jobs():
             job_hash = job["job_hash"]
             error_msg = job.get("error", "")
             logger.warning(f"Found signal-killed job {job_hash}: {error_msg}")
-            # Determine signal type for specific error message
-            # These should NOT be auto-retried - they need manual intervention
+
+            # OOM kills get special treatment: auto-retry with more memory
             if "137" in error_msg:
-                cancel_reason = "Job killed by OOM (exit code 137) - needs more memory or optimization"
+                from slurm_api.services.job_service import get_slurm_node_memory
+
+                oom_retry_count = job.get("oom_retry_count", 0)
+                current_memory = job.get("memory_override_mb") or job.get("last_memory_mb") or 4096  # Default 4GB
+
+                # Get max memory dynamically from node specs (95% of node memory)
+                node_memory = get_slurm_node_memory()
+                max_memory = int(node_memory * 0.95) if node_memory else 16384  # Fallback 16GB if unknown
+
+                # Check if we've already hit max memory - no point retrying
+                if current_memory >= max_memory:
+                    cancel_reason = f"Job killed by OOM at max memory ({current_memory}MB of {node_memory}MB available) - job requires more memory than node has"
+                # Max 2 OOM retries
+                elif oom_retry_count < 2:
+                    # Increase memory: max(current * 1.5, current + 2048)
+                    new_memory = max(int(current_memory * 1.5), current_memory + 2048)
+
+                    # Cap to node capacity (dynamic based on actual hardware)
+                    new_memory = min(new_memory, max_memory)
+
+                    logger.info(f"🔄 OOM retry #{oom_retry_count + 1} for job {job_hash}: {current_memory}MB -> {new_memory}MB")
+
+                    # Mark for retry with increased memory
+                    result = jobs_collection.update_one(
+                        {"job_hash": job_hash},
+                        {"$set": {
+                            "status": JobStatus.CANCELLED,
+                            "error": f"OOM retry #{oom_retry_count + 1}: increasing memory from {current_memory}MB to {new_memory}MB",
+                            "oom_retry_count": oom_retry_count + 1,
+                            "memory_override_mb": new_memory,
+                            "last_memory_mb": current_memory
+                        }}
+                    )
+                    if result.modified_count > 0:
+                        logger.info(f"🔄 Queued OOM retry for job {job_hash}")
+                        cancelled_count += 1
+                        # Don't cascade cancel - this job will be retried
+                    continue
+                else:
+                    # Max retries exceeded
+                    cancel_reason = f"Job killed by OOM after {oom_retry_count} retries (exit code 137) - needs manual intervention"
             elif "139" in error_msg:
                 cancel_reason = "Job crashed with SIGSEGV (exit code 139) - needs debugging"
             elif "143" in error_msg:
@@ -415,6 +458,8 @@ async def check_orphaned_jobs():
             "likely service restart",
             "no exit code",
             "disappeared from Slurm",
+            # OOM retry mechanism - jobs marked for retry with increased memory
+            "OOM retry #",
         ]
 
         # Build regex for service failures ONLY

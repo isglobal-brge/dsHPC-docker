@@ -488,13 +488,26 @@ EOF
     echo
 }
 
+# Get nested config value (for resource_requirements)
+get_nested_config_value() {
+    local key=$1
+    local subkey=$2
+    if command -v jq &> /dev/null; then
+        jq -r ".$key.$subkey // empty" "$CONFIG_FILE" 2>/dev/null || echo ""
+    else
+        echo ""
+    fi
+}
+
 # Detect system resources
 detect_system_resources() {
     echo -e "${CYAN}🔍 Detecting system resources...${NC}"
-    
+
     local cpus=8
     local memory_mb=16000
-    
+    local gpus=0
+    local gpu_info=""
+
     # Detect CPUs
     if [[ "$(uname)" == "Darwin" ]]; then
         # macOS
@@ -509,7 +522,23 @@ detect_system_resources() {
         memory_kb=$(grep MemTotal /proc/meminfo 2>/dev/null | awk '{print $2}' || echo 16777216)
         memory_mb=$((memory_kb / 1024))
     fi
-    
+
+    # Detect NVIDIA GPUs
+    if command -v nvidia-smi &> /dev/null; then
+        gpus=$(nvidia-smi --query-gpu=count --format=csv,noheader 2>/dev/null | head -1 || echo 0)
+        if [[ $gpus -gt 0 ]]; then
+            gpu_info=$(nvidia-smi --query-gpu=name,memory.total --format=csv,noheader 2>/dev/null | head -1 || echo "Unknown")
+            echo -e "${GREEN}  NVIDIA GPU detected: ${gpus} GPU(s) - ${gpu_info}${NC}"
+        fi
+    elif [[ "$(uname)" == "Darwin" ]]; then
+        # Check for Apple Silicon GPU (MPS)
+        if system_profiler SPDisplaysDataType 2>/dev/null | grep -q "Apple"; then
+            gpu_info="Apple Silicon (MPS available)"
+            echo -e "${GREEN}  Apple Silicon GPU detected: ${gpu_info}${NC}"
+            gpus=1
+        fi
+    fi
+
     # Docker Desktop typically has less memory than the system
     # Check Docker's actual memory limit
     if command -v docker &> /dev/null; then
@@ -522,16 +551,87 @@ detect_system_resources() {
                 echo -e "${YELLOW}  Docker memory limit detected: ${memory_mb} MB${NC}"
             fi
         fi
+
+        # Check Docker GPU support
+        if [[ $gpus -gt 0 ]] && command -v nvidia-smi &> /dev/null; then
+            docker_gpu_test=$(docker run --rm --gpus all nvidia/cuda:11.0-base nvidia-smi 2>/dev/null && echo "yes" || echo "no")
+            if [[ "$docker_gpu_test" == "no" ]]; then
+                echo -e "${YELLOW}  ⚠️  Docker GPU passthrough not configured. Install nvidia-container-toolkit for GPU support.${NC}"
+                gpus=0
+            fi
+        fi
     fi
-    
+
     # Leave some memory for the system (use 90% of available)
     memory_mb=$((memory_mb * 90 / 100))
-    
-    echo -e "${GREEN}✓ Detected: ${cpus} CPUs, ${memory_mb} MB RAM available for Slurm${NC}"
-    
+
+    echo -e "${GREEN}✓ Detected: ${cpus} CPUs, ${memory_mb} MB RAM, ${gpus} GPU(s) available for Slurm${NC}"
+
     # Export for use in other functions
     export DETECTED_CPUS=$cpus
     export DETECTED_MEMORY=$memory_mb
+    export DETECTED_GPUS=$gpus
+
+    # Check resource requirements from environment-config.json
+    local min_memory_gb=$(get_nested_config_value "resource_requirements" "min_memory_gb")
+    local recommended_memory_gb=$(get_nested_config_value "resource_requirements" "recommended_memory_gb")
+    local min_cpus=$(get_nested_config_value "resource_requirements" "min_cpus")
+    local recommended_cpus=$(get_nested_config_value "resource_requirements" "recommended_cpus")
+    local resource_notes=$(get_nested_config_value "resource_requirements" "notes")
+
+    # Track if requirements are met
+    local requirements_met=true
+
+    # Validate against requirements if specified
+    if [[ -n "$min_memory_gb" ]]; then
+        local min_memory_mb=$((min_memory_gb * 1024))
+        local memory_gb=$((memory_mb / 1024))
+
+        if [[ $memory_mb -lt $min_memory_mb ]]; then
+            echo
+            echo -e "${RED}╔══════════════════════════════════════════════════════════════╗${NC}"
+            echo -e "${RED}║  ⚠️  INSUFFICIENT MEMORY FOR THIS ENVIRONMENT                 ║${NC}"
+            echo -e "${RED}╠══════════════════════════════════════════════════════════════╣${NC}"
+            echo -e "${RED}║  Current:  ${memory_gb} GB                                           ║${NC}"
+            echo -e "${RED}║  Minimum:  ${min_memory_gb} GB                                          ║${NC}"
+            if [[ -n "$recommended_memory_gb" ]]; then
+                echo -e "${YELLOW}║  Recommended: ${recommended_memory_gb} GB                                       ║${NC}"
+            fi
+            echo -e "${RED}╠══════════════════════════════════════════════════════════════╣${NC}"
+            if [[ -n "$resource_notes" ]]; then
+                echo -e "${CYAN}║  ${resource_notes:0:60}${NC}"
+            fi
+            echo -e "${YELLOW}║  On Docker Desktop: Settings → Resources → Memory           ║${NC}"
+            echo -e "${RED}╚══════════════════════════════════════════════════════════════╝${NC}"
+            echo
+            requirements_met=false
+        elif [[ -n "$recommended_memory_gb" ]] && [[ $memory_mb -lt $((recommended_memory_gb * 1024)) ]]; then
+            echo -e "${YELLOW}⚠️  Memory below recommended: ${memory_gb} GB (recommended: ${recommended_memory_gb} GB)${NC}"
+            if [[ -n "$resource_notes" ]]; then
+                echo -e "${CYAN}   Note: ${resource_notes}${NC}"
+            fi
+        fi
+    fi
+
+    if [[ -n "$min_cpus" ]] && [[ $cpus -lt $min_cpus ]]; then
+        echo -e "${RED}⚠️  WARNING: Insufficient CPUs! Current: ${cpus} | Minimum: ${min_cpus}${NC}"
+        requirements_met=false
+    fi
+
+    # If requirements not met, ask user to confirm
+    if [[ "$requirements_met" == "false" ]]; then
+        echo
+        echo -e "${YELLOW}The system does not meet minimum requirements.${NC}"
+        echo -e "${YELLOW}Some workloads may fail due to insufficient resources.${NC}"
+        echo
+        read -p "Continue anyway? [y/N]: " confirm
+        if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
+            echo -e "${RED}Setup aborted. Please increase Docker resources and try again.${NC}"
+            exit 1
+        fi
+        echo -e "${YELLOW}⚠️  Continuing with insufficient resources...${NC}"
+    fi
+
     echo
 }
 

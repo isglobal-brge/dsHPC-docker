@@ -337,12 +337,19 @@ def prepare_job_script(job_hash: str, job: JobSubmission) -> str:
         # Users cannot intervene, so jobs must not fail due to memory.
         #
         # Strategy:
+        # 0. memory_override_mb (OOM retry) - highest priority, set after OOM kill
         # 1. memory_mb (explicit override) - used as-is, user knows best
         # 2. min_memory_mb (method's minimum) - add safety buffer, capped by node capacity
         # 3. Default: generous 2GB per CPU, capped by node capacity
         #
         # DYNAMIC: Memory is automatically capped to fit within node capacity.
         # This prevents "Memory specification can not be satisfied" errors.
+
+        # Check for OOM retry memory override from database
+        job_doc = jobs_collection.find_one({"job_hash": job_hash})
+        memory_override_mb = job_doc.get("memory_override_mb") if job_doc else None
+        if memory_override_mb:
+            logger.info(f"Using OOM retry memory override: {memory_override_mb}MB")
 
         memory_mb = resources.get("memory_mb")  # Explicit override (no buffer)
         min_memory_mb = resources.get("min_memory_mb")  # Minimum requirement
@@ -354,12 +361,24 @@ def prepare_job_script(job_hash: str, job: JobSubmission) -> str:
         # Safety buffer: add 20% to min_memory_mb to prevent edge-case OOM
         SAFETY_BUFFER = 1.2  # 20% extra
 
-        if memory_mb is not None:
+        # OOM retry override takes highest priority
+        if memory_override_mb is not None:
+            # OOM retry - use the override memory, cap to node capacity
+            safe_memory = calculate_safe_memory(memory_override_mb, safety_buffer=1.0)
+            f.write(f"#SBATCH --mem={safe_memory}M\n")
+            # Store actual memory used for tracking
+            if job_doc:
+                jobs_collection.update_one(
+                    {"job_hash": job_hash},
+                    {"$set": {"last_memory_mb": safe_memory}}
+                )
+        elif memory_mb is not None:
             # Explicit memory setting takes precedence - no buffer
             # User explicitly set this, so trust it
             if memory_mb == 0:
                 # 0 = all available memory (single job per node)
                 f.write("#SBATCH --mem=0\n")
+                safe_memory = None  # Can't track "all memory"
             else:
                 # Cap explicit memory to node capacity
                 safe_memory = calculate_safe_memory(memory_mb, safety_buffer=1.0)
@@ -373,6 +392,13 @@ def prepare_job_script(job_hash: str, job: JobSubmission) -> str:
             calculated_mem = cpus * default_mem_per_cpu
             safe_memory = calculate_safe_memory(calculated_mem, safety_buffer=1.0)
             f.write(f"#SBATCH --mem={safe_memory}M\n")
+
+        # Track memory used for OOM retry mechanism (if not already set by OOM override)
+        if memory_override_mb is None and safe_memory is not None and job_doc:
+            jobs_collection.update_one(
+                {"job_hash": job_hash},
+                {"$set": {"last_memory_mb": safe_memory}}
+            )
 
         # Time limit: use method's setting if specified
         time_limit = resources.get("time_limit")
