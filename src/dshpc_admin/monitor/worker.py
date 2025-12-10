@@ -653,12 +653,21 @@ class MonitorWorker:
         return pipelines_data
 
     def collect_jobs_list(self, limit=50):
-        """Collect pre-enriched jobs list for admin panel."""
+        """Collect pre-enriched jobs list for admin panel with output/error previews."""
+        from gridfs import GridFS
+        from bson import ObjectId
+
+        OUTPUT_PREVIEW_SIZE = 500
+
         jobs_data = {'items': [], 'total': 0}
         try:
             jobs_collection = self.jobs_db['jobs']
             methods_collection = self.methods_db['methods']
             files_collection = self.files_db['files']
+
+            # Initialize GridFS for output/error loading
+            output_fs = GridFS(self.jobs_db, collection='outputs')
+            error_fs = GridFS(self.jobs_db, collection='errors')
 
             # Get total count
             jobs_data['total'] = jobs_collection.count_documents({})
@@ -691,25 +700,66 @@ class MonitorWorker:
                 for f in files_collection.find({'file_hash': {'$in': list(file_hashes)}}):
                     files_lookup[f['file_hash']] = {'filename': f.get('filename'), 'file_size': f.get('file_size')}
 
-            # Enrich jobs
+            # Enrich jobs with output/error previews
             for j in jobs:
                 job = {
                     'id': str(j['_id']),
                     'job_hash': j.get('job_hash'),
                     'status': j.get('status'),
                     'slurm_job_id': j.get('slurm_job_id'),
+                    'slurm_id': j.get('slurm_id'),
                     'created_at': j.get('created_at'),
                     'completed_at': j.get('completed_at'),
                     'has_output': bool(j.get('output') or j.get('output_gridfs_id')),
                     'has_error': bool(j.get('error') or j.get('error_gridfs_id')),
+                    'function_hash': j.get('function_hash'),
+                    'file_inputs': j.get('file_inputs'),
                 }
+
+                # Pre-load output preview
+                output_content = j.get('output')
+                if j.get('output_gridfs_id') and not output_content:
+                    try:
+                        grid_id = j['output_gridfs_id']
+                        if isinstance(grid_id, str):
+                            grid_id = ObjectId(grid_id)
+                        grid_out = output_fs.get(grid_id)
+                        output_content = grid_out.read(OUTPUT_PREVIEW_SIZE * 2).decode('utf-8', errors='replace')
+                        grid_out.close()
+                        job['output_storage'] = 'gridfs'
+                    except Exception as e:
+                        logger.debug(f"Could not load GridFS output: {e}")
+
+                if output_content:
+                    job['output'] = output_content[:OUTPUT_PREVIEW_SIZE]
+                    job['output_truncated'] = len(output_content) > OUTPUT_PREVIEW_SIZE
+
+                # Pre-load error preview
+                error_content = j.get('error')
+                if j.get('error_gridfs_id') and not error_content:
+                    try:
+                        grid_id = j['error_gridfs_id']
+                        if isinstance(grid_id, str):
+                            grid_id = ObjectId(grid_id)
+                        grid_out = error_fs.get(grid_id)
+                        error_content = grid_out.read(OUTPUT_PREVIEW_SIZE * 2).decode('utf-8', errors='replace')
+                        grid_out.close()
+                    except Exception as e:
+                        logger.debug(f"Could not load GridFS error: {e}")
+
+                if error_content:
+                    job['error'] = error_content[:OUTPUT_PREVIEW_SIZE]
+                    job['error_truncated'] = len(error_content) > OUTPUT_PREVIEW_SIZE
+
                 # Method info
                 if j.get('function_hash') and j['function_hash'] in methods_lookup:
                     job['method_name'] = methods_lookup[j['function_hash']]['name']
                     job['method_version'] = methods_lookup[j['function_hash']]['version']
+
                 # Duration
                 if j.get('created_at') and j.get('completed_at'):
                     job['duration_seconds'] = (j['completed_at'] - j['created_at']).total_seconds()
+
                 # File info (simplified)
                 if j.get('file_inputs'):
                     job['file_info'] = {}
@@ -721,7 +771,7 @@ class MonitorWorker:
 
                 jobs_data['items'].append(job)
 
-            logger.debug(f"Collected {len(jobs_data['items'])} jobs for snapshot")
+            logger.debug(f"Collected {len(jobs_data['items'])} jobs with previews for snapshot")
         except Exception as e:
             logger.error(f"Error collecting jobs list: {e}")
         return jobs_data
@@ -766,34 +816,270 @@ class MonitorWorker:
         return meta_jobs_data
 
     def collect_files_list(self, limit=50):
-        """Collect pre-processed files list for admin panel."""
+        """Collect pre-processed files list for admin panel with content previews."""
+        import base64
+        from gridfs import GridFS
+
         files_data = {'items': [], 'total': 0}
         try:
             files_collection = self.files_db['files']
 
             files_data['total'] = files_collection.count_documents({})
-            files = list(files_collection.find().sort('created_at', -1).limit(limit))
+            files = list(files_collection.find().sort('upload_date', -1).limit(limit))
+
+            # Initialize GridFS for preview loading
+            fs = GridFS(self.files_db, collection='fs')
+
+            # Preview settings - small to keep snapshots fast
+            TEXT_PREVIEW_SIZE = 500
+            HEX_PREVIEW_SIZE = 64
+            BINARY_EXTENSIONS = ['.nii', '.nii.gz', '.gz', '.zip', '.tar', '.png', '.jpg', '.jpeg', '.gif', '.dcm', '.nrrd']
 
             for f in files:
+                filename = f.get('filename', '').lower()
+                file_size = f.get('file_size', 0)
+                storage_type = f.get('storage_type', 'inline')
+
                 file_item = {
                     'id': str(f['_id']),
                     'file_hash': f.get('file_hash'),
                     'filename': f.get('filename'),
-                    'file_size': f.get('file_size', 0),
+                    'file_size': file_size,
                     'content_type': f.get('content_type'),
-                    'created_at': f.get('created_at'),
-                    'storage_type': f.get('storage_type', 'inline'),
+                    'upload_date': f.get('upload_date'),
+                    'storage_type': storage_type,
+                    'status': f.get('status', 'completed'),
+                    'gridfs_id': str(f['gridfs_id']) if f.get('gridfs_id') else None,
                 }
+
+                # Pre-compute content preview based on file type
+                is_binary = any(filename.endswith(ext) for ext in BINARY_EXTENSIONS)
+                is_large = file_size > 100000  # > 100KB
+
+                if is_binary:
+                    # Binary file: hex preview (first 64 bytes)
+                    content_bytes = None
+                    try:
+                        if storage_type == 'gridfs' and f.get('gridfs_id'):
+                            from bson import ObjectId
+                            grid_id = f['gridfs_id']
+                            if isinstance(grid_id, str):
+                                grid_id = ObjectId(grid_id)
+                            grid_out = fs.get(grid_id)
+                            content_bytes = grid_out.read(HEX_PREVIEW_SIZE)
+                            grid_out.close()
+                        elif storage_type in ['mongodb', 'inline'] and f.get('content'):
+                            content_bytes = base64.b64decode(f.get('content'))[:HEX_PREVIEW_SIZE]
+                    except Exception as e:
+                        logger.debug(f"Could not load hex preview for {filename}: {e}")
+
+                    if content_bytes:
+                        file_item['content_preview'] = ' '.join(f'{b:02x}' for b in content_bytes)
+                        file_item['preview_type'] = 'hex'
+                        file_item['content_truncated'] = True
+                    else:
+                        file_item['content_preview'] = '[Binary file - click to view details]'
+                        file_item['preview_type'] = 'binary'
+
+                elif is_large:
+                    # Large text file: placeholder only
+                    file_item['content_preview'] = f'[Large file ({file_size:,} bytes) - click to view]'
+                    file_item['preview_type'] = 'large'
+
+                else:
+                    # Small text file: text preview
+                    content_bytes = None
+                    try:
+                        if storage_type == 'gridfs' and f.get('gridfs_id'):
+                            from bson import ObjectId
+                            grid_id = f['gridfs_id']
+                            if isinstance(grid_id, str):
+                                grid_id = ObjectId(grid_id)
+                            grid_out = fs.get(grid_id)
+                            content_bytes = grid_out.read(TEXT_PREVIEW_SIZE)
+                            grid_out.close()
+                        elif storage_type in ['mongodb', 'inline'] and f.get('content'):
+                            content_bytes = base64.b64decode(f.get('content'))[:TEXT_PREVIEW_SIZE]
+                    except Exception as e:
+                        logger.debug(f"Could not load text preview for {filename}: {e}")
+
+                    if content_bytes:
+                        try:
+                            file_item['content_preview'] = content_bytes.decode('utf-8', errors='replace')
+                            file_item['content_truncated'] = file_size > TEXT_PREVIEW_SIZE
+                            file_item['preview_type'] = 'text'
+                        except:
+                            file_item['content_preview'] = '[Binary content]'
+                            file_item['preview_type'] = 'binary'
+
                 files_data['items'].append(file_item)
 
-            logger.debug(f"Collected {len(files_data['items'])} files for snapshot")
+            logger.debug(f"Collected {len(files_data['items'])} files with previews for snapshot")
         except Exception as e:
             logger.error(f"Error collecting files list: {e}")
         return files_data
 
+    def cache_document_previews(self):
+        """
+        PERFORMANCE OPTIMIZATION: Cache previews directly in MongoDB documents.
+
+        This runs before snapshot collection and updates documents that have GridFS content
+        but no cached preview. The preview is stored directly in the document so views
+        can display it without reading from GridFS.
+
+        Updates:
+        - jobs: output_preview, error_preview (from GridFS)
+        - files: content_preview, preview_type (from GridFS)
+        """
+        from gridfs import GridFS
+        from bson import ObjectId
+
+        PREVIEW_SIZE = 500
+        HEX_PREVIEW_SIZE = 64
+        BINARY_EXTENSIONS = ['.nii', '.nii.gz', '.gz', '.zip', '.tar', '.png', '.jpg', '.jpeg', '.gif', '.dcm', '.nrrd']
+
+        try:
+            # ========== JOBS: Cache output/error previews ==========
+            jobs_collection = self.jobs_db['jobs']
+            output_fs = GridFS(self.jobs_db, collection='outputs')
+            error_fs = GridFS(self.jobs_db, collection='errors')
+
+            # Find jobs with GridFS output but no cached preview
+            jobs_need_output_cache = list(jobs_collection.find({
+                'output_gridfs_id': {'$exists': True, '$ne': None},
+                'output_preview': {'$exists': False}
+            }).limit(50))  # Process 50 per cycle to avoid overload
+
+            for job in jobs_need_output_cache:
+                try:
+                    grid_id = job['output_gridfs_id']
+                    if isinstance(grid_id, str):
+                        grid_id = ObjectId(grid_id)
+                    grid_out = output_fs.get(grid_id)
+                    content = grid_out.read(PREVIEW_SIZE * 2).decode('utf-8', errors='replace')
+                    grid_out.close()
+
+                    preview = content[:PREVIEW_SIZE]
+                    truncated = len(content) > PREVIEW_SIZE
+
+                    jobs_collection.update_one(
+                        {'_id': job['_id']},
+                        {'$set': {
+                            'output_preview': preview,
+                            'output_preview_truncated': truncated
+                        }}
+                    )
+                except Exception as e:
+                    logger.debug(f"Could not cache output preview for job {job.get('job_hash')}: {e}")
+
+            # Find jobs with GridFS error but no cached preview
+            jobs_need_error_cache = list(jobs_collection.find({
+                'error_gridfs_id': {'$exists': True, '$ne': None},
+                'error_preview': {'$exists': False}
+            }).limit(50))
+
+            for job in jobs_need_error_cache:
+                try:
+                    grid_id = job['error_gridfs_id']
+                    if isinstance(grid_id, str):
+                        grid_id = ObjectId(grid_id)
+                    grid_out = error_fs.get(grid_id)
+                    content = grid_out.read(PREVIEW_SIZE * 2).decode('utf-8', errors='replace')
+                    grid_out.close()
+
+                    preview = content[:PREVIEW_SIZE]
+                    truncated = len(content) > PREVIEW_SIZE
+
+                    jobs_collection.update_one(
+                        {'_id': job['_id']},
+                        {'$set': {
+                            'error_preview': preview,
+                            'error_preview_truncated': truncated
+                        }}
+                    )
+                except Exception as e:
+                    logger.debug(f"Could not cache error preview for job {job.get('job_hash')}: {e}")
+
+            cached_jobs = len(jobs_need_output_cache) + len(jobs_need_error_cache)
+            if cached_jobs > 0:
+                logger.info(f"Cached previews for {cached_jobs} job documents")
+
+            # ========== FILES: Cache content previews ==========
+            files_collection = self.files_db['files']
+            files_fs = GridFS(self.files_db, collection='fs')
+
+            # Find files with GridFS content but no cached preview
+            files_need_cache = list(files_collection.find({
+                'storage_type': 'gridfs',
+                'gridfs_id': {'$exists': True, '$ne': None},
+                'content_preview': {'$exists': False}
+            }).limit(50))
+
+            for f in files_need_cache:
+                try:
+                    filename = f.get('filename', '').lower()
+                    file_size = f.get('file_size', 0)
+
+                    grid_id = f['gridfs_id']
+                    if isinstance(grid_id, str):
+                        grid_id = ObjectId(grid_id)
+
+                    is_binary = any(filename.endswith(ext) for ext in BINARY_EXTENSIONS)
+
+                    if is_binary:
+                        # Binary: hex preview
+                        grid_out = files_fs.get(grid_id)
+                        content_bytes = grid_out.read(HEX_PREVIEW_SIZE)
+                        grid_out.close()
+
+                        preview = ' '.join(f'{b:02x}' for b in content_bytes)
+                        files_collection.update_one(
+                            {'_id': f['_id']},
+                            {'$set': {
+                                'content_preview': preview,
+                                'preview_type': 'hex',
+                                'content_preview_truncated': True
+                            }}
+                        )
+                    else:
+                        # Text: text preview
+                        grid_out = files_fs.get(grid_id)
+                        content_bytes = grid_out.read(PREVIEW_SIZE)
+                        grid_out.close()
+
+                        try:
+                            preview = content_bytes.decode('utf-8', errors='replace')
+                            files_collection.update_one(
+                                {'_id': f['_id']},
+                                {'$set': {
+                                    'content_preview': preview,
+                                    'preview_type': 'text',
+                                    'content_preview_truncated': file_size > PREVIEW_SIZE
+                                }}
+                            )
+                        except:
+                            files_collection.update_one(
+                                {'_id': f['_id']},
+                                {'$set': {
+                                    'content_preview': '[Binary content]',
+                                    'preview_type': 'binary',
+                                    'content_preview_truncated': True
+                                }}
+                            )
+                except Exception as e:
+                    logger.debug(f"Could not cache content preview for file {f.get('filename')}: {e}")
+
+            if len(files_need_cache) > 0:
+                logger.info(f"Cached previews for {len(files_need_cache)} file documents")
+
+        except Exception as e:
+            logger.error(f"Error caching document previews: {e}")
+
     def store_snapshot(self):
         """Collect all data and store a snapshot in MongoDB."""
         try:
+            # First, cache previews directly in documents for fast pagination
+            self.cache_document_previews()
             snapshot = {
                 'timestamp': datetime.utcnow(),
                 'containers': self.collect_container_status(),

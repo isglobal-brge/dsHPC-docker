@@ -159,9 +159,15 @@ def get_env_config():
 
 @login_required_simple
 def files_list(request):
-    """List all files with advanced filtering."""
+    """List all files with advanced filtering.
+
+    PERFORMANCE OPTIMIZATION:
+    - First page without filters: Use pre-cached snapshot data (instant load)
+    - With filters or pagination: Query DB but skip GridFS preview loading
+    """
     from datetime import datetime
     from django.utils import timezone
+    from .snapshot_utils import get_files_list
 
     # Get filter parameters
     search = request.GET.get('search', '').strip()
@@ -172,18 +178,58 @@ def files_list(request):
     page = int(request.GET.get('page', 1))
     per_page = int(request.GET.get('per_page', 20))
 
+    has_filters = bool(search or size_min or size_max or date_from or date_to)
+
+    # FAST PATH: First page with no filters - use pre-cached snapshot
+    if page == 1 and not has_filters:
+        cached_data = get_files_list()
+        if cached_data and cached_data.get('items'):
+            files = cached_data['items'][:per_page]
+            total_files = cached_data.get('total', len(files))
+            total_pages = max(1, (total_files + per_page - 1) // per_page)
+
+            # Generate page range for pagination
+            page_range = []
+            if total_pages <= 10:
+                page_range = list(range(1, total_pages + 1))
+            else:
+                page_range = list(range(1, 6)) + ['...', total_pages]
+
+            snapshot = get_latest_snapshot()
+            snapshot_time = snapshot['timestamp'] if snapshot else timezone.now()
+
+            context = {
+                'files': files,
+                'page': 1,
+                'total_pages': total_pages,
+                'total_files': total_files,
+                'per_page': per_page,
+                'page_range': page_range,
+                'search': '',
+                'size_min': '',
+                'size_max': '',
+                'date_from': '',
+                'date_to': '',
+                'snapshot_time': snapshot_time,
+                'env_config': get_env_config(),
+                'page_title': 'Files',
+                'from_cache': True
+            }
+            return render(request, 'dashboard/files_list.html', context)
+
+    # SLOW PATH: DB query for filters/pagination (but NO GridFS preview loading)
     files_db = MongoDBConnections.get_files_db()
-    
+
     # Build query
     query = {}
-    
+
     # Search filter (filename or hash)
     if search:
         query['$or'] = [
             {'filename': {'$regex': search, '$options': 'i'}},
             {'file_hash': {'$regex': search, '$options': 'i'}}
         ]
-    
+
     # Size filter
     if size_min or size_max:
         size_query = {}
@@ -199,7 +245,7 @@ def files_list(request):
                 pass
         if size_query:
             query['file_size'] = size_query
-    
+
     # Date range filter
     if date_from or date_to:
         date_query = {}
@@ -218,118 +264,58 @@ def files_list(request):
                 pass
         if date_query:
             query['upload_date'] = date_query
-    
+
     # Get total count with filters
     total_files = files_db.files.count_documents(query)
     total_pages = max(1, (total_files + per_page - 1) // per_page)
-    
+
     # Ensure page is within bounds
     page = max(1, min(page, total_pages))
-    
-    # Get files with pagination
+
+    # Get files with pagination - INCLUDE cached preview fields
     skip = (page - 1) * per_page
-    files = list(files_db.files.find(query).sort('upload_date', -1).skip(skip).limit(per_page))
-    
-    # Convert ObjectId to string and fix status
+    projection = {
+        '_id': 1, 'file_hash': 1, 'filename': 1, 'file_size': 1,
+        'content_type': 1, 'upload_date': 1, 'storage_type': 1,
+        'status': 1, 'gridfs_id': 1,
+        # Pre-cached preview fields (set by worker)
+        'content_preview': 1, 'preview_type': 1, 'content_preview_truncated': 1
+        # Explicitly NOT fetching 'content' field - it can be huge
+    }
+    files = list(files_db.files.find(query, projection).sort('upload_date', -1).skip(skip).limit(per_page))
+
+    # Convert ObjectId and use pre-cached previews
+    BINARY_EXTENSIONS = ['.nii', '.nii.gz', '.gz', '.zip', '.tar', '.png', '.jpg', '.jpeg', '.gif', '.dcm', '.nrrd']
+
     for f in files:
         if '_id' in f:
-            f['id'] = str(f['_id'])  # Rename to avoid underscore in template
+            f['id'] = str(f['_id'])
             del f['_id']
         if 'gridfs_id' in f:
             f['gridfs_id'] = str(f['gridfs_id'])
-        
+
         # Ensure status field exists
         if 'status' not in f or f['status'] is None:
-            f['status'] = 'completed'  # Default for old files without status
-        
-        # Add content preview only for small text files to improve performance
-        # Skip preview for large/binary files - user can click to view details
-        PREVIEW_SIZE = 500
-        try:
-            filename = f.get('filename', '').lower()
-            content_type = f.get('content_type', '')
-            file_size = f.get('file_size', 0)
+            f['status'] = 'completed'
 
-            # Skip preview for known binary formats and large files
-            binary_extensions = ['.nii', '.nii.gz', '.gz', '.zip', '.tar', '.png', '.jpg', '.jpeg', '.gif', '.dcm', '.nrrd']
-            is_binary = any(filename.endswith(ext) for ext in binary_extensions)
-            is_large = file_size > 100000  # > 100KB
+        # PERFORMANCE: Use pre-cached preview if available, otherwise show placeholder
+        # The worker caches content_preview directly in documents
+        if not f.get('content_preview'):
+            # Not yet cached - show type-appropriate placeholder
+            filename = f.get('filename', '').lower()
+            file_size = f.get('file_size', 0)
+            is_binary = any(filename.endswith(ext) for ext in BINARY_EXTENSIONS)
 
             if is_binary:
-                # Show hex preview for binary files (first 64 bytes)
-                HEX_PREVIEW_SIZE = 64
-                hex_preview = None
-
-                if f.get('storage_type') == 'gridfs' and f.get('gridfs_id'):
-                    try:
-                        from gridfs import GridFS
-                        from bson import ObjectId
-                        fs = GridFS(files_db, collection='fs')
-                        grid_id = f['gridfs_id']
-                        if isinstance(grid_id, str):
-                            grid_id = ObjectId(grid_id)
-                        grid_out = fs.get(grid_id)
-                        content_bytes = grid_out.read(HEX_PREVIEW_SIZE)
-                        grid_out.close()
-                        hex_preview = ' '.join(f'{b:02x}' for b in content_bytes)
-                    except Exception as e:
-                        logger.debug(f"Could not load GridFS hex preview: {e}")
-                elif f.get('storage_type') in ['mongodb', 'inline'] and f.get('content'):
-                    import base64
-                    try:
-                        content_bytes = base64.b64decode(f.get('content'))[:HEX_PREVIEW_SIZE]
-                        hex_preview = ' '.join(f'{b:02x}' for b in content_bytes)
-                    except Exception:
-                        pass
-
-                if hex_preview:
-                    f['content_preview'] = hex_preview
-                    f['preview_type'] = 'hex'
-                    f['content_truncated'] = True
-                else:
-                    f['content_preview'] = '[Binary file - click to view details]'
-                    f['preview_type'] = 'binary'
-            elif is_large:
-                f['content_preview'] = f'[Large file ({file_size:,} bytes) - click to view]'
+                f['content_preview'] = '[Binary file - loading preview...]'
+                f['preview_type'] = 'binary'
+            elif file_size > 100000:
+                f['content_preview'] = f'[Large file ({file_size:,} bytes)]'
                 f['preview_type'] = 'large'
             else:
-                # Only load content for small text files
-                content_bytes = None
+                f['content_preview'] = '[Loading preview...]'
+                f['preview_type'] = 'deferred'
 
-                if f.get('storage_type') == 'gridfs' and f.get('gridfs_id'):
-                    try:
-                        from gridfs import GridFS
-                        from bson import ObjectId
-                        fs = GridFS(files_db, collection='fs')
-
-                        grid_id = f['gridfs_id']
-                        if isinstance(grid_id, str):
-                            grid_id = ObjectId(grid_id)
-
-                        grid_out = fs.get(grid_id)
-                        content_bytes = grid_out.read(PREVIEW_SIZE)
-                        grid_out.close()
-                    except Exception as e:
-                        logger.debug(f"Could not load GridFS content for {filename}: {e}")
-
-                elif f.get('storage_type') in ['mongodb', 'inline'] and f.get('content'):
-                    import base64
-                    try:
-                        content_bytes = base64.b64decode(f.get('content'))[:PREVIEW_SIZE]
-                    except Exception:
-                        pass
-
-                if content_bytes:
-                    try:
-                        f['content_preview'] = content_bytes.decode('utf-8', errors='replace')
-                        f['content_truncated'] = file_size > PREVIEW_SIZE
-                        f['preview_type'] = 'text'
-                    except:
-                        f['content_preview'] = '[Binary content]'
-                        f['preview_type'] = 'binary'
-        except Exception as e:
-            logger.debug(f"Error adding preview for {f.get('filename')}: {e}")
-    
     # Generate page range for pagination (with ellipsis)
     page_range = []
     if total_pages <= 10:
@@ -341,11 +327,11 @@ def files_list(request):
             page_range = [1, '...'] + list(range(total_pages - 4, total_pages + 1))
         else:
             page_range = [1, '...'] + list(range(page - 1, page + 2)) + ['...', total_pages]
-    
+
     # Get snapshot timestamp
     snapshot = get_latest_snapshot()
     snapshot_time = snapshot['timestamp'] if snapshot else timezone.now()
-    
+
     context = {
         'files': files,
         'page': page,
@@ -360,17 +346,24 @@ def files_list(request):
         'date_to': date_to,
         'snapshot_time': snapshot_time,
         'env_config': get_env_config(),
-        'page_title': 'Files'
+        'page_title': 'Files',
+        'from_cache': False
     }
-    
+
     return render(request, 'dashboard/files_list.html', context)
 
 
 @login_required_simple
 def jobs_list(request):
-    """List all jobs with advanced filtering."""
+    """List all jobs with advanced filtering.
+
+    PERFORMANCE OPTIMIZATION:
+    - First page without filters: Use pre-cached snapshot data (instant load)
+    - With filters or pagination: Query DB but skip GridFS preview loading
+    """
     from datetime import datetime
     from django.utils import timezone
+    from .snapshot_utils import get_jobs_list
 
     # Get filter and pagination params
     status_filter = request.GET.get('status', '')
@@ -381,6 +374,46 @@ def jobs_list(request):
     page = int(request.GET.get('page', 1))
     per_page = int(request.GET.get('per_page', 20))
 
+    has_filters = bool(status_filter or search or method_filter or date_from or date_to)
+
+    # FAST PATH: First page with no filters - use pre-cached snapshot
+    if page == 1 and not has_filters:
+        cached_data = get_jobs_list()
+        if cached_data and cached_data.get('items'):
+            jobs = cached_data['items'][:per_page]
+            total_jobs = cached_data.get('total', len(jobs))
+            total_pages = max(1, (total_jobs + per_page - 1) // per_page)
+
+            # Generate page range for pagination
+            page_range = []
+            if total_pages <= 10:
+                page_range = list(range(1, total_pages + 1))
+            else:
+                page_range = list(range(1, 6)) + ['...', total_pages]
+
+            snapshot = get_latest_snapshot()
+            snapshot_time = snapshot['timestamp'] if snapshot else timezone.now()
+
+            context = {
+                'jobs': jobs,
+                'status_filter': '',
+                'search': '',
+                'method_filter': '',
+                'date_from': '',
+                'date_to': '',
+                'page': 1,
+                'total_pages': total_pages,
+                'total_jobs': total_jobs,
+                'per_page': per_page,
+                'page_range': page_range,
+                'snapshot_time': snapshot_time,
+                'env_config': get_env_config(),
+                'page_title': 'Jobs',
+                'from_cache': True
+            }
+            return render(request, 'dashboard/jobs_list.html', context)
+
+    # SLOW PATH: DB query for filters/pagination
     jobs_db = MongoDBConnections.get_jobs_db()
     methods_db = MongoDBConnections.get_methods_db()
     files_db = MongoDBConnections.get_files_db()
@@ -500,55 +533,42 @@ def jobs_list(request):
             duration = (j['completed_at'] - j['created_at']).total_seconds()
             j['duration_seconds'] = duration
         
-        # PERFORMANCE: Load only a small preview of output/error for list view
-        j['has_output'] = bool(j.get('output') or j.get('output_gridfs_id'))
-        j['has_error'] = bool(j.get('error') or j.get('error_gridfs_id'))
+        # PERFORMANCE OPTIMIZATION: Use pre-cached previews from document
+        # The worker caches output_preview/error_preview directly in documents
+        # so we never need to read from GridFS at request time
+        j['has_output'] = bool(j.get('output') or j.get('output_gridfs_id') or j.get('output_preview'))
+        j['has_error'] = bool(j.get('error') or j.get('error_gridfs_id') or j.get('error_preview'))
 
-        OUTPUT_PREVIEW_SIZE = 500  # Characters for preview
+        OUTPUT_PREVIEW_SIZE = 500
 
-        # Get output preview
-        output_content = j.get('output')
-        if j.get('output_gridfs_id'):
-            # Load from GridFS (small preview only)
-            try:
-                from gridfs import GridFS
-                from bson import ObjectId
-                fs = GridFS(jobs_db, collection='outputs')
-                grid_id = j['output_gridfs_id']
-                if isinstance(grid_id, str):
-                    grid_id = ObjectId(grid_id)
-                grid_out = fs.get(grid_id)
-                output_content = grid_out.read(OUTPUT_PREVIEW_SIZE * 2).decode('utf-8', errors='replace')
-                grid_out.close()
-                j['output_storage'] = 'gridfs'
-            except Exception:
-                output_content = None
-
-        if output_content:
+        # Priority: cached preview > inline content > placeholder
+        if j.get('output_preview'):
+            # Use pre-cached preview (from GridFS, cached by worker)
+            j['output'] = j['output_preview']
+            j['output_truncated'] = j.get('output_preview_truncated', True)
+        elif j.get('output') and not j.get('output_gridfs_id'):
+            # Use inline content (small, already in document)
+            output_content = j['output']
             j['output'] = output_content[:OUTPUT_PREVIEW_SIZE]
             j['output_truncated'] = len(output_content) > OUTPUT_PREVIEW_SIZE
+        elif j.get('output_gridfs_id'):
+            # GridFS but no cache yet - show placeholder (worker will cache soon)
+            j['output'] = '[Loading preview...]'
+            j['output_truncated'] = True
         else:
             j['output'] = None
 
-        # Get error preview (usually small, keep full)
-        error_content = j.get('error')
-        if j.get('error_gridfs_id'):
-            try:
-                from gridfs import GridFS
-                from bson import ObjectId
-                fs = GridFS(jobs_db, collection='errors')
-                grid_id = j['error_gridfs_id']
-                if isinstance(grid_id, str):
-                    grid_id = ObjectId(grid_id)
-                grid_out = fs.get(grid_id)
-                error_content = grid_out.read(OUTPUT_PREVIEW_SIZE * 2).decode('utf-8', errors='replace')
-                grid_out.close()
-            except Exception:
-                error_content = None
-
-        if error_content:
+        # Same for error
+        if j.get('error_preview'):
+            j['error'] = j['error_preview']
+            j['error_truncated'] = j.get('error_preview_truncated', True)
+        elif j.get('error') and not j.get('error_gridfs_id'):
+            error_content = j['error']
             j['error'] = error_content[:OUTPUT_PREVIEW_SIZE]
             j['error_truncated'] = len(error_content) > OUTPUT_PREVIEW_SIZE
+        elif j.get('error_gridfs_id'):
+            j['error'] = '[Loading preview...]'
+            j['error_truncated'] = True
         else:
             j['error'] = None
         
@@ -714,65 +734,39 @@ def meta_jobs_list(request):
         # For each step, get the actual job and debug file_inputs
         if 'chain' in m:
             for step in m['chain']:
-                # Check file_inputs - PyMongo should return arrays as lists
-                if step.get('file_inputs'):
-                    print(f"DEBUG file_inputs: {step['file_inputs']}")
-                    for input_name, input_value in step['file_inputs'].items():
-                        print(f"  {input_name}: type={type(input_value).__name__}, is_list={isinstance(input_value, list)}")
-                        if not isinstance(input_value, list) and str(input_value).startswith('['):
-                            print(f"  WARNING: Array stored as string, needs conversion!")
-                    # file_inputs should already be lists from PyMongo
+                # file_inputs should already be lists from PyMongo
                 if step.get('job_hash'):
                     job = jobs_db.jobs.find_one({'job_hash': step['job_hash']})
                     if job:
-                        # For list view, only show small preview to reduce page size
+                        # PERFORMANCE: Use pre-cached previews instead of GridFS reads
+                        # The worker caches output_preview/error_preview directly in documents
                         PREVIEW_SIZE = 500
 
-                        # Retrieve output preview from GridFS if stored there
-                        output_content = job.get('output')
-                        if job.get('output_gridfs_id'):
-                            try:
-                                from gridfs import GridFS
-                                from bson import ObjectId
-                                fs = GridFS(jobs_db, collection='outputs')
-
-                                grid_id = job['output_gridfs_id']
-                                if isinstance(grid_id, str):
-                                    grid_id = ObjectId(grid_id)
-
-                                grid_out = fs.get(grid_id)
-                                output_content = grid_out.read(PREVIEW_SIZE * 2).decode('utf-8', errors='replace')
-                                grid_out.close()
-                            except Exception as e:
-                                output_content = f"[Error: {str(e)[:50]}]"
-
-                        if output_content:
+                        # Use pre-cached output preview
+                        if job.get('output_preview'):
+                            job['output'] = job['output_preview']
+                            job['output_truncated'] = job.get('output_preview_truncated', True)
+                        elif job.get('output') and not job.get('output_gridfs_id'):
+                            output_content = job['output']
                             job['output'] = output_content[:PREVIEW_SIZE]
                             job['output_truncated'] = len(output_content) > PREVIEW_SIZE
+                        elif job.get('output_gridfs_id'):
+                            job['output'] = '[Loading preview...]'
+                            job['output_truncated'] = True
                         else:
                             job['output'] = None
 
-                        # Retrieve error preview from GridFS if stored there
-                        error_content = job.get('error')
-                        if job.get('error_gridfs_id'):
-                            try:
-                                from gridfs import GridFS
-                                from bson import ObjectId
-                                fs = GridFS(jobs_db, collection='errors')
-
-                                grid_id = job['error_gridfs_id']
-                                if isinstance(grid_id, str):
-                                    grid_id = ObjectId(grid_id)
-
-                                grid_out = fs.get(grid_id)
-                                error_content = grid_out.read(PREVIEW_SIZE * 2).decode('utf-8', errors='replace')
-                                grid_out.close()
-                            except Exception as e:
-                                error_content = f"[Error: {str(e)[:50]}]"
-
-                        if error_content:
+                        # Use pre-cached error preview
+                        if job.get('error_preview'):
+                            job['error'] = job['error_preview']
+                            job['error_truncated'] = job.get('error_preview_truncated', True)
+                        elif job.get('error') and not job.get('error_gridfs_id'):
+                            error_content = job['error']
                             job['error'] = error_content[:PREVIEW_SIZE]
                             job['error_truncated'] = len(error_content) > PREVIEW_SIZE
+                        elif job.get('error_gridfs_id'):
+                            job['error'] = '[Loading preview...]'
+                            job['error_truncated'] = True
                         else:
                             job['error'] = None
 
