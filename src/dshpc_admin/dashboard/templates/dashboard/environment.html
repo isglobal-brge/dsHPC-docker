@@ -510,7 +510,86 @@ function buildSlurmCard(slurm) {
         </div>
         `;
     }
-    
+
+    // Build live specs summary
+    const nodeSpecs = slurm.node_specs || {};
+    const partitionSpecs = slurm.partition_specs || {};
+
+    let liveSpecsHtml = '';
+    if (Object.keys(nodeSpecs).length > 0) {
+        const cpus = nodeSpecs.CPUTot || 'N/A';
+        const totalMem = nodeSpecs.RealMemory ? parseInt(nodeSpecs.RealMemory) : null;
+        const freeMem = nodeSpecs.FreeMem ? parseInt(nodeSpecs.FreeMem) : null;
+        const allocMem = nodeSpecs.AllocMem ? parseInt(nodeSpecs.AllocMem) : null;
+        const state = nodeSpecs.State || 'Unknown';
+        const defMemPerCPU = partitionSpecs.DefMemPerCPU ? parseInt(partitionSpecs.DefMemPerCPU) : null;
+        const maxMemPerCPU = partitionSpecs.MaxMemPerCPU ? parseInt(partitionSpecs.MaxMemPerCPU) : null;
+
+        // Calculate memory usage percentage
+        let memUsedPct = 0;
+        if (totalMem && allocMem) {
+            memUsedPct = Math.round((allocMem / totalMem) * 100);
+        }
+
+        // State badge color
+        const stateColor = state.includes('IDLE') ? 'success' :
+                          state.includes('MIXED') ? 'warning' :
+                          state.includes('ALLOCATED') ? 'info' : 'secondary';
+
+        liveSpecsHtml = `
+        <div class="alert alert-info mb-4">
+            <h6 class="mb-3"><i class="bi bi-lightning-charge"></i> Live Node Specs (auto-detected)</h6>
+            <div class="row g-3">
+                <div class="col-md-3">
+                    <div class="text-center">
+                        <div class="fs-2 fw-bold text-primary">${cpus}</div>
+                        <small class="text-muted">CPUs Available</small>
+                    </div>
+                </div>
+                <div class="col-md-3">
+                    <div class="text-center">
+                        <div class="fs-2 fw-bold text-success">${totalMem ? (totalMem / 1024).toFixed(1) + ' GB' : 'N/A'}</div>
+                        <small class="text-muted">Total Memory</small>
+                    </div>
+                </div>
+                <div class="col-md-3">
+                    <div class="text-center">
+                        <div class="fs-2 fw-bold text-info">${freeMem ? (freeMem / 1024).toFixed(1) + ' GB' : 'N/A'}</div>
+                        <small class="text-muted">Free Memory</small>
+                    </div>
+                </div>
+                <div class="col-md-3">
+                    <div class="text-center">
+                        <span class="badge bg-${stateColor} fs-6">${state}</span>
+                        <div class="mt-1"><small class="text-muted">Node State</small></div>
+                    </div>
+                </div>
+            </div>
+            ${totalMem ? `
+            <div class="mt-3">
+                <div class="d-flex justify-content-between small mb-1">
+                    <span>Memory Allocated: ${allocMem ? (allocMem / 1024).toFixed(1) + ' GB' : '0 GB'}</span>
+                    <span>${memUsedPct}% in use</span>
+                </div>
+                <div class="progress" style="height: 10px;">
+                    <div class="progress-bar ${memUsedPct > 80 ? 'bg-danger' : memUsedPct > 50 ? 'bg-warning' : 'bg-success'}"
+                         style="width: ${memUsedPct}%"></div>
+                </div>
+            </div>
+            ` : ''}
+            ${defMemPerCPU || maxMemPerCPU ? `
+            <div class="mt-3 pt-2 border-top">
+                <small class="text-muted">
+                    <strong>Job defaults:</strong>
+                    ${defMemPerCPU ? `${(defMemPerCPU / 1024).toFixed(1)} GB/CPU default` : ''}
+                    ${maxMemPerCPU ? ` • ${(maxMemPerCPU / 1024).toFixed(1)} GB/CPU max` : ''}
+                </small>
+            </div>
+            ` : ''}
+        </div>
+        `;
+    }
+
     return `
     <div class="card shadow-sm mb-4">
         <div class="card-header bg-dark text-white">
@@ -523,18 +602,46 @@ function buildSlurmCard(slurm) {
                 <div class="value"><code>${slurm.version}</code></div>
             </div>
             ` : ''}
-            
+
+            ${liveSpecsHtml}
+
             ${slurm.config ? `
             <div class="mt-4">
                 <h6 class="mb-3"><i class="bi bi-file-text"></i> Configuration File (slurm.conf)</h6>
-                <div class="terminal" style="max-height: 500px;" id="slurmConfig">${escapeHtml(slurm.config)}</div>
+                <div class="accordion sub-accordion">
+                    <div class="accordion-item">
+                        <h2 class="accordion-header">
+                            <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#slurmConfigAccordion">
+                                <span>View full configuration</span>
+                            </button>
+                        </h2>
+                        <div id="slurmConfigAccordion" class="accordion-collapse collapse">
+                            <div class="accordion-body p-0">
+                                <div class="terminal" style="max-height: 500px; margin: 0;" id="slurmConfig">${escapeHtml(slurm.config)}</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
             </div>
             ` : ''}
-            
+
             ${slurm.node_info ? `
             <div class="mt-4">
-                <h6 class="mb-3"><i class="bi bi-hdd-network"></i> Node Information</h6>
-                <div class="terminal" style="max-height: 400px;" id="nodeInfo">${escapeHtml(slurm.node_info)}</div>
+                <h6 class="mb-3"><i class="bi bi-hdd-network"></i> Node Information (raw)</h6>
+                <div class="accordion sub-accordion">
+                    <div class="accordion-item">
+                        <h2 class="accordion-header">
+                            <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#nodeInfoAccordion">
+                                <span>View raw node details</span>
+                            </button>
+                        </h2>
+                        <div id="nodeInfoAccordion" class="accordion-collapse collapse">
+                            <div class="accordion-body p-0">
+                                <div class="terminal" style="max-height: 400px; margin: 0;" id="nodeInfo">${escapeHtml(slurm.node_info)}</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
             </div>
             ` : ''}
         </div>

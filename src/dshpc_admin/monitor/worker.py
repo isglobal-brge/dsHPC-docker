@@ -302,12 +302,39 @@ class MonitorWorker:
             try:
                 slurm_conf = container.exec_run('cat /etc/slurm/slurm.conf').output.decode('utf-8')
                 env_data['slurm']['config'] = slurm_conf
-                
+
                 slurm_version = container.exec_run('scontrol --version').output.decode('utf-8').strip()
                 env_data['slurm']['version'] = slurm_version
-                
+
                 node_info = container.exec_run('scontrol show node').output.decode('utf-8')
                 env_data['slurm']['node_info'] = node_info
+
+                # Parse live node specs for easy display
+                node_specs = {}
+                for line in node_info.split('\n'):
+                    line = line.strip()
+                    for field in line.split():
+                        if '=' in field:
+                            key, value = field.split('=', 1)
+                            if key in ['CPUTot', 'RealMemory', 'FreeMem', 'AllocMem', 'State', 'Gres']:
+                                node_specs[key] = value
+                env_data['slurm']['node_specs'] = node_specs
+
+                # Get partition info for memory limits
+                partition_info = container.exec_run('scontrol show partition').output.decode('utf-8')
+                env_data['slurm']['partition_info'] = partition_info
+
+                # Parse partition specs
+                partition_specs = {}
+                for line in partition_info.split('\n'):
+                    line = line.strip()
+                    for field in line.split():
+                        if '=' in field:
+                            key, value = field.split('=', 1)
+                            if key in ['DefMemPerCPU', 'MaxMemPerCPU', 'MaxTime', 'PartitionName']:
+                                partition_specs[key] = value
+                env_data['slurm']['partition_specs'] = partition_specs
+
             except Exception as e:
                 env_data['slurm']['error'] = str(e)
             

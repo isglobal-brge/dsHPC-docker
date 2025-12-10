@@ -76,12 +76,23 @@ reload_slurm_config() {
     fi
 }
 
-# Handle slurm.conf - check if custom config exists, otherwise create default
+# Handle slurm.conf - ALWAYS regenerate to detect current system resources
+# This ensures memory changes (e.g., Docker Desktop settings) are detected on restart
+echo -e "${CYAN}>> Detecting system resources for Slurm configuration...${NC}"
+
+# Check if user has a CUSTOM slurm.conf (with custom settings beyond auto-detection)
+USER_CUSTOM_SLURM=false
 if [ -f /config/slurm.conf ]; then
-    echo -e "${GREEN}>> Using custom slurm.conf from /config${NC}"
-    cp /config/slurm.conf /etc/slurm/slurm.conf
-else
-    echo -e "${YELLOW}>> No custom slurm.conf found, creating default configuration${NC}"
+    # Check if it's a user-customized file (has a marker comment)
+    if grep -q "# USER_CUSTOMIZED=true" /config/slurm.conf 2>/dev/null; then
+        USER_CUSTOM_SLURM=true
+        echo -e "${GREEN}>> Using user-customized slurm.conf from /config${NC}"
+        cp /config/slurm.conf /etc/slurm/slurm.conf
+    fi
+fi
+
+if [ "$USER_CUSTOM_SLURM" = false ]; then
+    echo -e "${YELLOW}>> Auto-generating slurm.conf based on current system resources${NC}"
     # Detect system resources
     DETECTED_CPUS=$(nproc 2>/dev/null || echo 8)
     DETECTED_MEMORY_KB=$(grep MemTotal /proc/meminfo 2>/dev/null | awk '{print $2}' || echo 16777216)
@@ -161,7 +172,7 @@ PartitionName=debug Nodes=localhost Default=YES MaxTime=INFINITE State=UP DefMem
 # PROCESS TRACKING
 ProctrackType=proctrack/linuxproc
 EOF
-fi
+fi  # End of USER_CUSTOM_SLURM check
 
 # Copy environment configuration files if they exist
 if [ -f /environment/python.json ]; then
