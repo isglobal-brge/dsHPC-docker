@@ -430,8 +430,30 @@ def jobs_list(request):
     page = max(1, min(page, total_pages))
     
     # Get jobs from database with pagination
+    # Sort by status priority (RUNNING first, then PENDING, then by date)
     skip = (page - 1) * per_page
-    jobs = list(jobs_db.jobs.find(query).sort('created_at', -1).skip(skip).limit(per_page))
+
+    # Use aggregation to sort by status priority
+    pipeline = [
+        {"$match": query},
+        {"$addFields": {
+            "status_priority": {
+                "$switch": {
+                    "branches": [
+                        {"case": {"$eq": ["$status", "R"]}, "then": 0},   # RUNNING first
+                        {"case": {"$eq": ["$status", "CG"]}, "then": 1},  # COMPLETING
+                        {"case": {"$eq": ["$status", "CF"]}, "then": 2},  # CONFIGURING
+                        {"case": {"$eq": ["$status", "PD"]}, "then": 3},  # PENDING
+                    ],
+                    "default": 4  # All other statuses (COMPLETED, FAILED, CANCELLED)
+                }
+            }
+        }},
+        {"$sort": {"status_priority": 1, "created_at": -1}},
+        {"$skip": skip},
+        {"$limit": per_page}
+    ]
+    jobs = list(jobs_db.jobs.aggregate(pipeline))
 
     # BATCH LOAD: Collect all unique function_hashes and file_hashes to avoid N+1 queries
     function_hashes = set()
