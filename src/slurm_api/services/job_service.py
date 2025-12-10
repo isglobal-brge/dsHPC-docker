@@ -24,6 +24,10 @@ from slurm_api.utils.sorting_utils import sort_file_inputs
 # Cache for node memory capacity (refreshed periodically)
 _node_memory_cache = {"memory_mb": None, "last_check": None}
 
+# Cache for learned memory requirements from successful jobs
+# Key: method_name, Value: {"avg_memory_mb": int, "max_memory_mb": int, "samples": int}
+_method_memory_history = {}
+
 
 def get_slurm_node_memory() -> Optional[int]:
     """
@@ -104,6 +108,95 @@ def calculate_safe_memory(requested_mb: int, safety_buffer: float = 1.2) -> int:
             return max_usable
 
     return with_buffer
+
+
+def preflight_memory_check(method_name: str, min_memory_mb: int) -> Tuple[bool, str, Optional[int]]:
+    """
+    Pre-flight check to verify if a job can run with available resources.
+
+    Returns:
+        Tuple of (can_run: bool, message: str, recommended_memory_mb: Optional[int])
+        - can_run: True if job can run with available resources
+        - message: Human-readable status message
+        - recommended_memory_mb: Suggested memory allocation (may be adjusted from min_memory_mb)
+    """
+    node_memory = get_slurm_node_memory()
+
+    if node_memory is None:
+        # Can't determine node memory, proceed optimistically
+        return True, "Node memory unknown, proceeding with requested allocation", min_memory_mb
+
+    max_usable = int(node_memory * 0.95)  # 95% of node memory
+
+    # Check if method has learned memory requirements from past jobs
+    if method_name in _method_memory_history:
+        history = _method_memory_history[method_name]
+        learned_max = history.get("max_memory_mb", min_memory_mb)
+
+        # Use learned max if higher than min_memory_mb (method learned it needs more)
+        if learned_max > min_memory_mb:
+            logger.info(f"Using learned memory for {method_name}: {learned_max}MB (from {history['samples']} samples)")
+            min_memory_mb = learned_max
+
+    # Calculate required memory with safety buffer
+    required_with_buffer = int(min_memory_mb * 1.2)
+
+    if required_with_buffer > max_usable:
+        # Job needs more memory than available
+        if min_memory_mb > max_usable:
+            # Even base requirement exceeds capacity - this will likely OOM
+            return False, (
+                f"Method '{method_name}' requires {min_memory_mb}MB but node only has {max_usable}MB available. "
+                f"This job will likely fail with OOM. Consider increasing Docker memory allocation."
+            ), None
+        else:
+            # Base fits but buffer doesn't - run with reduced safety margin
+            logger.warning(
+                f"Method '{method_name}' safety buffer ({required_with_buffer}MB) exceeds node capacity. "
+                f"Running with minimal margin at {max_usable}MB."
+            )
+            return True, f"Running with reduced safety margin ({max_usable}MB)", max_usable
+
+    return True, f"Memory check passed ({required_with_buffer}MB of {max_usable}MB available)", required_with_buffer
+
+
+def record_job_memory_usage(method_name: str, actual_memory_mb: int, success: bool):
+    """
+    Record actual memory usage for a completed job to improve future estimates.
+
+    This creates a learning system where the HPC cluster adapts to actual
+    workload requirements over time.
+    """
+    if not success or actual_memory_mb <= 0:
+        return
+
+    global _method_memory_history
+
+    if method_name not in _method_memory_history:
+        _method_memory_history[method_name] = {
+            "avg_memory_mb": actual_memory_mb,
+            "max_memory_mb": actual_memory_mb,
+            "samples": 1
+        }
+    else:
+        history = _method_memory_history[method_name]
+        samples = history["samples"]
+
+        # Update running average (weighted to favor recent data)
+        weight = min(samples, 10)  # Cap weight at 10 for stability
+        history["avg_memory_mb"] = int(
+            (history["avg_memory_mb"] * weight + actual_memory_mb) / (weight + 1)
+        )
+
+        # Track maximum seen
+        history["max_memory_mb"] = max(history["max_memory_mb"], actual_memory_mb)
+        history["samples"] = samples + 1
+
+        logger.debug(
+            f"Updated memory history for {method_name}: "
+            f"avg={history['avg_memory_mb']}MB, max={history['max_memory_mb']}MB, samples={history['samples']}"
+        )
+
 
 def prepare_job_script(job_hash: str, job: JobSubmission) -> str:
     """Prepare a job script file and return its path."""
@@ -361,8 +454,17 @@ def prepare_job_script(job_hash: str, job: JobSubmission) -> str:
         # Safety buffer: add 20% to min_memory_mb to prevent edge-case OOM
         SAFETY_BUFFER = 1.2  # 20% extra
 
-        # OOM retry override takes highest priority
-        if memory_override_mb is not None:
+        # Check for exclusive mode FIRST - it takes precedence over memory settings
+        exclusive = resources.get("exclusive", False)
+        if exclusive:
+            # Exclusive mode: request the entire node
+            # This prevents other jobs from running concurrently and competing for memory
+            f.write("#SBATCH --exclusive\n")
+            f.write("#SBATCH --mem=0\n")  # Request all available memory
+            safe_memory = get_slurm_node_memory()  # Track actual node memory for learning
+            logger.info(f"Job {job_hash}: Running in exclusive mode (entire node reserved, ~{safe_memory}MB)")
+        # OOM retry override takes highest priority (when not exclusive)
+        elif memory_override_mb is not None:
             # OOM retry - use the override memory, cap to node capacity
             safe_memory = calculate_safe_memory(memory_override_mb, safety_buffer=1.0)
             f.write(f"#SBATCH --mem={safe_memory}M\n")
@@ -746,7 +848,15 @@ def process_job_output(job_hash: str, slurm_id: str, final_state: str) -> bool:
     # Update the job status in the database
     try:
         update_job_status(job_hash, job_status, output=output, error=error)
-        
+
+        # Record memory usage for learning (helps future jobs of same method)
+        job_doc = jobs_collection.find_one({"job_hash": job_hash})
+        if job_doc and job_status == JobStatus.COMPLETED:
+            method_name = job_doc.get("method_name") or job_doc.get("method_hash", "unknown")
+            actual_memory = job_doc.get("last_memory_mb") or job_doc.get("memory_override_mb")
+            if actual_memory:
+                record_job_memory_usage(method_name, actual_memory, success=True)
+
         # If job completed successfully and has output, upload it as a new file
         if job_status == JobStatus.COMPLETED and output:
             try:
