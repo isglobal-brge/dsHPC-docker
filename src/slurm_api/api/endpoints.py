@@ -103,10 +103,10 @@ async def submit_job(job: JobSubmission):
         if existing_job:
             # If the existing job is completed or still active, return it as duplicate
             if existing_job['status'] in [
-                JobStatus.COMPLETED, 
-                JobStatus.PENDING, 
-                JobStatus.RUNNING, 
-                JobStatus.COMPLETING, 
+                JobStatus.COMPLETED,
+                JobStatus.PENDING,
+                JobStatus.RUNNING,
+                JobStatus.COMPLETING,
                 JobStatus.CONFIGURING
             ]:
                 logger.info(f"Identical job found (status: {existing_job['status']}) with hash {job.function_hash}, returning existing job_hash: {existing_job['job_hash']}")
@@ -115,8 +115,20 @@ async def submit_job(job: JobSubmission):
                     "job_hash": existing_job['job_hash'],
                     "duplicate": True
                 }
-            # If the existing job failed or was cancelled, reuse it (reset status to PENDING)
-            else:
+            # If the job FAILED (script error), return the existing error - don't retry
+            # FAILED means the script ran and produced an error, retrying won't help
+            elif existing_job['status'] in [JobStatus.FAILED, "FA", "F"]:
+                logger.info(f"Identical job found with FAILED status, returning existing error (script error, not retriable)")
+                return {
+                    "message": f"Identical job previously failed with script error, returning existing result",
+                    "job_hash": existing_job['job_hash'],
+                    "duplicate": True,
+                    "failed": True,
+                    "error": existing_job.get('error', 'Unknown error')
+                }
+            # If the existing job was CANCELLED (infrastructure issue), reuse it (reset status to PENDING)
+            # CANCELLED means OOM, service restart, manual cancel - these are retriable
+            elif existing_job['status'] in [JobStatus.CANCELLED, "CA", "C"]:
                 logger.info(f"Found previous identical job (status: {existing_job['status']}), resetting to PENDING for resubmission.")
                 # Reset the existing job instead of creating a duplicate
                 jobs_collection.update_one(
