@@ -59,6 +59,7 @@ services:
       - LOG_LEVEL=WARNING
     volumes:
       - job_workspace:/workspace
+      - persistent_storage:/persistent
       - ./environment:/environment
       - ./config:/config
     networks:
@@ -161,6 +162,8 @@ volumes:
     name: __DOCKER_PREFIX__-mongodb-methods-data
   job_workspace:
     name: __DOCKER_PREFIX__-job-workspace
+  persistent_storage:
+    name: __DOCKER_PREFIX__-persistent-storage
 
 networks:
   __DOCKER_PREFIX__-internal-network:
