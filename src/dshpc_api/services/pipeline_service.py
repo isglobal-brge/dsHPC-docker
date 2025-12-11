@@ -376,31 +376,65 @@ async def create_pipeline(pipeline_data: Dict[str, Any]) -> Tuple[str, str]:
                             logger.info(f"  ✗ File {missing_file_hash[:12]}... still not available")
                             return pipeline_hash, f"Pipeline previously failed: {error_msg}"
                     else:
-                        # Not file or method related - check if it's a retriable error
+                        # Not file or method related - check if ALL errors are retriable
+                        # If ANY error is non-retriable, don't retry - it will fail again
                         from dshpc_api.services.job_service import is_retriable_error
-                        error_msg = existing_pipeline.get("error", "Unknown error")
 
-                        # Check if pipeline error or any node error is retriable
-                        is_error_retriable = is_retriable_error(error_msg)
-                        if not is_error_retriable:
-                            for node_id, node_data in existing_pipeline.get("nodes", {}).items():
+                        pipeline_error = existing_pipeline.get("error", "Unknown error")
+                        all_errors_retriable = True
+                        has_any_error = False
+                        first_non_retriable_error = None
+
+                        # Check all underlying jobs for errors (most accurate)
+                        for node_id, node_data in existing_pipeline.get("nodes", {}).items():
+                            if node_data.get("status") in [PipelineNodeStatus.FAILED.value, "failed"]:
+                                meta_job_hash = node_data.get("meta_job_hash")
+                                if meta_job_hash:
+                                    failed_jobs = await db.jobs.find({
+                                        "meta_job_hash": meta_job_hash,
+                                        "status": {"$in": ["F", "failed", "CA", "cancelled"]}
+                                    }).to_list(length=100)
+
+                                    for job in failed_jobs:
+                                        job_error = job.get("error", "")
+                                        if job_error:
+                                            has_any_error = True
+                                            if not is_retriable_error(job_error):
+                                                all_errors_retriable = False
+                                                if not first_non_retriable_error:
+                                                    first_non_retriable_error = job_error
+
+                                # Also check node-level error
                                 node_error = node_data.get("error", "")
-                                if is_retriable_error(node_error):
-                                    is_error_retriable = True
-                                    break
+                                if node_error:
+                                    has_any_error = True
+                                    if not is_retriable_error(node_error):
+                                        all_errors_retriable = False
+                                        if not first_non_retriable_error:
+                                            first_non_retriable_error = node_error
 
-                        if is_error_retriable:
-                            logger.info(f"  ♻️  Pipeline failed with retriable error - deleting for retry: {error_msg[:80]}...")
+                        # Check pipeline-level error
+                        if pipeline_error and pipeline_error != "Unknown error":
+                            has_any_error = True
+                            if not is_retriable_error(pipeline_error):
+                                all_errors_retriable = False
+                                if not first_non_retriable_error:
+                                    first_non_retriable_error = pipeline_error
+
+                        # Decision: retry only if ALL errors are retriable, or no errors found
+                        if has_any_error and all_errors_retriable:
+                            logger.info(f"  ♻️  Pipeline failed with all-retriable errors - deleting for retry")
                             await db.pipelines.delete_one({"pipeline_hash": pipeline_hash})
                             # Continue to create new pipeline below
-                        elif "validation error" in error_msg.lower() or "Unknown error" in error_msg:
-                            logger.info(f"  ♻️  Pipeline failed with validation/unknown error - deleting for retry")
+                        elif not has_any_error or "validation error" in pipeline_error.lower() or pipeline_error == "Unknown error":
+                            logger.info(f"  ♻️  Pipeline failed with unknown/validation error - deleting for retry")
                             await db.pipelines.delete_one({"pipeline_hash": pipeline_hash})
                             # Continue to create new pipeline below
                         else:
-                            # Not file or method related and not retriable - fail fast
-                            logger.info(f"✗ Pipeline previously failed with same configuration (not file or method related)")
-                            raise ValueError(f"Pipeline previously failed: {error_msg}")
+                            # At least one non-retriable error - fail fast
+                            display_error = first_non_retriable_error or pipeline_error
+                            logger.info(f"✗ Pipeline previously failed with non-retriable error: {display_error[:80]}...")
+                            raise ValueError(f"Pipeline previously failed: {display_error}")
             else:
                 # Methods may have changed, allow recomputation
                 logger.info(f"↻ Pipeline structure changed, will recompute")
