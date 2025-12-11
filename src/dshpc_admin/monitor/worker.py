@@ -1,7 +1,7 @@
 """
 Background monitoring worker that collects system data and stores snapshots in MongoDB.
 
-ROBUST DESIGN v3.0:
+ROBUST DESIGN v3.1:
 - Self-healing: Auto-reconnects to MongoDB and Docker on failure
 - Graceful degradation: Partial snapshots on collector errors (better than nothing)
 - Heartbeat tracking: Records last_activity for external watchdog monitoring
@@ -10,6 +10,7 @@ ROBUST DESIGN v3.0:
 - Circuit breaker: Disables failing collectors temporarily
 - Singleton: Only one instance runs at a time (via file lock)
 - Multiprocess timeouts: Hard timeouts using subprocess isolation
+- ADAPTIVE TIMING: Automatically adjusts intervals based on cycle duration and data volume
 """
 import time
 import os
@@ -68,6 +69,87 @@ class CircuitBreaker:
         return {
             name: 'OPEN' if self.is_open(name) else f'CLOSED ({self.failures.get(name, 0)} failures)'
             for name in set(list(self.failures.keys()) + list(self.disabled_until.keys()))
+        }
+
+
+class AdaptiveTiming:
+    """
+    Adaptive timing system that adjusts intervals based on observed performance.
+
+    Instead of fighting against cycle duration with a fixed interval, this system:
+    1. Measures actual cycle durations (moving average)
+    2. Adds a configurable pause between cycles
+    3. Scales the pause if cycles are consistently slow
+    4. Logs when timing adapts significantly
+    """
+
+    def __init__(self, min_pause=5, max_pause=60, history_size=10):
+        """
+        Args:
+            min_pause: Minimum seconds to wait between cycles (breathing room)
+            max_pause: Maximum seconds to wait between cycles
+            history_size: Number of cycles to average for adaptive calculations
+        """
+        self.min_pause = min_pause
+        self.max_pause = max_pause
+        self.history_size = history_size
+
+        # Cycle duration history (rolling window)
+        self.cycle_durations = []
+
+        # Track timing changes for logging
+        self.last_logged_avg = 0
+        self.current_pause = min_pause
+
+    def record_cycle(self, duration):
+        """Record a cycle duration and return the recommended pause time."""
+        self.cycle_durations.append(duration)
+
+        # Keep only recent history
+        if len(self.cycle_durations) > self.history_size:
+            self.cycle_durations.pop(0)
+
+        # Calculate average cycle duration
+        avg_duration = sum(self.cycle_durations) / len(self.cycle_durations)
+
+        # Adaptive pause calculation:
+        # - Fast cycles (<10s): use min_pause
+        # - Medium cycles (10-30s): use min_pause
+        # - Slow cycles (30-60s): increase pause proportionally
+        # - Very slow cycles (>60s): use max_pause
+        if avg_duration < 30:
+            self.current_pause = self.min_pause
+        elif avg_duration < 60:
+            # Scale from min_pause to max_pause/2 as cycles go from 30s to 60s
+            scale = (avg_duration - 30) / 30  # 0 to 1
+            self.current_pause = self.min_pause + (self.max_pause / 2 - self.min_pause) * scale
+        else:
+            # Very slow cycles - give the system more breathing room
+            self.current_pause = self.max_pause
+
+        # Log significant timing changes (>20% change in average)
+        if self.last_logged_avg > 0:
+            change_pct = abs(avg_duration - self.last_logged_avg) / self.last_logged_avg
+            if change_pct > 0.2:
+                logger.info(f"[ADAPTIVE] Cycle avg changed: {self.last_logged_avg:.1f}s -> {avg_duration:.1f}s, "
+                           f"pause adjusted to {self.current_pause:.1f}s")
+                self.last_logged_avg = avg_duration
+        else:
+            self.last_logged_avg = avg_duration
+
+        return self.current_pause
+
+    def get_stats(self):
+        """Get current timing statistics."""
+        if not self.cycle_durations:
+            return {'avg_duration': 0, 'current_pause': self.min_pause, 'samples': 0}
+
+        return {
+            'avg_duration': sum(self.cycle_durations) / len(self.cycle_durations),
+            'min_duration': min(self.cycle_durations),
+            'max_duration': max(self.cycle_durations),
+            'current_pause': self.current_pause,
+            'samples': len(self.cycle_durations)
         }
 
 
@@ -1545,19 +1627,33 @@ class MonitorWorker:
         # Graceful shutdown
         logger.info("Worker shutdown complete")
 
-    def run_sync(self, interval=10):
+    def run_sync(self, min_pause=5, max_pause=60):
         """
-        Synchronous version of run() for simpler process management.
-        This version doesn't require asyncio and is more robust for background execution.
-        """
-        logger.info(f"Starting ROBUST monitor worker v3.0 (sync) with {interval}s interval")
-        logger.info(f"Features: circuit breaker, hard timeouts, auto-reconnect, graceful degradation")
+        Synchronous version of run() with ADAPTIVE TIMING.
 
-        backoff_time = interval
-        max_backoff = 60
+        Instead of a fixed interval, the worker:
+        1. Measures how long each cycle takes
+        2. Adds a configurable pause between cycles (min_pause to max_pause)
+        3. Adapts the pause based on cycle duration trends
+        4. Never tries to "catch up" - just maintains a healthy pace
+
+        Args:
+            min_pause: Minimum seconds between cycles (default 5s)
+            max_pause: Maximum seconds between cycles (default 60s)
+        """
+        logger.info(f"Starting ROBUST monitor worker v3.1 (sync) with ADAPTIVE TIMING")
+        logger.info(f"Features: adaptive timing ({min_pause}s-{max_pause}s pause), circuit breaker, auto-reconnect")
+
+        # Initialize adaptive timing
+        adaptive = AdaptiveTiming(min_pause=min_pause, max_pause=max_pause)
+        error_backoff = min_pause  # Backoff for connection errors
+        max_error_backoff = 120
+
+        cycle_count = 0
 
         while not self._shutdown_requested:
             cycle_start = time.time()
+            cycle_count += 1
 
             try:
                 self.update_heartbeat()
@@ -1565,19 +1661,19 @@ class MonitorWorker:
                 if not self.check_connections():
                     logger.warning("Connection health check failed, attempting reconnection...")
                     if not self.reconnect():
-                        logger.error(f"Reconnection failed. Waiting {backoff_time}s before retry...")
-                        time.sleep(backoff_time)
-                        backoff_time = min(backoff_time * 2, max_backoff)
+                        logger.error(f"Reconnection failed. Waiting {error_backoff}s before retry...")
+                        time.sleep(error_backoff)
+                        error_backoff = min(error_backoff * 2, max_error_backoff)
                         continue
                     else:
-                        backoff_time = interval
+                        error_backoff = min_pause
 
                 success = self.store_snapshot()
 
                 if success:
-                    backoff_time = interval
+                    error_backoff = min_pause
                 else:
-                    backoff_time = min(backoff_time * 1.5, max_backoff)
+                    error_backoff = min(error_backoff * 1.5, max_error_backoff)
 
                 if self.consecutive_failures >= self.max_consecutive_failures:
                     logger.error(f"Too many consecutive failures ({self.consecutive_failures}). "
@@ -1591,11 +1687,19 @@ class MonitorWorker:
                 import traceback
                 logger.error(traceback.format_exc())
                 self.consecutive_failures += 1
-                backoff_time = min(backoff_time * 2, max_backoff)
+                error_backoff = min(error_backoff * 2, max_error_backoff)
 
+            # Calculate adaptive pause based on cycle duration
             cycle_duration = time.time() - cycle_start
-            sleep_time = max(1, interval - cycle_duration)
-            time.sleep(sleep_time)
+            pause_time = adaptive.record_cycle(cycle_duration)
+
+            # Log cycle stats periodically (every 10 cycles)
+            if cycle_count % 10 == 0:
+                stats = adaptive.get_stats()
+                logger.info(f"[STATS] Cycle #{cycle_count}: duration={cycle_duration:.1f}s, "
+                           f"avg={stats['avg_duration']:.1f}s, pause={pause_time:.1f}s")
+
+            time.sleep(pause_time)
 
         logger.info("Worker shutdown complete")
 
@@ -1656,7 +1760,10 @@ def main_sync():
                 logger.error("All initial connection attempts failed. Starting anyway - will retry in loop.")
 
     try:
-        worker.run_sync(interval=10)
+        # v3.1: Use adaptive timing instead of fixed interval
+        # min_pause=5s ensures a brief rest between cycles
+        # max_pause=60s is the maximum wait for very slow cycles
+        worker.run_sync(min_pause=5, max_pause=60)
     finally:
         # Release lock on exit
         fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
