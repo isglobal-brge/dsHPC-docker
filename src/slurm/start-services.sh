@@ -291,6 +291,64 @@ fi
 ) &
 echo -e "${GREEN}>> Configuration monitor started (checks /config/slurm.conf every 30s)${NC}"
 
+# =============================================================================
+# MEMORY GUARDIAN - Prevents OOM kills by pausing Slurm when memory is critical
+# =============================================================================
+# This is crucial for containerized environments where multiple services
+# (MongoDB, Slurm, API) share limited memory.
+#
+# 3-tier defense strategy:
+#   1. DRAIN: When free < pause_threshold: Stop accepting new jobs
+#   2. EMERGENCY KILL: When free < critical_threshold: Cancel oldest running job
+#   3. RESUME: When free > resume_threshold: Accept new jobs again
+#
+# Configuration sources (in order of priority):
+#   1. Environment variables (MEMORY_GUARDIAN_*)
+#   2. environment-config.json (resource_requirements.memory_guardian)
+#   3. Default values in memory-guardian.sh
+# =============================================================================
+
+# Load Memory Guardian configuration from environment-config.json if available
+ENV_CONFIG_FILE="/app/environment-config.json"
+if [ -f "$ENV_CONFIG_FILE" ]; then
+    echo -e "${CYAN}>> Loading Memory Guardian config from environment-config.json...${NC}"
+
+    # Read memory_guardian settings from JSON (only if not already set via env vars)
+    MG_ENABLED=$(jq -r '.resource_requirements.memory_guardian.enabled // empty' "$ENV_CONFIG_FILE" 2>/dev/null)
+    MG_PAUSE=$(jq -r '.resource_requirements.memory_guardian.pause_threshold_pct // empty' "$ENV_CONFIG_FILE" 2>/dev/null)
+    MG_CRITICAL=$(jq -r '.resource_requirements.memory_guardian.critical_threshold_pct // empty' "$ENV_CONFIG_FILE" 2>/dev/null)
+    MG_RESUME=$(jq -r '.resource_requirements.memory_guardian.resume_threshold_pct // empty' "$ENV_CONFIG_FILE" 2>/dev/null)
+    MG_INTERVAL=$(jq -r '.resource_requirements.memory_guardian.check_interval_seconds // empty' "$ENV_CONFIG_FILE" 2>/dev/null)
+    MG_COOLDOWN=$(jq -r '.resource_requirements.memory_guardian.kill_cooldown_seconds // empty' "$ENV_CONFIG_FILE" 2>/dev/null)
+
+    # Export as environment variables (env vars take precedence over JSON)
+    [ -n "$MG_ENABLED" ] && export MEMORY_GUARDIAN_ENABLED=${MEMORY_GUARDIAN_ENABLED:-$MG_ENABLED}
+    [ -n "$MG_PAUSE" ] && export MEMORY_GUARDIAN_PAUSE_PCT=${MEMORY_GUARDIAN_PAUSE_PCT:-$MG_PAUSE}
+    [ -n "$MG_CRITICAL" ] && export MEMORY_GUARDIAN_CRITICAL_PCT=${MEMORY_GUARDIAN_CRITICAL_PCT:-$MG_CRITICAL}
+    [ -n "$MG_RESUME" ] && export MEMORY_GUARDIAN_RESUME_PCT=${MEMORY_GUARDIAN_RESUME_PCT:-$MG_RESUME}
+    [ -n "$MG_INTERVAL" ] && export MEMORY_GUARDIAN_INTERVAL=${MEMORY_GUARDIAN_INTERVAL:-$MG_INTERVAL}
+    [ -n "$MG_COOLDOWN" ] && export MEMORY_GUARDIAN_COOLDOWN=${MEMORY_GUARDIAN_COOLDOWN:-$MG_COOLDOWN}
+fi
+
+if [ "${MEMORY_GUARDIAN_ENABLED:-true}" = "true" ]; then
+    if [ -f /memory-guardian.sh ]; then
+        echo -e "${CYAN}>> Starting Memory Guardian v2.0 (3-tier OOM protection)...${NC}"
+        chmod +x /memory-guardian.sh
+        /memory-guardian.sh &
+        MEMORY_GUARDIAN_PID=$!
+        echo -e "${GREEN}>> Memory Guardian started with PID: $MEMORY_GUARDIAN_PID${NC}"
+        echo -e "${CYAN}   DRAIN threshold:    <${MEMORY_GUARDIAN_PAUSE_PCT:-35}% free${NC}"
+        echo -e "${CYAN}   KILL threshold:     <${MEMORY_GUARDIAN_CRITICAL_PCT:-15}% free${NC}"
+        echo -e "${CYAN}   RESUME threshold:   >${MEMORY_GUARDIAN_RESUME_PCT:-50}% free${NC}"
+        echo -e "${CYAN}   Check interval:     ${MEMORY_GUARDIAN_INTERVAL:-3}s${NC}"
+        echo -e "${CYAN}   Kill cooldown:      ${MEMORY_GUARDIAN_COOLDOWN:-30}s${NC}"
+    else
+        echo -e "${YELLOW}>> Memory Guardian script not found, skipping...${NC}"
+    fi
+else
+    echo -e "${YELLOW}>> Memory Guardian disabled via configuration${NC}"
+fi
+
 # Start FastAPI application using API_PYTHON environment
 cd /app
 echo -e ""

@@ -181,11 +181,13 @@ RUN mkdir -p /var/run/munge \
 COPY src/slurm_api /app/slurm_api
 COPY src/slurm/start-services.sh /start-services.sh
 COPY src/slurm/load-methods.sh /load-methods.sh
+COPY src/slurm/memory-guardian.sh /memory-guardian.sh
 COPY src/slurm/scripts /app/slurm/scripts
 
 # Make the startup scripts executable
 RUN chmod +x /start-services.sh \
     && chmod +x /load-methods.sh \
+    && chmod +x /memory-guardian.sh \
     && chmod +x /app/slurm/scripts/register_method.py
 
 # Create entrypoint script that runs pre-startup before start-services

@@ -62,6 +62,7 @@ services:
       - persistent_storage:/persistent
       - ./environment:/environment
       - ./config:/config
+      - ./environment-config.json:/app/environment-config.json:ro
     networks:
       - __DOCKER_PREFIX__-internal-network
       - __DOCKER_PREFIX__-public-network
