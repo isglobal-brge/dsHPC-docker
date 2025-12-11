@@ -97,25 +97,29 @@ def is_file_not_found_error(error_message: str) -> Optional[str]:
 
 def is_retriable_error(error_message: str) -> bool:
     """
-    Check if error is retriable (transient infrastructure failure, not job logic error).
+    Check if error is retriable (infrastructure/transient failure, not permanent logic error).
 
-    Retriable errors (will be auto-retried):
+    This function is used for API-level retry decisions (pipelines, meta-jobs, jobs).
+    Allows resubmission after admin intervention (e.g., memory increase, config fix).
+
+    Retriable errors (allows resubmission via API):
     - Exit code 75 (EX_TEMPFAIL) - explicit retriable error set by developer
-    - OOM kills (exit code 137, SIGKILL)
-    - SIGTERM (exit code 143)
+    - OOM kills (exit code 137) - admin may have increased memory limits
+    - SIGTERM (exit code 143) - process was terminated, can retry
     - Service unavailability / connection errors
     - Timeouts and transient network issues
+    - Slurm infrastructure issues
 
-    NOT retriable (will NOT be auto-retried):
-    - Exit code 78 (EX_CONFIG) - explicit non-retriable error set by developer
-    - SIGSEGV (exit code 139) - indicates code bug
-    - Assertion errors, value errors - logic errors
-    - File format errors - data issues
+    NOT retriable (resubmission blocked - permanent errors):
+    - Exit code 78 (EX_CONFIG) - configuration/parameter error in job logic
+    - SIGSEGV (exit code 139) - indicates code bug, needs debugging
+    - Assertion errors, value errors - logic errors in job code
+    - File format errors - data issues that won't change on retry
     - Any error not matching retriable patterns
 
     Developer exit codes (from BSD sysexits.h):
-    - sys.exit(75)  # EX_TEMPFAIL - temporary failure, WILL retry
-    - sys.exit(78)  # EX_CONFIG - configuration error, will NOT retry
+    - sys.exit(75)  # EX_TEMPFAIL - temporary failure, allows retry
+    - sys.exit(78)  # EX_CONFIG - bad configuration/parameters, blocks retry
 
     Args:
         error_message: Error message to check
@@ -129,10 +133,12 @@ def is_retriable_error(error_message: str) -> bool:
     error_lower = error_message.lower()
 
     # Retriable patterns - infrastructure/transient failures
+    # These errors allow resubmission via API after admin intervention
     retriable_patterns = [
         # Developer-set retriable error (EX_TEMPFAIL from sysexits.h)
+        # Developers use sys.exit(75) to signal "temporary failure, safe to retry"
         "exit code: 75", "exit code 75", "code: 75",
-        # OOM and signal kills (except SIGSEGV)
+        # OOM and signal kills - admin may have increased memory or fixed issue
         "exit code: 137", "exit code 137", "code: 137",
         "sigkill", "oom", "out of memory", "killed",
         "exit code: 143", "exit code 143", "code: 143",
@@ -719,8 +725,45 @@ async def simulate_job(file_hash: Optional[str] = None, file_inputs: Optional[Di
             }
         
         elif job_status in NON_RETRIABLE_FAILED_STATUSES:
-            # Job failed in a way that shouldn't be retried
+            # Job failed - but check error message to see if it's actually retriable
+            # Status "F" (Failed) can contain retriable errors like exit code 75 (EX_TEMPFAIL)
             error_message = existing_job.get("error", "No error details available")
+
+            # Check if the error message indicates a retriable error
+            if is_retriable_error(error_message):
+                # Error is retriable despite status code - resubmit
+                success, message, job_data = await submit_job(
+                    file_hash=file_hash,
+                    file_inputs=file_inputs,
+                    function_hash=function_hash,
+                    parameters=sorted_params
+                )
+
+                if not success:
+                    return {
+                        "job_hash": job_hash,
+                        "status": None,
+                        "output_file_hash": None,
+                        "old_status": job_status,
+                        "message": message,
+                        "status_detail": "Job resubmission failed",
+                        "error_details": message,
+                        "is_resubmitted": False
+                    }
+
+                new_status = job_data.get("status")
+                return {
+                    "job_hash": job_data.get("job_hash"),
+                    "status": new_status,
+                    "output_file_hash": None,
+                    "old_status": job_status,
+                    "message": f"New job submitted after retriable error (exit code 75 or similar)",
+                    "status_detail": STATUS_DESCRIPTIONS.get(new_status, "Job has been resubmitted after a retriable failure"),
+                    "error_details": f"Previous error was retriable: {error_message[:100]}",
+                    "is_resubmitted": True
+                }
+
+            # Error is truly non-retriable
             return {
                 "job_hash": job_hash,
                 "status": job_status,
