@@ -1,16 +1,26 @@
 """
 Utilities to read data from system snapshots instead of direct queries.
+
+ARCHITECTURE:
+Snapshots are stored in the DEDICATED admin_db (not jobs_db).
+This isolates visualization data from critical system data.
+If admin_db dies, the job processing system continues working.
 """
 from datetime import datetime
 from .db_connections import MongoDBConnections
 
 
 def get_latest_snapshot():
-    """Get the most recent system snapshot."""
-    jobs_db = MongoDBConnections.get_jobs_db()
-    
+    """
+    Get the most recent system snapshot.
+
+    ISOLATION: Reads from admin_db, NOT from jobs_db.
+    This ensures snapshot queries don't affect job processing performance.
+    """
+    admin_db = MongoDBConnections.get_admin_db()
+
     try:
-        snapshot = jobs_db.system_snapshots.find_one(
+        snapshot = admin_db.system_snapshots.find_one(
             {},
             sort=[('timestamp', -1)]
         )

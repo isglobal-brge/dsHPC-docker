@@ -62,13 +62,19 @@ DATABASES = {
     }
 }
 
-# MongoDB connections (for dsHPC data)
+# MongoDB connections for DATA SOURCES (read-only for admin panel)
 MONGO_JOBS_URI = os.environ.get('MONGO_JOBS_URI', 'mongodb://localhost:27017/')
 MONGO_JOBS_DB = os.environ.get('MONGO_JOBS_DB', 'dshpc-jobs')
 MONGO_FILES_URI = os.environ.get('MONGO_FILES_URI', 'mongodb://localhost:27017/')
 MONGO_FILES_DB = os.environ.get('MONGO_FILES_DB', 'dshpc-files')
 MONGO_METHODS_URI = os.environ.get('MONGO_METHODS_URI', 'mongodb://localhost:27017/')
 MONGO_METHODS_DB = os.environ.get('MONGO_METHODS_DB', 'dshpc-methods')
+
+# DEDICATED ADMIN DATABASE for snapshots/cache (ISOLATED from critical data)
+# This database stores ONLY admin panel visualization data (snapshots, cache)
+# If this DB dies or is killed, the job processing system is NOT affected
+MONGO_ADMIN_URI = os.environ.get('MONGO_ADMIN_URI', 'mongodb://localhost:27017/')
+MONGO_ADMIN_DB = os.environ.get('MONGO_ADMIN_DB', 'dshpc-admin-snapshots')
 
 # Slurm API
 SLURM_API_URL = os.environ.get('SLURM_API_URL', 'http://localhost:8000')
