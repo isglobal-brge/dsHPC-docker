@@ -479,6 +479,9 @@ def _check_orphaned_jobs_sync():
             "Name or service not known",
             "Timeout:",
             "AutoReconnect",
+            # Script-requested retry (exit code 75 = EX_TEMPFAIL)
+            "exit code 75",
+            "transient error",
         ]
 
         # Build regex for service failures ONLY

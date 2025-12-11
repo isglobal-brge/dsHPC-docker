@@ -897,6 +897,17 @@ def process_job_output(job_hash: str, slurm_id: str, final_state: str) -> bool:
             pass
     
     # Determine final job status based on exit code, Slurm state, AND output content
+    #
+    # Special exit codes for script-controlled status:
+    #   0: Success (COMPLETED)
+    #   75: Retriable/Transient error (CANCELLED - allows auto-retry)
+    #       This is EX_TEMPFAIL from sysexits.h - "temporary failure"
+    #   1-74, 76-125: Permanent failure (FAILED - no auto-retry)
+    #   126-127: Shell errors (command not found, permission denied)
+    #   128+N: Killed by signal N (137=SIGKILL/OOM, 139=SIGSEGV, 143=SIGTERM)
+    #
+    EXIT_CODE_RETRIABLE = 75  # Scripts should use this for transient errors
+
     if output_has_error:
         # If output explicitly says "error", mark as FAILED regardless of exit code
         job_status = JobStatus.FAILED
@@ -920,8 +931,14 @@ def process_job_output(job_hash: str, slurm_id: str, final_state: str) -> bool:
             # If Slurm state is unknown but exit code 0, mark COMPLETED
             logger.warning(f"Unknown Slurm state: {final_state} for job {job_hash}, using COMPLETED due to exit code 0.")
             job_status = JobStatus.COMPLETED
+    elif exit_code == EXIT_CODE_RETRIABLE:
+        # Exit code 75 = EX_TEMPFAIL = transient/retriable error
+        # Script explicitly requests retry (e.g., network timeout, service unavailable)
+        job_status = JobStatus.CANCELLED
+        error = f"Script requested retry (exit code 75 - transient error). {stderr_content or ''}"
+        logger.info(f"Job {job_hash} marked as CANCELLED (retriable) - script exited with code 75")
     else:
-        # If exit code is non-zero, always mark as FAILED
+        # If exit code is non-zero (and not 75), always mark as FAILED
         job_status = JobStatus.FAILED
         error = f"{(error + ' ') if error else ''}Script exited with non-zero code: {exit_code}."
         # Add stderr content to error message only if job failed
