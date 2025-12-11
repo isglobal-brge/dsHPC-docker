@@ -717,144 +717,140 @@ class MonitorWorker:
         return methods_source
     
     def collect_pipelines(self):
-        """Collect pipeline data from MongoDB with enriched meta-job information."""
+        """Collect pipeline data from MongoDB with enriched meta-job information.
+
+        PERFORMANCE OPTIMIZATION: Uses batch lookups instead of individual queries.
+        - Collects all needed hashes first, then does batch queries
+        - No GridFS reads - uses cached previews only
+        """
         pipelines_data = []
-        
+
         try:
-            # Get all pipelines (limit to recent 200 for snapshot efficiency)
-            pipelines = list(self.db.pipelines.find({}).sort('created_at', -1).limit(200))
-            
+            # Get all pipelines (limit to recent 100 for snapshot efficiency)
+            pipelines = list(self.db.pipelines.find({}).sort('created_at', -1).limit(100))
+
+            # PHASE 1: Collect all hashes we need to look up
+            meta_job_hashes = set()
             for pipeline in pipelines:
-                # Convert ObjectId to string for JSON serialization
+                nodes = pipeline.get('nodes', {})
+                for node_data in nodes.values():
+                    if node_data.get('meta_job_hash'):
+                        meta_job_hashes.add(node_data['meta_job_hash'])
+
+            # PHASE 2: Batch load meta_jobs
+            meta_jobs_lookup = {}
+            if meta_job_hashes:
+                for mj in self.db.meta_jobs.find({'meta_job_hash': {'$in': list(meta_job_hashes)}}):
+                    if '_id' in mj:
+                        del mj['_id']
+                    meta_jobs_lookup[mj['meta_job_hash']] = mj
+
+            # PHASE 3: Collect all job_hashes and file_hashes from meta_jobs
+            job_hashes = set()
+            file_hashes = set()
+            for mj in meta_jobs_lookup.values():
+                # Collect file hashes from initial_file_inputs
+                initial_inputs = mj.get('initial_file_inputs', {})
+                if initial_inputs and isinstance(initial_inputs, dict):
+                    for fh in initial_inputs.values():
+                        if fh and isinstance(fh, str):
+                            file_hashes.add(fh)
+                # Collect job hashes from chain
+                for step in mj.get('chain', []):
+                    if step.get('job_hash'):
+                        job_hashes.add(step['job_hash'])
+
+            # PHASE 4: Batch load jobs
+            jobs_lookup = {}
+            if job_hashes:
+                for j in self.db.jobs.find({'job_hash': {'$in': list(job_hashes)}}):
+                    if '_id' in j:
+                        del j['_id']
+                    # Collect file hashes from job's file_inputs
+                    fi = j.get('file_inputs', {})
+                    if fi and isinstance(fi, dict):
+                        for fh in fi.values():
+                            if fh and isinstance(fh, str):
+                                file_hashes.add(fh)
+                    jobs_lookup[j['job_hash']] = j
+
+            # PHASE 5: Batch load files (only filename/size, no content)
+            files_lookup = {}
+            if file_hashes:
+                projection = {'file_hash': 1, 'filename': 1, 'file_size': 1, 'size': 1, 'metadata': 1}
+                for f in self.files_db.files.find({'file_hash': {'$in': list(file_hashes)}}, projection):
+                    files_lookup[f['file_hash']] = {
+                        'filename': f.get('filename', 'unknown'),
+                        'size': f.get('file_size') or f.get('size', 0),
+                        'metadata': f.get('metadata')
+                    }
+
+            # PHASE 6: Enrich pipelines using lookups (no more DB queries)
+            for pipeline in pipelines:
                 if '_id' in pipeline:
                     del pipeline['_id']
-                
-                # Enrich nodes with full meta-job information
+
                 nodes = pipeline.get('nodes', {})
                 for node_id, node_data in nodes.items():
                     meta_job_hash = node_data.get('meta_job_hash')
-                    if meta_job_hash:
-                        try:
-                            # Fetch meta-job data
-                            meta_job = self.db.meta_jobs.find_one({'meta_job_hash': meta_job_hash})
-                            if meta_job:
-                                # Remove _id from meta_job
-                                if '_id' in meta_job:
-                                    del meta_job['_id']
-                                
-                                # Enrich initial input files with content previews
-                                initial_file_inputs = meta_job.get('initial_file_inputs', {})
-                                if initial_file_inputs and isinstance(initial_file_inputs, dict):
-                                    initial_file_info = {}
-                                    for name, file_hash in initial_file_inputs.items():
-                                        # Skip None or empty file hashes
-                                        if not file_hash or not isinstance(file_hash, str):
-                                            continue
-                                        try:
-                                            file_doc = self.files_db.files.find_one({'file_hash': file_hash})
-                                            if file_doc:
-                                                import base64
-                                                file_info = {
-                                                    'filename': file_doc.get('filename', 'unknown'),
-                                                    'size': file_doc.get('size', 0)
-                                                }
-                                                
-                                                # Get content preview (first 2000 chars)
-                                                if 'content' in file_doc:
-                                                    try:
-                                                        content_bytes = base64.b64decode(file_doc['content'])
-                                                        content_str = content_bytes.decode('utf-8')[:2000]
-                                                        file_info['content_preview'] = content_str
-                                                    except Exception:
-                                                        file_info['content_preview'] = None
-                                                
-                                                initial_file_info[name] = file_info
-                                        except Exception as e:
-                                            logger.debug(f"Could not load file info for {file_hash}: {e}")
-                                    
-                                    if initial_file_info:
-                                        meta_job['initial_file_info'] = initial_file_info
-                                
-                                # Enrich chain steps with job data (including outputs)
-                                chain = meta_job.get('chain', [])
-                                for step in chain:
-                                    job_hash = step.get('job_hash')
-                                    if job_hash:
-                                        job = self.db.jobs.find_one({'job_hash': job_hash})
-                                        if job:
-                                            # Remove _id from job
-                                            if '_id' in job:
-                                                del job['_id']
-                                            
-                                            # Load output from GridFS if needed
-                                            if job.get('output_gridfs_id') and not job.get('output'):
-                                                try:
-                                                    import gridfs
-                                                    fs = gridfs.GridFS(self.db._database)
-                                                    grid_out = fs.get(job['output_gridfs_id'])
-                                                    # Get first 10KB as preview
-                                                    output_content = grid_out.read(10240).decode('utf-8')
-                                                    job['output'] = output_content
-                                                    job['output_truncated'] = True
-                                                except Exception as e:
-                                                    logger.debug(f"Could not load GridFS output for {job_hash}: {e}")
-                                            
-                                            # Truncate very long outputs that are directly in the document
-                                            output = job.get('output')
-                                            if output and isinstance(output, str) and len(output) > 10240:
-                                                job['output'] = output[:10240]
-                                                job['output_truncated'] = True
-                                            
-                                            # Load file_info for each file input (needed for extraction path metadata)
-                                            file_inputs = job.get('file_inputs')
-                                            if file_inputs and isinstance(file_inputs, dict):
-                                                job['file_info'] = {}
-                                                for input_name, file_hash in file_inputs.items():
-                                                    # Skip None or empty file hashes
-                                                    if not file_hash or not isinstance(file_hash, str):
-                                                        continue
-                                                    try:
-                                                        file_doc = self.files_db.files.find_one({'file_hash': file_hash})
-                                                        if file_doc:
-                                                            file_info = {
-                                                                'filename': file_doc.get('filename', 'unknown'),
-                                                                'size': file_doc.get('size', 0)
-                                                            }
-                                                            # Include metadata if available (contains extraction path info)
-                                                            if 'metadata' in file_doc:
-                                                                file_info['metadata'] = file_doc['metadata']
-                                                            
-                                                            job['file_info'][input_name] = file_info
-                                                    except Exception as e:
-                                                        logger.debug(f"Could not load file_info for {file_hash}: {e}")
-                                            
-                                            step['job_data'] = job
-                                            
-                                            # Debug logging to see what we have
-                                            output_val = job.get('output')
-                                            has_output = output_val is not None and bool(output_val)
-                                            output_length = len(output_val) if output_val and isinstance(output_val, str) else 0
-                                            logger.debug(f"Job {job_hash}: status={job.get('status')}, has_output={has_output}, output_length={output_length}")
-                                
-                                # Add enriched meta_job_info to node
-                                node_data['meta_job_info'] = meta_job
-                        except Exception as e:
-                            logger.error(f"Error enriching node {node_id} with meta-job {meta_job_hash}: {e}")
-                
+                    if meta_job_hash and meta_job_hash in meta_jobs_lookup:
+                        meta_job = meta_jobs_lookup[meta_job_hash].copy()
+
+                        # Enrich initial file inputs
+                        initial_inputs = meta_job.get('initial_file_inputs', {})
+                        if initial_inputs and isinstance(initial_inputs, dict):
+                            initial_file_info = {}
+                            for name, fh in initial_inputs.items():
+                                if fh and fh in files_lookup:
+                                    initial_file_info[name] = files_lookup[fh].copy()
+                            if initial_file_info:
+                                meta_job['initial_file_info'] = initial_file_info
+
+                        # Enrich chain steps with job data
+                        for step in meta_job.get('chain', []):
+                            job_hash = step.get('job_hash')
+                            if job_hash and job_hash in jobs_lookup:
+                                job = jobs_lookup[job_hash].copy()
+
+                                # Use cached preview only (no GridFS reads)
+                                if job.get('output_preview'):
+                                    job['output'] = job['output_preview']
+                                    job['output_truncated'] = True
+                                elif job.get('output') and isinstance(job['output'], str):
+                                    if len(job['output']) > 10240:
+                                        job['output'] = job['output'][:10240]
+                                        job['output_truncated'] = True
+                                elif job.get('output_gridfs_id'):
+                                    job['output'] = '[Loading...]'
+                                    job['output_truncated'] = True
+
+                                # Enrich file_inputs with file info
+                                fi = job.get('file_inputs', {})
+                                if fi and isinstance(fi, dict):
+                                    job['file_info'] = {}
+                                    for input_name, fh in fi.items():
+                                        if fh and fh in files_lookup:
+                                            job['file_info'][input_name] = files_lookup[fh].copy()
+
+                                step['job_data'] = job
+
+                        node_data['meta_job_info'] = meta_job
+
                 pipelines_data.append(pipeline)
-                
-            logger.debug(f"Collected {len(pipelines_data)} pipelines")
-            
+
+            logger.debug(f"Collected {len(pipelines_data)} pipelines with batch lookups")
+
         except Exception as e:
             logger.error(f"Error collecting pipelines: {e}")
-        
+
         return pipelines_data
 
     def collect_jobs_list(self, limit=50):
-        """Collect pre-enriched jobs list for admin panel with output/error previews."""
-        from gridfs import GridFS
-        from bson import ObjectId
+        """Collect pre-enriched jobs list for admin panel with output/error previews.
 
+        PERFORMANCE: Uses batch lookups for methods/files and cached previews only.
+        No GridFS reads at snapshot time - previews are cached by cache_document_previews().
+        """
         OUTPUT_PREVIEW_SIZE = 500
 
         jobs_data = {'items': [], 'total': 0}
@@ -862,10 +858,6 @@ class MonitorWorker:
             jobs_collection = self.jobs_db['jobs']
             methods_collection = self.methods_db['methods']
             files_collection = self.files_db['files']
-
-            # Initialize GridFS for output/error loading
-            output_fs = GridFS(self.jobs_db, collection='outputs')
-            error_fs = GridFS(self.jobs_db, collection='errors')
 
             # Get total count
             jobs_data['total'] = jobs_collection.count_documents({})
@@ -943,32 +935,24 @@ class MonitorWorker:
                     'params': j.get('params'),
                 }
 
-                # Pre-load output preview - prioritize cached preview in document
+                # PERFORMANCE: Use cached previews ONLY - never read GridFS at snapshot time
+                # The cache_document_previews() method runs separately and caches previews in documents
+                # This avoids slow GridFS reads during snapshot collection
                 if j.get('output_preview'):
                     # Use pre-cached preview (set by cache_document_previews)
                     job['output'] = j['output_preview']
                     job['output_truncated'] = j.get('output_preview_truncated', True)
                 elif j.get('output') and not j.get('output_gridfs_id'):
-                    # Use inline output (small, in document)
+                    # Use inline output (small, already in document - no extra read)
                     output_content = j['output']
                     job['output'] = output_content[:OUTPUT_PREVIEW_SIZE]
                     job['output_truncated'] = len(output_content) > OUTPUT_PREVIEW_SIZE
                 elif j.get('output_gridfs_id'):
-                    # Read from GridFS (fallback if not yet cached)
-                    try:
-                        grid_id = j['output_gridfs_id']
-                        if isinstance(grid_id, str):
-                            grid_id = ObjectId(grid_id)
-                        grid_out = output_fs.get(grid_id)
-                        output_content = grid_out.read(OUTPUT_PREVIEW_SIZE * 2).decode('utf-8', errors='replace')
-                        grid_out.close()
-                        job['output'] = output_content[:OUTPUT_PREVIEW_SIZE]
-                        job['output_truncated'] = len(output_content) > OUTPUT_PREVIEW_SIZE
-                        job['output_storage'] = 'gridfs'
-                    except Exception as e:
-                        logger.debug(f"Could not load GridFS output: {e}")
+                    # GridFS but no cache yet - show placeholder, cache will be populated soon
+                    job['output'] = '[Loading...]'
+                    job['output_truncated'] = True
 
-                # Pre-load error preview - prioritize cached preview in document
+                # Same for error - use cache only
                 if j.get('error_preview'):
                     job['error'] = j['error_preview']
                     job['error_truncated'] = j.get('error_preview_truncated', True)
@@ -977,17 +961,9 @@ class MonitorWorker:
                     job['error'] = error_content[:OUTPUT_PREVIEW_SIZE]
                     job['error_truncated'] = len(error_content) > OUTPUT_PREVIEW_SIZE
                 elif j.get('error_gridfs_id'):
-                    try:
-                        grid_id = j['error_gridfs_id']
-                        if isinstance(grid_id, str):
-                            grid_id = ObjectId(grid_id)
-                        grid_out = error_fs.get(grid_id)
-                        error_content = grid_out.read(OUTPUT_PREVIEW_SIZE * 2).decode('utf-8', errors='replace')
-                        grid_out.close()
-                        job['error'] = error_content[:OUTPUT_PREVIEW_SIZE]
-                        job['error_truncated'] = len(error_content) > OUTPUT_PREVIEW_SIZE
-                    except Exception as e:
-                        logger.debug(f"Could not load GridFS error: {e}")
+                    # GridFS but no cache yet - show placeholder
+                    job['error'] = '[Loading...]'
+                    job['error_truncated'] = True
 
                 # Method info
                 if j.get('function_hash') and j['function_hash'] in methods_lookup:
