@@ -482,6 +482,11 @@ def _check_orphaned_jobs_sync():
             # Script-requested retry (exit code 75 = EX_TEMPFAIL)
             "exit code 75",
             "transient error",
+            # Signal kills that are retriable (OOM, SIGTERM)
+            "SIGKILL/OOM",
+            "exit code 137",
+            "exit code 143",
+            "will retry",
         ]
 
         # Build regex for service failures ONLY

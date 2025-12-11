@@ -4,7 +4,7 @@ Meta-job service for handling chained processing steps.
 import uuid
 import hashlib
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Dict, Any, List, Tuple, Optional
 from dshpc_api.models.meta_job import (
     MetaJobStatus, MetaJobRequest, MetaJobResponse, 
@@ -907,28 +907,75 @@ async def wait_for_job_completion_with_retry(job_hash: str, meta_job_hash: str,
     raise Exception(f"Job failed after {max_retries} retry attempts")
 
 
-async def get_meta_job_info(meta_job_hash: str) -> Optional[MetaJobInfo]:
+async def get_meta_job_info(meta_job_hash: str, auto_requeue: bool = True) -> Optional[MetaJobInfo]:
     """
     Get full information about a meta-job.
-    
+
     When the meta-job is completed, includes the final output from the last job.
     This allows clients to get results without knowing internal file hashes.
-    
+
+    IMPORTANT: If auto_requeue=True (default), non-completed meta-jobs will be
+    automatically requeued for processing. This ensures that failed/cancelled/stalled
+    meta-jobs get another chance to complete when queried.
+
     Args:
         meta_job_hash: Meta-job hash
-        
+        auto_requeue: If True, requeue non-completed meta-jobs for processing
+
     Returns:
         MetaJobInfo if found, None otherwise
     """
     meta_jobs_db = await get_meta_jobs_db()
     meta_job = await meta_jobs_db.meta_jobs.find_one({"meta_job_hash": meta_job_hash})
-    
+
     if not meta_job:
         return None
-    
+
+    current_status = meta_job["status"]
+
+    # AUTO-REQUEUE: If meta-job is not completed, reactivate it for processing
+    # This handles failed/cancelled/stalled meta-jobs by giving them another chance
+    if auto_requeue and current_status != MetaJobStatus.COMPLETED:
+        should_requeue = False
+        requeue_reason = None
+
+        if current_status in [MetaJobStatus.FAILED, MetaJobStatus.CANCELLED, "failed", "cancelled"]:
+            # Failed or cancelled - always requeue
+            should_requeue = True
+            requeue_reason = f"requeued from {current_status} on query"
+        elif current_status in [MetaJobStatus.RUNNING, MetaJobStatus.PENDING, "running", "pending"]:
+            # Check if stalled (no updates for 10+ minutes)
+            updated_at = meta_job.get("updated_at") or meta_job.get("created_at")
+            if updated_at:
+                stall_threshold = datetime.utcnow() - timedelta(minutes=10)
+                if updated_at < stall_threshold:
+                    should_requeue = True
+                    requeue_reason = f"requeued from stalled {current_status} (no updates for 10+ min)"
+
+        if should_requeue:
+            logger.info(f"🔄 Auto-requeuing meta-job {meta_job_hash}: {requeue_reason}")
+
+            # Reset to pending status and clear error
+            await meta_jobs_db.meta_jobs.update_one(
+                {"meta_job_hash": meta_job_hash},
+                {"$set": {
+                    "status": MetaJobStatus.PENDING,
+                    "error": None,
+                    "updated_at": datetime.utcnow()
+                }}
+            )
+
+            # Trigger processing in background
+            asyncio.create_task(process_meta_job_chain(meta_job_hash))
+
+            # Update local copy for response
+            meta_job["status"] = MetaJobStatus.PENDING
+            meta_job["error"] = None
+            current_status = MetaJobStatus.PENDING
+
     # Convert to MetaJobInfo model
     chain = [MetaJobStepInfo(**step) for step in meta_job["chain"]]
-    
+
     # Get current step info if available
     current_step_info = None
     if meta_job.get("current_step_info"):
@@ -936,22 +983,22 @@ async def get_meta_job_info(meta_job_hash: str) -> Optional[MetaJobInfo]:
             current_step_info = CurrentStepInfo(**meta_job["current_step_info"])
         except Exception as e:
             logger.error(f"Error parsing current_step_info for meta-job {meta_job_hash}: {e}")
-    
+
     # If meta-job is completed, get the output from files database using final_output_hash
     final_output = None
-    if meta_job["status"] == MetaJobStatus.COMPLETED and meta_job.get("final_output_hash"):
+    if current_status == MetaJobStatus.COMPLETED and meta_job.get("final_output_hash"):
         try:
             from dshpc_api.services.db_service import get_output_from_hash
             final_output = await get_output_from_hash(meta_job["final_output_hash"])
         except Exception as e:
             logger.error(f"Error retrieving final output for meta-job {meta_job_hash}: {e}")
             # Don't fail, just return without output
-    
+
     return MetaJobInfo(
         meta_job_hash=meta_job["meta_job_hash"],
         initial_file_hash=meta_job["initial_file_hash"],
         chain=chain,
-        status=meta_job["status"],
+        status=current_status,
         current_step=meta_job.get("current_step"),
         current_step_info=current_step_info,  # Include current step tracking info
         final_job_hash=meta_job.get("final_job_hash"),

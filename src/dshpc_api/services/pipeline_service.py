@@ -428,22 +428,84 @@ async def create_pipeline(pipeline_data: Dict[str, Any]) -> Tuple[str, str]:
     return pipeline_hash, f"Pipeline created with {len(nodes)} nodes"
 
 
-async def get_pipeline_status(pipeline_hash: str) -> Optional[Dict[str, Any]]:
+async def get_pipeline_status(pipeline_hash: str, auto_requeue: bool = True) -> Optional[Dict[str, Any]]:
     """
     Get pipeline status and information.
-    
+
+    IMPORTANT: If auto_requeue=True (default), non-completed pipelines will be
+    automatically requeued for processing. This ensures that failed/cancelled/stalled
+    pipelines get another chance to complete when queried.
+
     Args:
         pipeline_hash: Pipeline hash
-        
+        auto_requeue: If True, requeue non-completed pipelines for processing
+
     Returns:
         Pipeline information or None if not found
     """
+    from datetime import timedelta
+
     db = await get_jobs_db()
     pipeline = await db.pipelines.find_one({"pipeline_hash": pipeline_hash})
-    
+
     if not pipeline:
         return None
-    
+
+    current_status = pipeline["status"]
+
+    # AUTO-REQUEUE: If pipeline is not completed, reactivate it for processing
+    # This handles failed/cancelled/stalled pipelines by giving them another chance
+    if auto_requeue and current_status != PipelineStatus.COMPLETED.value:
+        should_requeue = False
+        requeue_reason = None
+
+        if current_status in [PipelineStatus.FAILED.value, PipelineStatus.CANCELLED.value, "failed", "cancelled"]:
+            # Failed or cancelled - always requeue
+            should_requeue = True
+            requeue_reason = f"requeued from {current_status} on query"
+        elif current_status in [PipelineStatus.RUNNING.value, PipelineStatus.PENDING.value, "running", "pending"]:
+            # Check if stalled (no updates for 10+ minutes)
+            updated_at = pipeline.get("updated_at") or pipeline.get("started_at") or pipeline.get("created_at")
+            if updated_at:
+                stall_threshold = datetime.utcnow() - timedelta(minutes=10)
+                if updated_at < stall_threshold:
+                    should_requeue = True
+                    requeue_reason = f"requeued from stalled {current_status} (no updates for 10+ min)"
+
+        if should_requeue:
+            logger.info(f"🔄 Auto-requeuing pipeline {pipeline_hash}: {requeue_reason}")
+
+            # Reset pipeline to pending status
+            await db.pipelines.update_one(
+                {"pipeline_hash": pipeline_hash},
+                {"$set": {
+                    "status": PipelineStatus.PENDING.value,
+                    "error": None,
+                    "updated_at": datetime.utcnow()
+                }}
+            )
+
+            # Reset failed/cancelled nodes to waiting
+            for node_id, node_data in pipeline["nodes"].items():
+                node_status = node_data.get("status")
+                if node_status in [PipelineNodeStatus.FAILED.value, "failed", "cancelled"]:
+                    await db.pipelines.update_one(
+                        {"pipeline_hash": pipeline_hash},
+                        {"$set": {
+                            f"nodes.{node_id}.status": PipelineNodeStatus.WAITING.value,
+                            f"nodes.{node_id}.error": None
+                        }}
+                    )
+
+            # Trigger orchestrator to process this pipeline
+            from dshpc_api.background.pipeline_orchestrator import orchestrate_pipelines
+            asyncio.create_task(orchestrate_pipelines())
+
+            # Update local copy for response
+            pipeline["status"] = PipelineStatus.PENDING.value
+            pipeline["error"] = None
+            current_status = PipelineStatus.PENDING.value
+
     # Calculate stats
     nodes = pipeline["nodes"]
     total = len(nodes)

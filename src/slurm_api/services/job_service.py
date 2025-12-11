@@ -937,8 +937,22 @@ def process_job_output(job_hash: str, slurm_id: str, final_state: str) -> bool:
         job_status = JobStatus.CANCELLED
         error = f"Script requested retry (exit code 75 - transient error). {stderr_content or ''}"
         logger.info(f"Job {job_hash} marked as CANCELLED (retriable) - script exited with code 75")
+    elif exit_code in [137, 143]:
+        # Exit code 137 = SIGKILL (128+9) - typically OOM kill
+        # Exit code 143 = SIGTERM (128+15) - graceful termination request
+        # These are retriable because the job didn't fail due to logic errors
+        job_status = JobStatus.CANCELLED
+        signal_name = "SIGKILL/OOM" if exit_code == 137 else "SIGTERM"
+        error = f"Job killed by {signal_name} (exit code {exit_code}) - will retry. {stderr_content or ''}"
+        logger.info(f"Job {job_hash} marked as CANCELLED (retriable) - killed by {signal_name}")
+    elif exit_code == 139:
+        # Exit code 139 = SIGSEGV (128+11) - segmentation fault
+        # This is NOT retriable - it's a bug in the code
+        job_status = JobStatus.FAILED
+        error = f"Job crashed with SIGSEGV (exit code 139) - code bug, needs debugging. {stderr_content or ''}"
+        logger.info(f"Job {job_hash} marked as FAILED - SIGSEGV crash")
     else:
-        # If exit code is non-zero (and not 75), always mark as FAILED
+        # If exit code is non-zero (and not special), always mark as FAILED
         job_status = JobStatus.FAILED
         error = f"{(error + ' ') if error else ''}Script exited with non-zero code: {exit_code}."
         # Add stderr content to error message only if job failed
