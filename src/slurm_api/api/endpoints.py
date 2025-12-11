@@ -6,8 +6,8 @@ from slurm_api.config.logging_config import logger
 from slurm_api.models.job import JobSubmission, JobStatus
 from slurm_api.models.method import Method, MethodExecution
 from slurm_api.services.job_service import (
-    prepare_job_script, submit_slurm_job, get_job_info, 
-    create_job, update_job_status
+    prepare_job_script, submit_slurm_job, get_job_info,
+    create_job, update_job_status, check_and_trigger_recomputation
 )
 from slurm_api.services.slurm_service import get_queue_status
 from slurm_api.utils.db_utils import update_job_status
@@ -309,15 +309,31 @@ async def get_queue():
         return {"jobs": [], "error": str(e)}
 
 @router.get("/job/{job_hash}")
-async def get_job(job_hash: str):
-    """Get job information from MongoDB."""
+async def get_job(job_hash: str, check_output: bool = True):
+    """
+    Get job information from MongoDB.
+
+    Args:
+        job_hash: The job hash to retrieve
+        check_output: If True (default), check if COMPLETED jobs need recomputation
+                     due to missing output. Set to False to skip this check.
+    """
     job = get_job_info(job_hash)
     if not job:
         raise HTTPException(
             status_code=404,
             detail=f"Job {job_hash} not found"
         )
-    
+
+    # Check if job needs recomputation (COMPLETED but missing output)
+    if check_output and job.get("status") == JobStatus.COMPLETED:
+        recomputed, message = check_and_trigger_recomputation(job_hash)
+        if recomputed:
+            # Re-fetch job info after recomputation trigger
+            job = get_job_info(job_hash)
+            job["recomputation_triggered"] = True
+            job["recomputation_message"] = message
+
     return job
 
 @router.get("/methods/by-name/{method_name}")

@@ -1,5 +1,6 @@
 import asyncio
 import os
+import concurrent.futures
 
 from slurm_api.config.db_config import jobs_collection, meta_jobs_collection, pipelines_collection
 from slurm_api.config.logging_config import logger
@@ -7,6 +8,13 @@ from slurm_api.models.job import JobStatus
 from slurm_api.services.slurm_service import get_active_jobs, get_job_final_state
 from slurm_api.services.job_service import process_job_output, process_pending_file_upload
 from slurm_api.utils.db_utils import update_job_status
+
+# Shared executor for background tasks to avoid creating/destroying executors repeatedly
+# Using max_workers=2 to allow some parallelism but prevent resource exhaustion
+_background_executor = concurrent.futures.ThreadPoolExecutor(
+    max_workers=2,
+    thread_name_prefix="bg_task_"
+)
 
 
 def cascade_reactivate_pipelines(meta_job_hash: str) -> int:
@@ -141,8 +149,9 @@ def cascade_cancel_meta_jobs(job_hash: str) -> tuple[int, int]:
     return meta_cancelled_count, pipeline_cancelled_count
 
 
-async def check_cancelled_jobs():
+def _check_cancelled_jobs_sync():
     """
+    Synchronous implementation of cancelled job detection.
     Detect and mark jobs that were cancelled or killed externally.
 
     Handles three cases:
@@ -352,8 +361,9 @@ async def check_cancelled_jobs():
     except Exception as e:
         logger.error(f"Error checking cancelled jobs: {e}")
 
-async def check_orphaned_meta_jobs():
+def _check_orphaned_meta_jobs_sync():
     """
+    Synchronous implementation of orphaned meta-job check.
     Find and cancel meta-jobs whose current job no longer exists in the database
     OR whose current job has been cancelled.
     This handles the case where a job was cancelled but its meta-job wasn't cascade-cancelled.
@@ -411,19 +421,12 @@ async def check_orphaned_meta_jobs():
         logger.error(f"Error checking orphaned meta-jobs: {e}")
 
 
-async def check_orphaned_jobs():
+def _check_orphaned_jobs_sync():
     """
-    Find and retry jobs that need (re)submission to Slurm.
+    Synchronous implementation of orphaned job processing.
 
-    This handles:
-    1. PENDING jobs that were never submitted (no slurm_id)
-    2. CANCELLED jobs that failed due to service issues (not job logic errors)
-
-    Jobs cancelled due to service unavailability can be retried automatically
-    because the failure wasn't caused by the job itself.
-
-    IMPORTANT: This function runs in a thread pool to avoid blocking the API event loop.
-    All MongoDB and file download operations can block for up to 30s on connection issues.
+    This is run in a thread pool to avoid blocking the API event loop.
+    All operations here (MongoDB, file downloads, Slurm submission) can block.
     """
     from slurm_api.services.job_service import prepare_job_script, is_files_db_available
     from slurm_api.services.slurm_service import submit_slurm_job
@@ -432,7 +435,7 @@ async def check_orphaned_jobs():
 
     try:
         # CRITICAL: Check if files DB is available BEFORE processing orphaned jobs
-        # This prevents the API from blocking for 30s per job when files DB is down
+        # This prevents blocking for 30s per job when files DB is down
         if not is_files_db_available():
             logger.warning("⏸️ Files DB unavailable - skipping orphaned job retry to prevent API blocking")
             return
@@ -577,8 +580,30 @@ async def check_orphaned_jobs():
         logger.error(f"Error checking orphaned jobs (will retry next iteration): {e}")
 
 
-async def check_stale_cancelled_meta_jobs():
+async def check_orphaned_jobs():
     """
+    Find and retry jobs that need (re)submission to Slurm.
+
+    This handles:
+    1. PENDING jobs that were never submitted (no slurm_id)
+    2. CANCELLED jobs that failed due to service issues (not job logic errors)
+
+    Jobs cancelled due to service unavailability can be retried automatically
+    because the failure wasn't caused by the job itself.
+
+    IMPORTANT: This runs the blocking operations in a thread pool to avoid
+    blocking the FastAPI event loop. Without this, the API becomes unresponsive
+    while jobs are being prepared/submitted.
+    """
+    # Run the blocking operations in the shared thread pool
+    # This prevents MongoDB/file operations from blocking the API
+    loop = asyncio.get_event_loop()
+    await loop.run_in_executor(_background_executor, _check_orphaned_jobs_sync)
+
+
+def _check_stale_cancelled_meta_jobs_sync():
+    """
+    Synchronous implementation of stale cancelled meta-job check.
     Find and reactivate meta-jobs that were cancelled but their jobs are OK.
 
     This handles the case where dshpc_api died while processing a meta-job:
@@ -658,22 +683,18 @@ async def check_stale_cancelled_meta_jobs():
         logger.error(f"Error checking stale cancelled meta-jobs: {e}")
 
 
-async def check_pending_file_uploads():
+def _check_pending_file_uploads_sync():
     """
-    Process pending file uploads that failed when jobs completed.
+    Synchronous implementation of pending file upload processing.
 
-    This handles the case where files DB was unavailable when a job completed:
-    - The job output was saved to persistent storage
-    - The job was marked with output_file_upload_pending: true
-    - We now retry uploading to files DB
-
-    This ensures job outputs are eventually uploaded as files for deduplication/caching.
+    This is run in a thread pool to avoid blocking the API event loop.
+    File uploads to MongoDB can be slow.
     """
     from slurm_api.services.job_service import is_files_db_available
 
     try:
         # CRITICAL: Check if files DB is available BEFORE processing uploads
-        # This prevents blocking the API when files DB is down
+        # This prevents blocking when files DB is down
         if not is_files_db_available():
             logger.debug("⏸️ Files DB unavailable - skipping pending file uploads")
             return
@@ -701,8 +722,130 @@ async def check_pending_file_uploads():
         logger.error(f"Error checking pending file uploads: {e}")
 
 
-async def check_stale_cancelled_pipelines():
+async def check_pending_file_uploads():
     """
+    Process pending file uploads that failed when jobs completed.
+
+    This handles the case where files DB was unavailable when a job completed:
+    - The job output was saved to persistent storage
+    - The job was marked with output_file_upload_pending: true
+    - We now retry uploading to files DB
+
+    This ensures job outputs are eventually uploaded as files for deduplication/caching.
+
+    IMPORTANT: This runs in a thread pool to avoid blocking the API.
+    """
+    loop = asyncio.get_event_loop()
+    await loop.run_in_executor(_background_executor, _check_pending_file_uploads_sync)
+
+
+def _check_completed_jobs_missing_output_sync():
+    """
+    Synchronous implementation of missing output check.
+
+    This is run in a thread pool to avoid blocking the API event loop.
+    MongoDB operations can block when DB is slow/overloaded.
+    """
+    from slurm_api.services.job_service import is_files_db_available, PENDING_UPLOADS_DIR
+
+    try:
+        # CRITICAL: Only run this check if files DB is available
+        # If files DB is down, we can't know if the output is missing or just unreachable
+        if not is_files_db_available():
+            logger.debug("⏸️ Files DB unavailable - skipping missing output check")
+            return
+
+        # Find COMPLETED jobs that should have output but don't
+        # - output_file_hash is null/missing (not in files DB)
+        # - output_file_upload_pending is not true (not waiting to be uploaded)
+        completed_jobs_without_output = jobs_collection.find({
+            "status": JobStatus.COMPLETED,
+            "$or": [
+                {"output_file_hash": None},
+                {"output_file_hash": {"$exists": False}}
+            ],
+            "$and": [
+                {"$or": [
+                    {"output_file_upload_pending": {"$ne": True}},
+                    {"output_file_upload_pending": {"$exists": False}}
+                ]}
+            ]
+        }).limit(5)  # Process max 5 at a time to avoid overload
+
+        recompute_count = 0
+
+        for job in completed_jobs_without_output:
+            job_hash = job["job_hash"]
+
+            # Double-check: is there a pending upload file?
+            pending_path = os.path.join(PENDING_UPLOADS_DIR, f"{job_hash}.json")
+            if os.path.exists(pending_path):
+                # There IS a pending file - mark it for upload retry instead
+                logger.info(f"🔄 Found pending upload file for {job_hash}, marking for retry")
+                jobs_collection.update_one(
+                    {"job_hash": job_hash},
+                    {"$set": {"output_file_upload_pending": True}}
+                )
+                continue
+
+            # No output anywhere - need to recompute
+            # Reset job to PENDING so it will be resubmitted
+            logger.warning(f"🔄 COMPLETED job {job_hash} has no output anywhere - marking for recomputation")
+
+            result = jobs_collection.update_one(
+                {"job_hash": job_hash},
+                {"$set": {
+                    "status": JobStatus.PENDING,
+                    "slurm_id": None,
+                    "error": None,
+                    "output_file_hash": None,
+                    "output_file_upload_pending": False,
+                    "recomputation_reason": "Output missing from files DB and no pending upload found"
+                },
+                "$inc": {"recomputation_count": 1}}
+            )
+
+            if result.modified_count > 0:
+                recompute_count += 1
+                logger.info(f"🔄 Job {job_hash} reset to PENDING for recomputation")
+
+                # Also need to cascade-reactivate any meta-jobs/pipelines that depend on this job
+                meta_reactivated, pipeline_reactivated = cascade_reactivate_meta_jobs(job_hash)
+                if meta_reactivated > 0 or pipeline_reactivated > 0:
+                    logger.info(f"  ↳ Cascade reactivated {meta_reactivated} meta-job(s), {pipeline_reactivated} pipeline(s)")
+
+        if recompute_count > 0:
+            logger.info(f"🔄 Marked {recompute_count} job(s) for recomputation due to missing output")
+
+    except Exception as e:
+        logger.error(f"Error checking completed jobs with missing output: {e}")
+
+
+async def check_completed_jobs_missing_output():
+    """
+    Find and recompute COMPLETED jobs that have no output anywhere.
+
+    This is a LAST RESORT recovery mechanism for jobs that:
+    1. Are marked as COMPLETED (succeeded)
+    2. Have NO output_file_hash (not in files DB)
+    3. Have NO pending upload file in /persistent/pending_uploads/
+    4. Files DB IS available (so it's not a connectivity issue)
+
+    These jobs completed but their output was lost somehow. The only way to recover
+    is to recompute them by resetting to PENDING status.
+
+    This check runs AFTER check_pending_file_uploads to ensure we don't recompute
+    jobs that just haven't been uploaded yet.
+
+    IMPORTANT: This runs in a thread pool to avoid blocking the API.
+    """
+    loop = asyncio.get_event_loop()
+    await loop.run_in_executor(_background_executor, _check_completed_jobs_missing_output_sync)
+
+
+def _check_stale_cancelled_pipelines_sync():
+    """
+    Synchronous implementation of stale cancelled pipeline check.
     Find and reactivate pipelines that were cancelled but their meta-jobs are running/completed.
 
     This handles the case where dshpc_api died while processing a pipeline:
@@ -766,45 +909,56 @@ async def check_stale_cancelled_pipelines():
         logger.error(f"Error checking stale cancelled pipelines: {e}")
 
 
-async def check_jobs_once():
-    """Run a single iteration of job status check."""
+def _check_jobs_once_sync():
+    """
+    Synchronous implementation of job status check.
+
+    This runs ALL blocking operations (MongoDB, subprocess, file I/O) in a single
+    synchronous function that is called from the async wrapper via run_in_executor.
+
+    This ensures the FastAPI event loop is NEVER blocked by background tasks.
+    """
+    from slurm_api.services.job_service import is_files_db_available, PENDING_UPLOADS_DIR
+
     try:
-        # First, check for cancelled jobs and clean them up
-        await check_cancelled_jobs()
+        # ========== Part 1: Check for cancelled jobs ==========
+        _check_cancelled_jobs_sync()
 
-        # Check for orphaned meta-jobs (where referenced job no longer exists)
-        await check_orphaned_meta_jobs()
+        # ========== Part 2: Check for orphaned meta-jobs ==========
+        _check_orphaned_meta_jobs_sync()
 
-        # Then, check for orphaned jobs and retry them
-        # This also cascade-reactivates meta-jobs and pipelines when a job is reactivated
-        await check_orphaned_jobs()
+        # ========== Part 3: Check for orphaned jobs and retry them ==========
+        _check_orphaned_jobs_sync()
 
-        # Check for meta-jobs that were cancelled but their jobs completed
-        # (dshpc_api died while processing)
-        await check_stale_cancelled_meta_jobs()
+        # ========== Part 4: Check for stale cancelled meta-jobs ==========
+        _check_stale_cancelled_meta_jobs_sync()
 
-        # Check for pipelines that were cancelled but their meta-jobs are active
-        await check_stale_cancelled_pipelines()
+        # ========== Part 5: Check for stale cancelled pipelines ==========
+        _check_stale_cancelled_pipelines_sync()
 
-        # Check for pending file uploads (files DB was down when job completed)
-        await check_pending_file_uploads()
+        # ========== Part 6: Check for pending file uploads ==========
+        _check_pending_file_uploads_sync()
 
+        # ========== Part 7: Check for completed jobs missing output ==========
+        _check_completed_jobs_missing_output_sync()
+
+        # ========== Part 8: Update active job statuses from Slurm ==========
         # Find all jobs that are in a non-terminal state AND have slurm_id
         active_jobs = jobs_collection.find({
-            "status": {"$nin": [JobStatus.COMPLETED, JobStatus.FAILED, JobStatus.CANCELLED, 
+            "status": {"$nin": [JobStatus.COMPLETED, JobStatus.FAILED, JobStatus.CANCELLED,
                               JobStatus.TIMEOUT, JobStatus.NODE_FAIL, JobStatus.OUT_OF_MEMORY,
                               JobStatus.BOOT_FAIL, JobStatus.DEADLINE, JobStatus.PREEMPTED]},
             "slurm_id": {"$ne": None}
         })
-        
+
         # Get all job statuses from Slurm
         slurm_statuses = get_active_jobs()
-        
+
         # Check each active job
         for job in active_jobs:
             slurm_id = job["slurm_id"]
             job_hash = job["job_hash"]
-            
+
             # If job not in Slurm queue, check sacct for final status
             if slurm_id not in slurm_statuses:
                 # Get final status from sacct (pass job_hash to help detect cancelled jobs)
@@ -818,9 +972,21 @@ async def check_jobs_once():
                         update_job_status(job_hash, JobStatus(slurm_state))
                     except ValueError:
                         logger.warning(f"Unknown Slurm state: {slurm_state}")
-        
+
     except Exception as e:
         logger.error(f"Error in job status checking: {e}")
+
+
+async def check_jobs_once():
+    """
+    Run a single iteration of job status check.
+
+    IMPORTANT: All blocking operations (MongoDB queries, subprocess calls, file I/O)
+    are executed in a thread pool to avoid blocking the FastAPI event loop.
+    This ensures the API remains responsive while background tasks are running.
+    """
+    loop = asyncio.get_event_loop()
+    await loop.run_in_executor(_background_executor, _check_jobs_once_sync)
         
 async def check_job_status():
     """Background task to check and update status of running jobs."""

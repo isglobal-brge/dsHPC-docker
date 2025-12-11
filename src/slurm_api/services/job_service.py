@@ -21,6 +21,12 @@ from slurm_api.utils.parameter_utils import sort_parameters
 from slurm_api.utils.sorting_utils import sort_file_inputs
 
 
+# Thread-safe locks for cache access
+import threading
+_node_memory_lock = threading.Lock()
+_method_memory_lock = threading.Lock()
+_files_db_lock = threading.Lock()
+
 # Cache for node memory capacity (refreshed periodically)
 _node_memory_cache = {"memory_mb": None, "last_check": None}
 
@@ -35,6 +41,7 @@ def get_slurm_node_memory() -> Optional[int]:
 
     Returns the memory in MB, or None if unable to determine.
     Uses caching to avoid calling sinfo too frequently.
+    Thread-safe with lock to prevent thundering herd on cache expiry.
     """
     import time
 
@@ -42,41 +49,43 @@ def get_slurm_node_memory() -> Optional[int]:
     cache_ttl = 60
     now = time.time()
 
-    if (_node_memory_cache["memory_mb"] is not None and
-        _node_memory_cache["last_check"] is not None and
-        now - _node_memory_cache["last_check"] < cache_ttl):
-        return _node_memory_cache["memory_mb"]
+    with _node_memory_lock:
+        # Check cache while holding lock
+        if (_node_memory_cache["memory_mb"] is not None and
+            _node_memory_cache["last_check"] is not None and
+            now - _node_memory_cache["last_check"] < cache_ttl):
+            return _node_memory_cache["memory_mb"]
 
-    try:
-        # Get memory from sinfo (in MB)
-        # Format: MEMORY column shows available memory per node
-        result = subprocess.run(
-            ["sinfo", "-N", "-h", "-o", "%m"],
-            capture_output=True,
-            text=True,
-            timeout=5
-        )
+        try:
+            # Get memory from sinfo (in MB)
+            # Format: MEMORY column shows available memory per node
+            result = subprocess.run(
+                ["sinfo", "-N", "-h", "-o", "%m"],
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
 
-        if result.returncode == 0 and result.stdout.strip():
-            # Get the minimum memory across all nodes (most conservative)
-            memories = []
-            for line in result.stdout.strip().split('\n'):
-                try:
-                    mem = int(line.strip())
-                    memories.append(mem)
-                except ValueError:
-                    continue
+            if result.returncode == 0 and result.stdout.strip():
+                # Get the minimum memory across all nodes (most conservative)
+                memories = []
+                for line in result.stdout.strip().split('\n'):
+                    try:
+                        mem = int(line.strip())
+                        memories.append(mem)
+                    except ValueError:
+                        continue
 
-            if memories:
-                min_memory = min(memories)
-                _node_memory_cache["memory_mb"] = min_memory
-                _node_memory_cache["last_check"] = now
-                logger.debug(f"Slurm node memory: {min_memory} MB")
-                return min_memory
-    except Exception as e:
-        logger.warning(f"Could not get Slurm node memory: {e}")
+                if memories:
+                    min_memory = min(memories)
+                    _node_memory_cache["memory_mb"] = min_memory
+                    _node_memory_cache["last_check"] = now
+                    logger.debug(f"Slurm node memory: {min_memory} MB")
+                    return min_memory
+        except Exception as e:
+            logger.warning(f"Could not get Slurm node memory: {e}")
 
-    return None
+        return None
 
 
 def calculate_safe_memory(requested_mb: int, safety_buffer: float = 1.2) -> int:
@@ -685,6 +694,81 @@ def get_job_info(job_hash: str) -> Dict[str, Any]:
     
     return job
 
+
+def check_and_trigger_recomputation(job_hash: str) -> Tuple[bool, str]:
+    """
+    Check if a COMPLETED job needs recomputation due to missing output.
+
+    This is triggered when a job is accessed via API (on-demand check).
+    If the job is COMPLETED but has no output anywhere (files DB, pending upload),
+    and files DB is available, it resets the job to PENDING for recomputation.
+
+    Args:
+        job_hash: The job hash to check
+
+    Returns:
+        Tuple of (recomputation_triggered: bool, message: str)
+    """
+    job = jobs_collection.find_one({"job_hash": job_hash})
+
+    if not job:
+        return False, "Job not found"
+
+    # Only check COMPLETED jobs
+    if job.get("status") != JobStatus.COMPLETED:
+        return False, f"Job status is {job.get('status')}, not COMPLETED"
+
+    # Check if job already has output in files DB
+    if job.get("output_file_hash"):
+        return False, "Job has output in files DB"
+
+    # Check if there's a pending upload
+    if job.get("output_file_upload_pending"):
+        return False, "Job has pending upload flag"
+
+    # Check for pending upload file on disk
+    pending_path = os.path.join(PENDING_UPLOADS_DIR, f"{job_hash}.json")
+    if os.path.exists(pending_path):
+        # Mark for retry upload instead of recomputation
+        jobs_collection.update_one(
+            {"job_hash": job_hash},
+            {"$set": {"output_file_upload_pending": True}}
+        )
+        return False, "Found pending upload file, marked for retry"
+
+    # Check if files DB is available
+    if not is_files_db_available():
+        return False, "Files DB not available, cannot determine if recomputation needed"
+
+    # All conditions met - job is COMPLETED, no output anywhere, files DB is up
+    # This means the output was lost - trigger recomputation
+    logger.warning(f"🔄 API-triggered recomputation for job {job_hash}: COMPLETED but no output found")
+
+    result = jobs_collection.update_one(
+        {"job_hash": job_hash},
+        {"$set": {
+            "status": JobStatus.PENDING,
+            "slurm_id": None,
+            "error": None,
+            "output_file_hash": None,
+            "output_file_upload_pending": False,
+            "recomputation_reason": "API request: Output missing from files DB and no pending upload found"
+        },
+        "$inc": {"recomputation_count": 1}}
+    )
+
+    if result.modified_count > 0:
+        # Cascade reactivate meta-jobs and pipelines
+        from slurm_api.background.tasks import cascade_reactivate_meta_jobs
+        meta_reactivated, pipeline_reactivated = cascade_reactivate_meta_jobs(job_hash)
+
+        msg = f"Triggered recomputation (meta-jobs: {meta_reactivated}, pipelines: {pipeline_reactivated})"
+        logger.info(f"🔄 {msg}")
+        return True, msg
+
+    return False, "Failed to update job status"
+
+
 def process_job_output(job_hash: str, slurm_id: str, final_state: str) -> bool:
     """Process job output files and update job status."""
     output_path = f"/tmp/output_{job_hash}.txt"
@@ -1012,6 +1096,7 @@ def is_files_db_available(timeout_seconds: float = 2.0) -> bool:
 
     This is used to prevent the background task from blocking the API
     when files DB is down. Uses a short timeout and caching.
+    Thread-safe with lock to prevent thundering herd on cache expiry.
 
     Args:
         timeout_seconds: Maximum time to wait for connection
@@ -1027,37 +1112,39 @@ def is_files_db_available(timeout_seconds: float = 2.0) -> bool:
     cache_ttl = 30
     now = time.time()
 
-    if (_files_db_available_cache["last_check"] > 0 and
-        now - _files_db_available_cache["last_check"] < cache_ttl):
-        return _files_db_available_cache["available"]
+    with _files_db_lock:
+        # Check cache while holding lock
+        if (_files_db_available_cache["last_check"] > 0 and
+            now - _files_db_available_cache["last_check"] < cache_ttl):
+            return _files_db_available_cache["available"]
 
-    try:
-        # Get files DB connection string from environment
-        files_db_host = os.environ.get("FILES_DB_HOST", "dshpc-imaging-files")
-        files_db_port = int(os.environ.get("FILES_DB_PORT", "27017"))
+        try:
+            # Get files DB connection string from environment
+            files_db_host = os.environ.get("FILES_DB_HOST", "dshpc-imaging-files")
+            files_db_port = int(os.environ.get("FILES_DB_PORT", "27017"))
 
-        # Quick ping with short timeout
-        client = MongoClient(
-            host=files_db_host,
-            port=files_db_port,
-            serverSelectionTimeoutMS=int(timeout_seconds * 1000),
-            connectTimeoutMS=int(timeout_seconds * 1000),
-            socketTimeoutMS=int(timeout_seconds * 1000),
-        )
+            # Quick ping with short timeout
+            client = MongoClient(
+                host=files_db_host,
+                port=files_db_port,
+                serverSelectionTimeoutMS=int(timeout_seconds * 1000),
+                connectTimeoutMS=int(timeout_seconds * 1000),
+                socketTimeoutMS=int(timeout_seconds * 1000),
+            )
 
-        # Ping the server
-        client.admin.command('ping')
-        client.close()
+            # Ping the server
+            client.admin.command('ping')
+            client.close()
 
-        _files_db_available_cache["available"] = True
-        _files_db_available_cache["last_check"] = now
-        return True
+            _files_db_available_cache["available"] = True
+            _files_db_available_cache["last_check"] = now
+            return True
 
-    except (ServerSelectionTimeoutError, ConnectionFailure, Exception) as e:
-        logger.debug(f"Files DB not available: {e}")
-        _files_db_available_cache["available"] = False
-        _files_db_available_cache["last_check"] = now
-        return False
+        except (ServerSelectionTimeoutError, ConnectionFailure, Exception) as e:
+            logger.debug(f"Files DB not available: {e}")
+            _files_db_available_cache["available"] = False
+            _files_db_available_cache["last_check"] = now
+            return False
 
 
 def _save_pending_output(job_hash: str, output: str) -> bool:
