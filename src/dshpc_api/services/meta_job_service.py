@@ -26,7 +26,7 @@ from dshpc_api.services.method_service import check_method_functionality
 from dshpc_api.utils.parameter_utils import sort_parameters
 from dshpc_api.utils.sorting_utils import sort_file_inputs, sort_chain
 from dshpc_api.utils.file_input_resolver import resolve_and_inject_file_inputs
-from dshpc_api.services.job_service import is_method_unavailable_error, is_file_not_found_error
+from dshpc_api.services.job_service import is_method_unavailable_error, is_file_not_found_error, is_retriable_error
 import asyncio
 import logging
 
@@ -307,12 +307,12 @@ async def submit_meta_job(request: MetaJobRequest) -> Tuple[bool, str, Optional[
                     else:
                         # Check for file not found
                         missing_file_hash = is_file_not_found_error(error_msg)
-                        
+
                         if missing_file_hash:
                             # Check if file now exists
                             files_db = await get_files_db()
                             file_doc = await files_db.files.find_one({"file_hash": missing_file_hash})
-                            
+
                             if file_doc and file_doc.get("status") == "completed":
                                 logger.info(f"  ♻️  File {missing_file_hash[:12]}... now available - deleting failed meta-job for retry")
                                 await meta_jobs_db.meta_jobs.delete_one({"meta_job_hash": meta_job_hash})
@@ -320,6 +320,12 @@ async def submit_meta_job(request: MetaJobRequest) -> Tuple[bool, str, Optional[
                             else:
                                 logger.info(f"  ✗ File {missing_file_hash[:12]}... still not available")
                                 return False, f"Meta-job previously failed: {error_msg}", None
+                        elif is_retriable_error(error_msg):
+                            # Retriable errors (OOM, SIGKILL, SIGTERM, service failures)
+                            # Allow retry by deleting the failed meta-job
+                            logger.info(f"  ♻️  Retriable error detected - deleting failed meta-job for retry: {error_msg[:80]}...")
+                            await meta_jobs_db.meta_jobs.delete_one({"meta_job_hash": meta_job_hash})
+                            # Continue to create new meta-job below
                         else:
                             # Not file-related or method-related - fail fast
                             logger.info(f"  ✗ Meta-job previously failed with same configuration")
@@ -935,14 +941,48 @@ async def get_meta_job_info(meta_job_hash: str, auto_requeue: bool = True) -> Op
 
     # AUTO-REQUEUE: If meta-job is not completed, reactivate it for processing
     # This handles failed/cancelled/stalled meta-jobs by giving them another chance
+    # BUT only if the error is retriable (transient infrastructure failure)
     if auto_requeue and current_status != MetaJobStatus.COMPLETED:
         should_requeue = False
         requeue_reason = None
 
         if current_status in [MetaJobStatus.FAILED, MetaJobStatus.CANCELLED, "failed", "cancelled"]:
-            # Failed or cancelled - always requeue
-            should_requeue = True
-            requeue_reason = f"requeued from {current_status} on query"
+            # Check if the error is retriable before requeuing
+            # Non-retriable errors (genuine code failures) should return the error, not requeue
+            from dshpc_api.services.job_service import is_retriable_error
+
+            meta_job_error = meta_job.get("error", "")
+            is_error_retriable = False
+
+            # First check meta-job level error
+            if meta_job_error and is_retriable_error(meta_job_error):
+                is_error_retriable = True
+
+            # Then check the actual underlying jobs - this is the most accurate check
+            if not is_error_retriable:
+                jobs_db = await get_jobs_db()
+                failed_jobs = await jobs_db.jobs.find({
+                    "meta_job_hash": meta_job_hash,
+                    "status": {"$in": ["F", "failed", "CA", "cancelled"]}
+                }).to_list(length=100)
+
+                for job in failed_jobs:
+                    job_error = job.get("error", "")
+                    if job_error and is_retriable_error(job_error):
+                        is_error_retriable = True
+                        break
+
+            # For cancelled status (scancel, etc.), always allow requeue
+            if current_status in [MetaJobStatus.CANCELLED, "cancelled"]:
+                should_requeue = True
+                requeue_reason = f"requeued from {current_status} on query"
+            elif is_error_retriable:
+                should_requeue = True
+                requeue_reason = f"requeued from {current_status} (retriable error) on query"
+            else:
+                # Non-retriable error - don't requeue, return the failed status as-is
+                logger.info(f"⛔ Meta-job {meta_job_hash} failed with non-retriable error, not requeuing: {meta_job_error[:80] if meta_job_error else 'unknown'}...")
+
         elif current_status in [MetaJobStatus.RUNNING, MetaJobStatus.PENDING, "running", "pending"]:
             # Check if stalled (no updates for 10+ minutes)
             updated_at = meta_job.get("updated_at") or meta_job.get("created_at")
@@ -968,10 +1008,9 @@ async def get_meta_job_info(meta_job_hash: str, auto_requeue: bool = True) -> Op
             # Trigger processing in background
             asyncio.create_task(process_meta_job_chain(meta_job_hash))
 
-            # Update local copy for response
-            meta_job["status"] = MetaJobStatus.PENDING
-            meta_job["error"] = None
-            current_status = MetaJobStatus.PENDING
+            # Re-read from DB to get the updated state
+            meta_job = await meta_jobs_db.meta_jobs.find_one({"meta_job_hash": meta_job_hash})
+            current_status = meta_job["status"]
 
     # Convert to MetaJobInfo model
     chain = [MetaJobStepInfo(**step) for step in meta_job["chain"]]

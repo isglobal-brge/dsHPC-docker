@@ -376,15 +376,29 @@ async def create_pipeline(pipeline_data: Dict[str, Any]) -> Tuple[str, str]:
                             logger.info(f"  ✗ File {missing_file_hash[:12]}... still not available")
                             return pipeline_hash, f"Pipeline previously failed: {error_msg}"
                     else:
-                        # Not file or method related - check if it's a validation error that might be fixed
-                        # If the error is "Unknown error" or a validation error, allow retry
+                        # Not file or method related - check if it's a retriable error
+                        from dshpc_api.services.job_service import is_retriable_error
                         error_msg = existing_pipeline.get("error", "Unknown error")
-                        if "validation error" in error_msg.lower() or "Unknown error" in error_msg:
+
+                        # Check if pipeline error or any node error is retriable
+                        is_error_retriable = is_retriable_error(error_msg)
+                        if not is_error_retriable:
+                            for node_id, node_data in existing_pipeline.get("nodes", {}).items():
+                                node_error = node_data.get("error", "")
+                                if is_retriable_error(node_error):
+                                    is_error_retriable = True
+                                    break
+
+                        if is_error_retriable:
+                            logger.info(f"  ♻️  Pipeline failed with retriable error - deleting for retry: {error_msg[:80]}...")
+                            await db.pipelines.delete_one({"pipeline_hash": pipeline_hash})
+                            # Continue to create new pipeline below
+                        elif "validation error" in error_msg.lower() or "Unknown error" in error_msg:
                             logger.info(f"  ♻️  Pipeline failed with validation/unknown error - deleting for retry")
                             await db.pipelines.delete_one({"pipeline_hash": pipeline_hash})
                             # Continue to create new pipeline below
                         else:
-                            # Not file or method related - fail fast
+                            # Not file or method related and not retriable - fail fast
                             logger.info(f"✗ Pipeline previously failed with same configuration (not file or method related)")
                             raise ValueError(f"Pipeline previously failed: {error_msg}")
             else:
@@ -455,14 +469,65 @@ async def get_pipeline_status(pipeline_hash: str, auto_requeue: bool = True) -> 
 
     # AUTO-REQUEUE: If pipeline is not completed, reactivate it for processing
     # This handles failed/cancelled/stalled pipelines by giving them another chance
+    # BUT only if the error is retriable (transient infrastructure failure)
     if auto_requeue and current_status != PipelineStatus.COMPLETED.value:
         should_requeue = False
         requeue_reason = None
 
         if current_status in [PipelineStatus.FAILED.value, PipelineStatus.CANCELLED.value, "failed", "cancelled"]:
-            # Failed or cancelled - always requeue
-            should_requeue = True
-            requeue_reason = f"requeued from {current_status} on query"
+            # Check if the error is retriable before requeuing
+            # Non-retriable errors (genuine code failures) should return the error, not requeue
+            from dshpc_api.services.job_service import is_retriable_error
+
+            pipeline_error = pipeline.get("error", "")
+            is_error_retriable = False
+
+            # First check pipeline-level error
+            if pipeline_error and is_retriable_error(pipeline_error):
+                is_error_retriable = True
+
+            # Then check node errors
+            if not is_error_retriable:
+                for node_id, node_data in pipeline.get("nodes", {}).items():
+                    node_error = node_data.get("error", "")
+                    if node_error and is_retriable_error(node_error):
+                        is_error_retriable = True
+                        break
+
+            # Finally, check the actual underlying jobs for failed nodes
+            # This is the most accurate check since jobs have the original error
+            if not is_error_retriable:
+                for node_id, node_data in pipeline.get("nodes", {}).items():
+                    if node_data.get("status") in [PipelineNodeStatus.FAILED.value, "failed"]:
+                        meta_job_hash = node_data.get("meta_job_hash")
+                        if meta_job_hash:
+                            # Check jobs in this meta-job
+                            jobs_db = await get_jobs_db()
+                            failed_jobs = await jobs_db.jobs.find({
+                                "meta_job_hash": meta_job_hash,
+                                "status": {"$in": ["F", "failed", "CA", "cancelled"]}
+                            }).to_list(length=100)
+
+                            for job in failed_jobs:
+                                job_error = job.get("error", "")
+                                if job_error and is_retriable_error(job_error):
+                                    is_error_retriable = True
+                                    break
+
+                            if is_error_retriable:
+                                break
+
+            # For cancelled status (scancel, etc.), always allow requeue
+            if current_status in [PipelineStatus.CANCELLED.value, "cancelled"]:
+                should_requeue = True
+                requeue_reason = f"requeued from {current_status} on query"
+            elif is_error_retriable:
+                should_requeue = True
+                requeue_reason = f"requeued from {current_status} (retriable error) on query"
+            else:
+                # Non-retriable error - don't requeue, return the failed status as-is
+                logger.info(f"⛔ Pipeline {pipeline_hash} failed with non-retriable error, not requeuing: {pipeline_error[:80] if pipeline_error else 'unknown'}...")
+
         elif current_status in [PipelineStatus.RUNNING.value, PipelineStatus.PENDING.value, "running", "pending"]:
             # Check if stalled (no updates for 10+ minutes)
             updated_at = pipeline.get("updated_at") or pipeline.get("started_at") or pipeline.get("created_at")
@@ -501,10 +566,9 @@ async def get_pipeline_status(pipeline_hash: str, auto_requeue: bool = True) -> 
             from dshpc_api.background.pipeline_orchestrator import orchestrate_pipelines
             asyncio.create_task(orchestrate_pipelines())
 
-            # Update local copy for response
-            pipeline["status"] = PipelineStatus.PENDING.value
-            pipeline["error"] = None
-            current_status = PipelineStatus.PENDING.value
+            # Re-read pipeline from DB to get the updated state
+            pipeline = await db.pipelines.find_one({"pipeline_hash": pipeline_hash})
+            current_status = pipeline["status"]
 
     # Calculate stats
     nodes = pipeline["nodes"]

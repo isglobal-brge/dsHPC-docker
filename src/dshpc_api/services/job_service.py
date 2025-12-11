@@ -74,16 +74,16 @@ def is_method_unavailable_error(error_message: str) -> Optional[str]:
 def is_file_not_found_error(error_message: str) -> Optional[str]:
     """
     Check if error is due to file not found.
-    
+
     Args:
         error_message: Error message to check
-        
+
     Returns:
         File hash if error is file-not-found, None otherwise
     """
     if not error_message:
         return None
-    
+
     # Pattern: "File with hash 'X' not found"
     # Pattern: "File 'name' with hash X not found"
     # Pattern: "Initial file with hash X not found"
@@ -91,8 +91,63 @@ def is_file_not_found_error(error_message: str) -> Optional[str]:
     match = re.search(r"[Ff]ile.*hash['\s]+([a-f0-9]{64})['\s]+not found", error_message)
     if match:
         return match.group(1)
-    
+
     return None
+
+
+def is_retriable_error(error_message: str) -> bool:
+    """
+    Check if error is retriable (transient infrastructure failure, not job logic error).
+
+    Retriable errors include:
+    - OOM kills (exit code 137, SIGKILL)
+    - SIGTERM (exit code 143)
+    - Service unavailability / connection errors
+    - Timeouts and transient network issues
+
+    NOT retriable:
+    - SIGSEGV (exit code 139) - indicates code bug
+    - Assertion errors, value errors - logic errors
+    - File format errors - data issues
+
+    Args:
+        error_message: Error message to check
+
+    Returns:
+        True if error is retriable, False otherwise
+    """
+    if not error_message:
+        return False
+
+    error_lower = error_message.lower()
+
+    # Retriable patterns - infrastructure/transient failures
+    retriable_patterns = [
+        # OOM and signal kills (except SIGSEGV)
+        "exit code: 137", "exit code 137", "code: 137",
+        "sigkill", "oom", "out of memory", "killed",
+        "exit code: 143", "exit code 143", "code: 143",
+        "sigterm",
+        # Service/network failures
+        "service unavailable", "connection refused", "connection reset",
+        "internal server error", "timeout", "timed out",
+        "name or service not known", "autoreconnect",
+        "serverselectiontimeouterror",
+        # Slurm infrastructure issues
+        "slurm", "slurmctld", "squeue", "sbatch",
+        "memory specification can not be satisfied",
+        # Job disappeared (service restart)
+        "disappeared from slurm", "no exit code",
+        "likely service restart", "failed without error details",
+        # Retriable flag
+        "will retry", "transient error", "retriable",
+    ]
+
+    for pattern in retriable_patterns:
+        if pattern in error_lower:
+            return True
+
+    return False
 
 
 def compute_job_hash(
