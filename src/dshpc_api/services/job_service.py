@@ -105,10 +105,12 @@ def is_retriable_error(error_message: str) -> bool:
     - Service unavailability / connection errors
     - Timeouts and transient network issues
 
-    NOT retriable:
+    NOT retriable (will NOT be auto-retried):
+    - Exit code 75 - explicit non-retriable error set by developer
     - SIGSEGV (exit code 139) - indicates code bug
     - Assertion errors, value errors - logic errors
     - File format errors - data issues
+    - Any error not matching retriable patterns
 
     Args:
         error_message: Error message to check
