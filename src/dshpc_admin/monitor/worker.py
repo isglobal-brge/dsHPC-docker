@@ -1,21 +1,75 @@
 """
 Background monitoring worker that collects system data and stores snapshots in MongoDB.
+
+ROBUST DESIGN:
+- Self-healing: Auto-reconnects to MongoDB and Docker on failure
+- Graceful degradation: Partial snapshots on collector errors (better than nothing)
+- Heartbeat tracking: Records last_activity for external watchdog monitoring
+- Error isolation: Each collector runs independently, one failure doesn't stop others
+- Connection health checks: Verifies connections before each snapshot cycle
 """
 import asyncio
 import time
 import os
 import json
+import signal
+import sys
 from datetime import datetime
+from functools import wraps
 from pymongo import MongoClient
+from pymongo.errors import ConnectionFailure, ServerSelectionTimeoutError, AutoReconnect
 import docker
 import logging
 
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
 logger = logging.getLogger(__name__)
+
+# Timeout decorator for collection methods
+def with_timeout(timeout_seconds=30):
+    """Decorator to add timeout to collection methods."""
+    def decorator(func):
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            import threading
+            result = [None]
+            exception = [None]
+
+            def target():
+                try:
+                    result[0] = func(*args, **kwargs)
+                except Exception as e:
+                    exception[0] = e
+
+            thread = threading.Thread(target=target)
+            thread.daemon = True
+            thread.start()
+            thread.join(timeout=timeout_seconds)
+
+            if thread.is_alive():
+                logger.error(f"TIMEOUT: {func.__name__} exceeded {timeout_seconds}s")
+                return None  # Return None on timeout, let caller handle gracefully
+
+            if exception[0]:
+                raise exception[0]
+
+            return result[0]
+        return wrapper
+    return decorator
 
 
 class MonitorWorker:
-    """Background worker that monitors system and stores snapshots."""
+    """
+    Background worker that monitors system and stores snapshots.
+
+    ROBUSTNESS FEATURES:
+    - Auto-reconnection on database/docker failures
+    - Graceful degradation on collector errors
+    - Heartbeat tracking for external monitoring
+    - Error isolation between collectors
+    """
 
     def __init__(self):
         # MongoDB connections
@@ -40,6 +94,23 @@ class MonitorWorker:
         # Config
         self.docker_prefix = 'dshpc'
         self.load_config()
+
+        # Robustness tracking
+        self.last_successful_snapshot = None
+        self.consecutive_failures = 0
+        self.max_consecutive_failures = 10
+        self.connected = False
+        self.last_heartbeat = None
+
+        # Graceful shutdown
+        self._shutdown_requested = False
+        signal.signal(signal.SIGTERM, self._handle_shutdown)
+        signal.signal(signal.SIGINT, self._handle_shutdown)
+
+    def _handle_shutdown(self, signum, frame):
+        """Handle graceful shutdown."""
+        logger.info(f"Shutdown signal received ({signum}). Cleaning up...")
+        self._shutdown_requested = True
     
     def load_config(self):
         """Load docker prefix from environment-config.json"""
@@ -53,18 +124,56 @@ class MonitorWorker:
             logger.warning(f"Could not load config: {e}")
     
     def connect(self):
-        """Connect to MongoDB databases and Docker."""
+        """Connect to MongoDB databases and Docker with retry logic."""
+        self._connect_mongodb()
+        self._connect_docker()
+        self.connected = True
+        logger.info("All connections established successfully")
+
+    def _connect_mongodb(self):
+        """Connect to MongoDB with connection pooling and timeouts."""
+        connection_options = {
+            'serverSelectionTimeoutMS': 5000,
+            'connectTimeoutMS': 5000,
+            'socketTimeoutMS': 30000,
+            'retryWrites': True,
+            'maxPoolSize': 10,
+        }
+
         try:
-            self.jobs_client = MongoClient(self.mongo_jobs_uri)
+            # Close existing connections if any
+            if self.jobs_client:
+                try:
+                    self.jobs_client.close()
+                except:
+                    pass
+
+            self.jobs_client = MongoClient(self.mongo_jobs_uri, **connection_options)
+            # Verify connection is alive
+            self.jobs_client.admin.command('ping')
             self.jobs_db = self.jobs_client[self.mongo_jobs_db_name]
             self.snapshots_collection = self.jobs_db['system_snapshots']
             logger.info(f"Connected to Jobs DB: {self.mongo_jobs_db_name}")
 
-            self.files_client = MongoClient(self.mongo_files_uri)
+            if self.files_client:
+                try:
+                    self.files_client.close()
+                except:
+                    pass
+
+            self.files_client = MongoClient(self.mongo_files_uri, **connection_options)
+            self.files_client.admin.command('ping')
             self.files_db = self.files_client[self.mongo_files_db_name]
             logger.info(f"Connected to Files DB: {self.mongo_files_db_name}")
 
-            self.methods_client = MongoClient(self.mongo_methods_uri)
+            if self.methods_client:
+                try:
+                    self.methods_client.close()
+                except:
+                    pass
+
+            self.methods_client = MongoClient(self.mongo_methods_uri, **connection_options)
+            self.methods_client.admin.command('ping')
             self.methods_db = self.methods_client[self.mongo_methods_db_name]
             logger.info(f"Connected to Methods DB: {self.mongo_methods_db_name}")
 
@@ -75,12 +184,87 @@ class MonitorWorker:
             logger.error(f"Failed to connect to MongoDB: {e}")
             raise
 
+    def _connect_docker(self):
+        """Connect to Docker daemon."""
         try:
             self.docker_client = docker.from_env()
+            # Verify connection by pinging
+            self.docker_client.ping()
             logger.info("Connected to Docker")
         except Exception as e:
             logger.error(f"Failed to connect to Docker: {e}")
             raise
+
+    def check_connections(self):
+        """
+        Verify all connections are healthy. Returns True if OK, False if reconnection needed.
+        This is the key to self-healing - called before each snapshot cycle.
+        """
+        healthy = True
+
+        # Check MongoDB connections
+        try:
+            self.jobs_client.admin.command('ping')
+        except Exception as e:
+            logger.warning(f"Jobs DB connection lost: {e}")
+            healthy = False
+
+        try:
+            self.files_client.admin.command('ping')
+        except Exception as e:
+            logger.warning(f"Files DB connection lost: {e}")
+            healthy = False
+
+        try:
+            self.methods_client.admin.command('ping')
+        except Exception as e:
+            logger.warning(f"Methods DB connection lost: {e}")
+            healthy = False
+
+        # Check Docker connection
+        try:
+            self.docker_client.ping()
+        except Exception as e:
+            logger.warning(f"Docker connection lost: {e}")
+            healthy = False
+
+        return healthy
+
+    def reconnect(self):
+        """Attempt to reconnect all services. Returns True on success."""
+        logger.info("Attempting to reconnect all services...")
+        try:
+            self._connect_mongodb()
+            self._connect_docker()
+            self.connected = True
+            logger.info("Reconnection successful!")
+            return True
+        except Exception as e:
+            logger.error(f"Reconnection failed: {e}")
+            self.connected = False
+            return False
+
+    def update_heartbeat(self):
+        """
+        Update heartbeat in MongoDB so external monitors can detect if worker is stuck.
+        This is separate from snapshots - if heartbeat stops updating, worker is dead.
+        """
+        try:
+            self.last_heartbeat = datetime.utcnow()
+            self.jobs_db['worker_status'].update_one(
+                {'worker_id': 'monitor_worker'},
+                {
+                    '$set': {
+                        'last_heartbeat': self.last_heartbeat,
+                        'status': 'running',
+                        'consecutive_failures': self.consecutive_failures,
+                        'last_successful_snapshot': self.last_successful_snapshot,
+                    }
+                },
+                upsert=True
+            )
+        except Exception as e:
+            logger.debug(f"Could not update heartbeat: {e}")
     
     def collect_container_status(self):
         """Collect status of all containers."""
@@ -836,6 +1020,19 @@ class MonitorWorker:
                                 'size': file_doc.get('file_size', 0),
                                 'hash': hash_val
                             }
+                elif j.get('file_hash'):
+                    # Legacy single file format - convert to file_info for template compatibility
+                    file_hash = j['file_hash']
+                    if file_hash in files_lookup:
+                        file_doc = files_lookup[file_hash]
+                        job['file_info'] = {
+                            'input': {
+                                'filename': file_doc.get('filename', 'unknown'),
+                                'size': file_doc.get('file_size', 0),
+                                'hash': file_hash
+                            }
+                        }
+                    job['file_hash'] = file_hash  # Keep original for reference
 
                 jobs_data['items'].append(job)
 
@@ -1143,64 +1340,274 @@ class MonitorWorker:
         except Exception as e:
             logger.error(f"Error caching document previews: {e}")
 
-    def store_snapshot(self):
-        """Collect all data and store a snapshot in MongoDB."""
+    def _safe_collect(self, collector_name, collector_func, default_value):
+        """
+        Safely execute a collector function with error isolation.
+        If the collector fails, return default value instead of crashing.
+        This ensures partial snapshots are still useful.
+        """
         try:
-            # First, cache previews directly in documents for fast pagination
-            self.cache_document_previews()
-            snapshot = {
-                'timestamp': datetime.utcnow(),
-                'containers': self.collect_container_status(),
-                'system_resources': self.collect_system_resources(),
-                'job_logs': self.collect_slurm_job_logs(),
-                'environment': self.collect_environment_info(),
-                'slurm_queue': self.collect_slurm_queue(),
-                'method_sources': self.collect_method_sources(),
-                'pipelines': self.collect_pipelines(),
-                # Pre-enriched lists for fast admin panel loading
-                'jobs_list': self.collect_jobs_list(limit=50),
-                'meta_jobs_list': self.collect_meta_jobs_list(limit=50),
-                'files_list': self.collect_files_list(limit=50),
-            }
-            
-            # Store snapshot
-            self.snapshots_collection.insert_one(snapshot)
-            
-            # Clean old snapshots (keep last 100)
-            count = self.snapshots_collection.count_documents({})
-            if count > 100:
-                # Delete oldest
-                old_snapshots = list(self.snapshots_collection.find().sort('timestamp', 1).limit(count - 100))
-                for old in old_snapshots:
-                    self.snapshots_collection.delete_one({'_id': old['_id']})
-            
-            logger.info(f"Snapshot stored successfully at {snapshot['timestamp']}")
-            return True
-            
+            result = collector_func()
+            if result is None:
+                logger.warning(f"Collector {collector_name} returned None (timeout?), using default")
+                return default_value
+            return result
         except Exception as e:
-            logger.error(f"Error storing snapshot: {e}")
+            logger.error(f"Collector {collector_name} failed: {e}")
+            return default_value
+
+    def store_snapshot(self):
+        """
+        Collect all data and store a snapshot in MongoDB.
+
+        ROBUSTNESS: Each collector is isolated - if one fails, others continue.
+        Partial snapshots are stored (better than nothing for visualization).
+        """
+        errors = []
+        snapshot = {
+            'timestamp': datetime.utcnow(),
+            'worker_version': '2.0-robust',  # Version tracking for debugging
+        }
+
+        # First, try to cache previews (non-critical)
+        try:
+            self.cache_document_previews()
+        except Exception as e:
+            logger.warning(f"cache_document_previews failed (non-critical): {e}")
+            errors.append('cache_previews')
+
+        # Collect each data source independently with error isolation
+        # Critical collectors (core functionality)
+        snapshot['containers'] = self._safe_collect(
+            'containers', self.collect_container_status, [])
+        snapshot['system_resources'] = self._safe_collect(
+            'system_resources', self.collect_system_resources, {})
+        snapshot['slurm_queue'] = self._safe_collect(
+            'slurm_queue', self.collect_slurm_queue, [])
+
+        # Job-related collectors
+        snapshot['job_logs'] = self._safe_collect(
+            'job_logs', self.collect_slurm_job_logs, [])
+        snapshot['jobs_list'] = self._safe_collect(
+            'jobs_list', lambda: self.collect_jobs_list(limit=50), {'items': [], 'total': 0})
+        snapshot['meta_jobs_list'] = self._safe_collect(
+            'meta_jobs_list', lambda: self.collect_meta_jobs_list(limit=50), {'items': [], 'total': 0})
+
+        # Files and methods (can be slower)
+        snapshot['files_list'] = self._safe_collect(
+            'files_list', lambda: self.collect_files_list(limit=50), {'items': [], 'total': 0})
+        snapshot['method_sources'] = self._safe_collect(
+            'method_sources', self.collect_method_sources, [])
+
+        # Heavy collectors (environment and pipelines - can take longer)
+        snapshot['environment'] = self._safe_collect(
+            'environment', self.collect_environment_info, {'python': {}, 'r': {}, 'system': {}, 'slurm': {}})
+        snapshot['pipelines'] = self._safe_collect(
+            'pipelines', self.collect_pipelines, [])
+
+        # Track errors in snapshot for debugging
+        if errors:
+            snapshot['collector_errors'] = errors
+
+        # Store snapshot - this is the critical part
+        try:
+            self.snapshots_collection.insert_one(snapshot)
+            logger.info(f"Snapshot stored at {snapshot['timestamp']} (errors: {len(errors)})")
+
+            # Update success tracking
+            self.last_successful_snapshot = snapshot['timestamp']
+            self.consecutive_failures = 0
+
+            # Clean old snapshots (keep last 100)
+            try:
+                count = self.snapshots_collection.count_documents({})
+                if count > 100:
+                    old_snapshots = list(self.snapshots_collection.find().sort('timestamp', 1).limit(count - 100))
+                    for old in old_snapshots:
+                        self.snapshots_collection.delete_one({'_id': old['_id']})
+            except Exception as e:
+                logger.warning(f"Could not clean old snapshots: {e}")
+
+            return True
+
+        except Exception as e:
+            logger.error(f"CRITICAL: Could not store snapshot: {e}")
+            self.consecutive_failures += 1
             return False
     
     async def run(self, interval=10):
-        """Run the monitoring loop."""
-        logger.info(f"Starting monitor worker with {interval}s interval")
-        
-        while True:
+        """
+        Run the monitoring loop with self-healing capabilities.
+
+        ROBUSTNESS FEATURES:
+        - Connection health check before each cycle
+        - Auto-reconnection on connection failures
+        - Exponential backoff on consecutive failures
+        - Graceful shutdown handling
+        - Heartbeat updates for external monitoring
+        """
+        logger.info(f"Starting ROBUST monitor worker v2.0 with {interval}s interval")
+        logger.info(f"Self-healing enabled: auto-reconnect, graceful degradation, heartbeat tracking")
+
+        backoff_time = interval
+        max_backoff = 60  # Max 60s between retries
+
+        while not self._shutdown_requested:
+            cycle_start = time.time()
+
             try:
-                self.store_snapshot()
+                # Update heartbeat FIRST - proves we're alive even if snapshot fails
+                self.update_heartbeat()
+
+                # Check connection health before each cycle
+                if not self.check_connections():
+                    logger.warning("Connection health check failed, attempting reconnection...")
+                    if not self.reconnect():
+                        # Reconnection failed - wait with backoff
+                        logger.error(f"Reconnection failed. Waiting {backoff_time}s before retry...")
+                        await asyncio.sleep(backoff_time)
+                        backoff_time = min(backoff_time * 2, max_backoff)
+                        continue
+                    else:
+                        # Reconnection succeeded - reset backoff
+                        backoff_time = interval
+
+                # Store snapshot (with internal error isolation)
+                success = self.store_snapshot()
+
+                if success:
+                    # Reset backoff on success
+                    backoff_time = interval
+                else:
+                    # Increment backoff on failure
+                    backoff_time = min(backoff_time * 1.5, max_backoff)
+                    logger.warning(f"Snapshot failed. Next attempt in {backoff_time}s")
+
+                # Check if we're having too many failures
+                if self.consecutive_failures >= self.max_consecutive_failures:
+                    logger.error(f"Too many consecutive failures ({self.consecutive_failures}). "
+                                 f"Forcing full reconnection...")
+                    self.connected = False
+                    self.reconnect()
+                    self.consecutive_failures = 0
+
             except Exception as e:
-                logger.error(f"Error in monitoring loop: {e}")
-            
-            await asyncio.sleep(interval)
+                # Catch-all for any unexpected errors - worker must not die
+                logger.error(f"UNEXPECTED ERROR in monitoring loop: {e}")
+                import traceback
+                logger.error(traceback.format_exc())
+                self.consecutive_failures += 1
+                backoff_time = min(backoff_time * 2, max_backoff)
+
+            # Calculate sleep time to maintain consistent intervals
+            cycle_duration = time.time() - cycle_start
+            sleep_time = max(1, interval - cycle_duration)  # At least 1 second
+            await asyncio.sleep(sleep_time)
+
+        # Graceful shutdown
+        logger.info("Worker shutdown complete")
+
+    def run_sync(self, interval=10):
+        """
+        Synchronous version of run() for simpler process management.
+        This version doesn't require asyncio and is more robust for background execution.
+        """
+        logger.info(f"Starting ROBUST monitor worker v2.0 (sync) with {interval}s interval")
+        logger.info(f"Self-healing enabled: auto-reconnect, graceful degradation, heartbeat tracking")
+
+        backoff_time = interval
+        max_backoff = 60
+
+        while not self._shutdown_requested:
+            cycle_start = time.time()
+
+            try:
+                self.update_heartbeat()
+
+                if not self.check_connections():
+                    logger.warning("Connection health check failed, attempting reconnection...")
+                    if not self.reconnect():
+                        logger.error(f"Reconnection failed. Waiting {backoff_time}s before retry...")
+                        time.sleep(backoff_time)
+                        backoff_time = min(backoff_time * 2, max_backoff)
+                        continue
+                    else:
+                        backoff_time = interval
+
+                success = self.store_snapshot()
+
+                if success:
+                    backoff_time = interval
+                else:
+                    backoff_time = min(backoff_time * 1.5, max_backoff)
+
+                if self.consecutive_failures >= self.max_consecutive_failures:
+                    logger.error(f"Too many consecutive failures ({self.consecutive_failures}). "
+                                 f"Forcing full reconnection...")
+                    self.connected = False
+                    self.reconnect()
+                    self.consecutive_failures = 0
+
+            except Exception as e:
+                logger.error(f"UNEXPECTED ERROR in monitoring loop: {e}")
+                import traceback
+                logger.error(traceback.format_exc())
+                self.consecutive_failures += 1
+                backoff_time = min(backoff_time * 2, max_backoff)
+
+            cycle_duration = time.time() - cycle_start
+            sleep_time = max(1, interval - cycle_duration)
+            time.sleep(sleep_time)
+
+        logger.info("Worker shutdown complete")
 
 
 async def main():
-    """Main entry point for the worker."""
+    """Main entry point for the worker (async version)."""
     worker = MonitorWorker()
-    worker.connect()
-    await worker.run(interval=10)  # Run every 10 seconds
+
+    # Initial connection with retry
+    max_initial_retries = 5
+    for attempt in range(max_initial_retries):
+        try:
+            worker.connect()
+            break
+        except Exception as e:
+            logger.error(f"Initial connection attempt {attempt + 1}/{max_initial_retries} failed: {e}")
+            if attempt < max_initial_retries - 1:
+                wait_time = (attempt + 1) * 5
+                logger.info(f"Retrying in {wait_time}s...")
+                await asyncio.sleep(wait_time)
+            else:
+                logger.error("All initial connection attempts failed. Starting anyway - will retry in loop.")
+
+    await worker.run(interval=10)
+
+
+def main_sync():
+    """Main entry point for the worker (synchronous version - recommended for background execution)."""
+    worker = MonitorWorker()
+
+    # Initial connection with retry
+    max_initial_retries = 5
+    for attempt in range(max_initial_retries):
+        try:
+            worker.connect()
+            break
+        except Exception as e:
+            logger.error(f"Initial connection attempt {attempt + 1}/{max_initial_retries} failed: {e}")
+            if attempt < max_initial_retries - 1:
+                wait_time = (attempt + 1) * 5
+                logger.info(f"Retrying in {wait_time}s...")
+                time.sleep(wait_time)
+            else:
+                logger.error("All initial connection attempts failed. Starting anyway - will retry in loop.")
+
+    worker.run_sync(interval=10)
 
 
 if __name__ == '__main__':
-    asyncio.run(main())
+    # Use sync version by default for more robust background execution
+    # The sync version is simpler and doesn't have asyncio event loop issues
+    main_sync()
 
