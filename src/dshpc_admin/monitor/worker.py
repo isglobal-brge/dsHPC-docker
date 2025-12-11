@@ -412,15 +412,19 @@ class MonitorWorker:
                                 if file_doc:
                                     slurm_job['input_filename'] = file_doc.get('filename')
                                     slurm_job['input_size'] = file_doc.get('file_size')
-                            elif job_doc.get('file_inputs'):
+                            elif job_doc.get('file_inputs') and isinstance(job_doc.get('file_inputs'), dict):
                                 slurm_job['file_inputs'] = job_doc['file_inputs']
                                 slurm_job['file_info'] = {}
                                 for name, hash_val in job_doc['file_inputs'].items():
+                                    # Skip None or empty file hashes
+                                    if not hash_val or not isinstance(hash_val, str):
+                                        continue
                                     file_doc = files_client.files.find_one({'file_hash': hash_val})
                                     if file_doc:
                                         slurm_job['file_info'][name] = {
                                             'filename': file_doc.get('filename'),
-                                            'size': file_doc.get('file_size')
+                                            'size': file_doc.get('file_size'),
+                                            'hash': hash_val
                                         }
         except Exception as e:
             logger.error(f"Error collecting Slurm queue: {e}")
@@ -556,11 +560,14 @@ class MonitorWorker:
                                 
                                 # Enrich initial input files with content previews
                                 initial_file_inputs = meta_job.get('initial_file_inputs', {})
-                                if initial_file_inputs:
+                                if initial_file_inputs and isinstance(initial_file_inputs, dict):
                                     initial_file_info = {}
                                     for name, file_hash in initial_file_inputs.items():
+                                        # Skip None or empty file hashes
+                                        if not file_hash or not isinstance(file_hash, str):
+                                            continue
                                         try:
-                                            file_doc = self.db.files.find_one({'file_hash': file_hash})
+                                            file_doc = self.files_db.files.find_one({'file_hash': file_hash})
                                             if file_doc:
                                                 import base64
                                                 file_info = {
@@ -609,16 +616,21 @@ class MonitorWorker:
                                                     logger.debug(f"Could not load GridFS output for {job_hash}: {e}")
                                             
                                             # Truncate very long outputs that are directly in the document
-                                            if job.get('output') and len(job['output']) > 10240:
-                                                job['output'] = job['output'][:10240]
+                                            output = job.get('output')
+                                            if output and isinstance(output, str) and len(output) > 10240:
+                                                job['output'] = output[:10240]
                                                 job['output_truncated'] = True
                                             
                                             # Load file_info for each file input (needed for extraction path metadata)
-                                            if job.get('file_inputs'):
+                                            file_inputs = job.get('file_inputs')
+                                            if file_inputs and isinstance(file_inputs, dict):
                                                 job['file_info'] = {}
-                                                for input_name, file_hash in job['file_inputs'].items():
+                                                for input_name, file_hash in file_inputs.items():
+                                                    # Skip None or empty file hashes
+                                                    if not file_hash or not isinstance(file_hash, str):
+                                                        continue
                                                     try:
-                                                        file_doc = self.db.files.find_one({'file_hash': file_hash})
+                                                        file_doc = self.files_db.files.find_one({'file_hash': file_hash})
                                                         if file_doc:
                                                             file_info = {
                                                                 'filename': file_doc.get('filename', 'unknown'),
@@ -635,8 +647,10 @@ class MonitorWorker:
                                             step['job_data'] = job
                                             
                                             # Debug logging to see what we have
-                                            has_output = 'output' in job and job['output']
-                                            logger.debug(f"Job {job_hash}: status={job.get('status')}, has_output={has_output}, output_length={len(job.get('output', ''))}")
+                                            output_val = job.get('output')
+                                            has_output = output_val is not None and bool(output_val)
+                                            output_length = len(output_val) if output_val and isinstance(output_val, str) else 0
+                                            logger.debug(f"Job {job_hash}: status={job.get('status')}, has_output={has_output}, output_length={output_length}")
                                 
                                 # Add enriched meta_job_info to node
                                 node_data['meta_job_info'] = meta_job
@@ -672,8 +686,35 @@ class MonitorWorker:
             # Get total count
             jobs_data['total'] = jobs_collection.count_documents({})
 
-            # Get jobs sorted by created_at desc
-            jobs = list(jobs_collection.find().sort('created_at', -1).limit(limit))
+            # Get jobs with priority ordering: RUNNING first, then PENDING, then by date
+            # Use aggregation pipeline for custom sort order
+            status_priority = {
+                'R': 0,    # Running - highest priority
+                'PD': 1,   # Pending
+                'CG': 2,   # Completing
+                'CF': 3,   # Configuring
+            }
+
+            # First get running and pending jobs (they should always appear)
+            active_jobs = list(jobs_collection.find(
+                {'status': {'$in': ['R', 'PD', 'CG', 'CF']}}
+            ).sort('created_at', -1))
+
+            # Then get remaining jobs by date (excluding active ones)
+            remaining_limit = max(0, limit - len(active_jobs))
+            other_jobs = []
+            if remaining_limit > 0:
+                other_jobs = list(jobs_collection.find(
+                    {'status': {'$nin': ['R', 'PD', 'CG', 'CF']}}
+                ).sort('created_at', -1).limit(remaining_limit))
+
+            # Combine: sort active jobs by status priority, then by date
+            def sort_key(j):
+                return (status_priority.get(j.get('status'), 99),
+                        -(j.get('created_at') or datetime.min).timestamp())
+
+            active_jobs.sort(key=sort_key)
+            jobs = active_jobs + other_jobs
 
             # Batch load methods and files
             function_hashes = set()
@@ -710,15 +751,26 @@ class MonitorWorker:
                     'slurm_id': j.get('slurm_id'),
                     'created_at': j.get('created_at'),
                     'completed_at': j.get('completed_at'),
-                    'has_output': bool(j.get('output') or j.get('output_gridfs_id')),
-                    'has_error': bool(j.get('error') or j.get('error_gridfs_id')),
+                    'has_output': bool(j.get('output') or j.get('output_gridfs_id') or j.get('output_preview')),
+                    'has_error': bool(j.get('error') or j.get('error_gridfs_id') or j.get('error_preview')),
                     'function_hash': j.get('function_hash'),
                     'file_inputs': j.get('file_inputs'),
+                    # Include params for pending jobs display
+                    'params': j.get('params'),
                 }
 
-                # Pre-load output preview
-                output_content = j.get('output')
-                if j.get('output_gridfs_id') and not output_content:
+                # Pre-load output preview - prioritize cached preview in document
+                if j.get('output_preview'):
+                    # Use pre-cached preview (set by cache_document_previews)
+                    job['output'] = j['output_preview']
+                    job['output_truncated'] = j.get('output_preview_truncated', True)
+                elif j.get('output') and not j.get('output_gridfs_id'):
+                    # Use inline output (small, in document)
+                    output_content = j['output']
+                    job['output'] = output_content[:OUTPUT_PREVIEW_SIZE]
+                    job['output_truncated'] = len(output_content) > OUTPUT_PREVIEW_SIZE
+                elif j.get('output_gridfs_id'):
+                    # Read from GridFS (fallback if not yet cached)
                     try:
                         grid_id = j['output_gridfs_id']
                         if isinstance(grid_id, str):
@@ -726,17 +778,21 @@ class MonitorWorker:
                         grid_out = output_fs.get(grid_id)
                         output_content = grid_out.read(OUTPUT_PREVIEW_SIZE * 2).decode('utf-8', errors='replace')
                         grid_out.close()
+                        job['output'] = output_content[:OUTPUT_PREVIEW_SIZE]
+                        job['output_truncated'] = len(output_content) > OUTPUT_PREVIEW_SIZE
                         job['output_storage'] = 'gridfs'
                     except Exception as e:
                         logger.debug(f"Could not load GridFS output: {e}")
 
-                if output_content:
-                    job['output'] = output_content[:OUTPUT_PREVIEW_SIZE]
-                    job['output_truncated'] = len(output_content) > OUTPUT_PREVIEW_SIZE
-
-                # Pre-load error preview
-                error_content = j.get('error')
-                if j.get('error_gridfs_id') and not error_content:
+                # Pre-load error preview - prioritize cached preview in document
+                if j.get('error_preview'):
+                    job['error'] = j['error_preview']
+                    job['error_truncated'] = j.get('error_preview_truncated', True)
+                elif j.get('error') and not j.get('error_gridfs_id'):
+                    error_content = j['error']
+                    job['error'] = error_content[:OUTPUT_PREVIEW_SIZE]
+                    job['error_truncated'] = len(error_content) > OUTPUT_PREVIEW_SIZE
+                elif j.get('error_gridfs_id'):
                     try:
                         grid_id = j['error_gridfs_id']
                         if isinstance(grid_id, str):
@@ -744,12 +800,10 @@ class MonitorWorker:
                         grid_out = error_fs.get(grid_id)
                         error_content = grid_out.read(OUTPUT_PREVIEW_SIZE * 2).decode('utf-8', errors='replace')
                         grid_out.close()
+                        job['error'] = error_content[:OUTPUT_PREVIEW_SIZE]
+                        job['error_truncated'] = len(error_content) > OUTPUT_PREVIEW_SIZE
                     except Exception as e:
                         logger.debug(f"Could not load GridFS error: {e}")
-
-                if error_content:
-                    job['error'] = error_content[:OUTPUT_PREVIEW_SIZE]
-                    job['error_truncated'] = len(error_content) > OUTPUT_PREVIEW_SIZE
 
                 # Method info
                 if j.get('function_hash') and j['function_hash'] in methods_lookup:
@@ -760,14 +814,28 @@ class MonitorWorker:
                 if j.get('created_at') and j.get('completed_at'):
                     job['duration_seconds'] = (j['completed_at'] - j['created_at']).total_seconds()
 
-                # File info (simplified)
+                # File info - matching views.py format for template compatibility
                 if j.get('file_inputs'):
                     job['file_info'] = {}
                     for name, hash_val in j['file_inputs'].items():
                         if isinstance(hash_val, list):
-                            job['file_info'][name] = [files_lookup.get(h, {}).get('filename', 'unknown') for h in hash_val]
+                            # Array of files - format as list of dicts
+                            job['file_info'][name] = []
+                            for h in hash_val:
+                                file_doc = files_lookup.get(h, {})
+                                job['file_info'][name].append({
+                                    'filename': file_doc.get('filename', 'unknown'),
+                                    'size': file_doc.get('file_size', 0),
+                                    'hash': h
+                                })
                         elif hash_val in files_lookup:
-                            job['file_info'][name] = files_lookup[hash_val].get('filename', 'unknown')
+                            # Single file - format as dict
+                            file_doc = files_lookup[hash_val]
+                            job['file_info'][name] = {
+                                'filename': file_doc.get('filename', 'unknown'),
+                                'size': file_doc.get('file_size', 0),
+                                'hash': hash_val
+                            }
 
                 jobs_data['items'].append(job)
 
