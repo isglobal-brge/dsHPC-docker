@@ -320,16 +320,53 @@ async def submit_meta_job(request: MetaJobRequest) -> Tuple[bool, str, Optional[
                             else:
                                 logger.info(f"  ✗ File {missing_file_hash[:12]}... still not available")
                                 return False, f"Meta-job previously failed: {error_msg}", None
-                        elif is_retriable_error(error_msg):
-                            # Retriable errors (OOM, SIGKILL, SIGTERM, service failures)
-                            # Allow retry by deleting the failed meta-job
-                            logger.info(f"  ♻️  Retriable error detected - deleting failed meta-job for retry: {error_msg[:80]}...")
-                            await meta_jobs_db.meta_jobs.delete_one({"meta_job_hash": meta_job_hash})
-                            # Continue to create new meta-job below
                         else:
-                            # Not file-related or method-related - fail fast
-                            logger.info(f"  ✗ Meta-job previously failed with same configuration")
-                            return False, f"Meta-job previously failed: {error_msg}", None
+                            # Not file or method related - check if ALL errors are retriable
+                            # IMPORTANT: Must check ALL underlying jobs, not just meta-job error
+                            # If ANY error is non-retriable, don't retry - it will fail again
+                            jobs_db = await get_jobs_db()
+                            all_errors_retriable = True
+                            has_any_error = False
+                            first_non_retriable_error = None
+
+                            # Check all underlying jobs for errors (most accurate source)
+                            failed_jobs = await jobs_db.jobs.find({
+                                "meta_job_hash": meta_job_hash,
+                                "status": {"$in": ["F", "failed", "CA", "cancelled"]}
+                            }).to_list(length=100)
+
+                            for job in failed_jobs:
+                                job_error = job.get("error", "")
+                                if job_error:
+                                    has_any_error = True
+                                    if not is_retriable_error(job_error):
+                                        all_errors_retriable = False
+                                        if not first_non_retriable_error:
+                                            first_non_retriable_error = job_error
+
+                            # Also check meta-job level error
+                            if error_msg and error_msg != "Unknown error":
+                                has_any_error = True
+                                if not is_retriable_error(error_msg):
+                                    all_errors_retriable = False
+                                    if not first_non_retriable_error:
+                                        first_non_retriable_error = error_msg
+
+                            # Decision: retry only if ALL errors are retriable, or no errors found
+                            if has_any_error and all_errors_retriable:
+                                logger.info(f"  ♻️  Meta-job failed with all-retriable errors - deleting for retry")
+                                await meta_jobs_db.meta_jobs.delete_one({"meta_job_hash": meta_job_hash})
+                                # Continue to create new meta-job below
+                            elif not has_any_error:
+                                # No errors found - might be stale state, allow retry
+                                logger.info(f"  ♻️  Meta-job failed with no error details - deleting for retry")
+                                await meta_jobs_db.meta_jobs.delete_one({"meta_job_hash": meta_job_hash})
+                                # Continue to create new meta-job below
+                            else:
+                                # At least one non-retriable error - fail fast
+                                display_error = first_non_retriable_error or error_msg
+                                logger.info(f"  ✗ Meta-job previously failed with non-retriable error: {display_error[:80]}...")
+                                return False, f"Meta-job previously failed: {display_error}", None
                 else:
                     # Methods changed, allow recomputation
                     logger.info(f"  ↻ Methods changed, will recompute")
