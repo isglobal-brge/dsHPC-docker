@@ -1285,9 +1285,6 @@ class MonitorWorker:
                 'storage_type': 1,
                 'status': 1,
                 'gridfs_id': 1,
-                'content_preview': 1,
-                'preview_type': 1,
-                'content_preview_truncated': 1,
             }
 
             # Fetch files with projection - NO GridFS reads needed!
@@ -1312,52 +1309,31 @@ class MonitorWorker:
                     'gridfs_id': str(f['gridfs_id']) if f.get('gridfs_id') else None,
                 }
 
-                # USE CACHED PREVIEWS - no GridFS reads!
-                if f.get('content_preview'):
-                    file_item['content_preview'] = f['content_preview']
-                    file_item['preview_type'] = f.get('preview_type', 'text')
-                    file_item['content_truncated'] = f.get('content_preview_truncated', True)
-                else:
-                    # No cached preview yet - show loading state
-                    # The cache_document_previews() will eventually populate this
-                    file_item['content_preview'] = '[Preview loading...]'
-                    file_item['preview_type'] = 'pending'
-                    file_item['content_truncated'] = True
-
                 files_data['items'].append(file_item)
 
-            logger.debug(f"Collected {len(files_data['items'])} files (using cached previews)")
+            logger.debug(f"Collected {len(files_data['items'])} files")
         except Exception as e:
             logger.error(f"Error collecting files list: {e}")
         return files_data
 
     def cache_document_previews(self):
         """
-        PERFORMANCE OPTIMIZATION v2.0: Cache previews directly in MongoDB documents.
+        Cache previews for job outputs/errors directly in MongoDB documents.
 
         This runs before snapshot collection and updates documents that have GridFS content
         but no cached preview. The preview is stored directly in the document so views
         can display it without reading from GridFS.
 
-        PERFORMANCE v2.0 IMPROVEMENTS:
-        - Uses ThreadPoolExecutor for parallel GridFS reads (5x faster)
-        - Per-file timeout protection (2s per file max)
-        - Batch updates instead of individual updates
-        - Limits processing to 20 files per cycle (was 50) to avoid blocking
-
         Updates:
         - jobs: output_preview, error_preview (from GridFS)
-        - files: content_preview, preview_type (from GridFS)
         """
         from gridfs import GridFS
         from bson import ObjectId
         from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError, as_completed
 
         PREVIEW_SIZE = 500
-        HEX_PREVIEW_SIZE = 64
-        BINARY_EXTENSIONS = ['.nii', '.nii.gz', '.gz', '.zip', '.tar', '.png', '.jpg', '.jpeg', '.gif', '.dcm', '.nrrd']
         PER_FILE_TIMEOUT = 2.0  # 2 seconds max per GridFS read
-        MAX_FILES_PER_CYCLE = 20  # Conservative batch size per cycle
+        MAX_JOBS_PER_CYCLE = 20  # Conservative batch size per cycle
 
         def read_gridfs_with_timeout(fs, grid_id, read_size):
             """Read from GridFS - runs in thread pool for timeout protection."""
@@ -1378,7 +1354,7 @@ class MonitorWorker:
             jobs_need_output_cache = list(jobs_collection.find({
                 'output_gridfs_id': {'$exists': True, '$ne': None},
                 'output_preview': {'$exists': False}
-            }).limit(MAX_FILES_PER_CYCLE))
+            }).limit(MAX_JOBS_PER_CYCLE))
 
             # Process job outputs in parallel with timeout
             with ThreadPoolExecutor(max_workers=4, thread_name_prefix='preview_') as executor:
@@ -1408,7 +1384,7 @@ class MonitorWorker:
             jobs_need_error_cache = list(jobs_collection.find({
                 'error_gridfs_id': {'$exists': True, '$ne': None},
                 'error_preview': {'$exists': False}
-            }).limit(MAX_FILES_PER_CYCLE))
+            }).limit(MAX_JOBS_PER_CYCLE))
 
             # Process job errors in parallel
             with ThreadPoolExecutor(max_workers=4, thread_name_prefix='preview_') as executor:
@@ -1437,60 +1413,6 @@ class MonitorWorker:
             cached_jobs = len(jobs_need_output_cache) + len(jobs_need_error_cache)
             if cached_jobs > 0:
                 logger.info(f"Cached previews for {cached_jobs} job documents (parallel)")
-
-            # ========== FILES: Cache content previews ==========
-            files_collection = self.files_db['files']
-            files_fs = GridFS(self.files_db, collection='fs')
-
-            # Find files with GridFS content but no cached preview
-            files_need_cache = list(files_collection.find({
-                'storage_type': 'gridfs',
-                'gridfs_id': {'$exists': True, '$ne': None},
-                'content_preview': {'$exists': False}
-            }).limit(MAX_FILES_PER_CYCLE))
-
-            # Process files in parallel
-            with ThreadPoolExecutor(max_workers=4, thread_name_prefix='preview_') as executor:
-                future_to_file = {}
-                for f in files_need_cache:
-                    filename = f.get('filename', '').lower()
-                    is_binary = any(filename.endswith(ext) for ext in BINARY_EXTENSIONS)
-                    read_size = HEX_PREVIEW_SIZE if is_binary else PREVIEW_SIZE
-                    future = executor.submit(
-                        read_gridfs_with_timeout,
-                        files_fs, f['gridfs_id'], read_size
-                    )
-                    future_to_file[future] = (f, is_binary)
-
-                for future in as_completed(future_to_file, timeout=30):
-                    f, is_binary = future_to_file[future]
-                    try:
-                        content_bytes = future.result(timeout=PER_FILE_TIMEOUT)
-                        file_size = f.get('file_size', 0)
-
-                        if is_binary:
-                            preview = ' '.join(f'{b:02x}' for b in content_bytes)
-                            files_collection.update_one(
-                                {'_id': f['_id']},
-                                {'$set': {'content_preview': preview, 'preview_type': 'hex', 'content_preview_truncated': True}}
-                            )
-                        else:
-                            try:
-                                preview = content_bytes.decode('utf-8', errors='replace')
-                                files_collection.update_one(
-                                    {'_id': f['_id']},
-                                    {'$set': {'content_preview': preview, 'preview_type': 'text', 'content_preview_truncated': file_size > PREVIEW_SIZE}}
-                                )
-                            except:
-                                files_collection.update_one(
-                                    {'_id': f['_id']},
-                                    {'$set': {'content_preview': '[Binary content]', 'preview_type': 'binary', 'content_preview_truncated': True}}
-                                )
-                    except (FutureTimeoutError, Exception) as e:
-                        logger.debug(f"Could not cache content preview for file {f.get('filename')}: {e}")
-
-            if len(files_need_cache) > 0:
-                logger.info(f"Cached previews for {len(files_need_cache)} file documents (parallel)")
 
         except Exception as e:
             logger.error(f"Error caching document previews: {e}")

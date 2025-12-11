@@ -212,31 +212,6 @@
                     </div>
                 </div>
                 
-                <!-- File Content Preview -->
-                {% if file.content_preview %}
-                <div class="mt-4">
-                    <h6 class="mb-3">
-                        <i class="bi bi-{% if file.preview_type == 'hex' %}file-binary{% else %}file-text{% endif %}"></i> 
-                        Content Preview {% if file.preview_type == 'hex' %}(Hex Dump){% endif %}
-                    </h6>
-                    
-                    {% if file.content_truncated %}
-                    <div class="alert alert-info small mb-2">
-                        <i class="bi bi-info-circle"></i> 
-                        {% if file.preview_type == 'hex' %}
-                            Showing first 512 bytes (hex dump)
-                        {% else %}
-                            Showing first 5,000 characters
-                        {% endif %}
-                        {% if file.file_size %}
-                            of {{ file.file_size|pretty_bytes }}
-                        {% endif %}
-                    </div>
-                    {% endif %}
-                    
-                    <div class="terminal" style="max-height: 400px; font-family: 'Courier New', monospace; font-size: {% if file.preview_type == 'hex' %}0.75rem{% else %}0.85rem{% endif %}; white-space: pre-wrap; overflow-y: auto;">{{ file.content_preview }}</div>
-                </div>
-                {% endif %}
             </div>
         </div>
     </div>
