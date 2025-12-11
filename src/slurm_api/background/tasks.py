@@ -472,6 +472,13 @@ def _check_orphaned_jobs_sync():
             "disappeared from Slurm",
             # OOM retry mechanism - jobs marked for retry with increased memory
             "OOM retry #",
+            # Memory Guardian cancellations (system maintenance)
+            "system maintenance",
+            "memory optimization",
+            # MongoDB/network transient failures (can retry)
+            "Name or service not known",
+            "Timeout:",
+            "AutoReconnect",
         ]
 
         # Build regex for service failures ONLY
@@ -603,12 +610,12 @@ async def check_orphaned_jobs():
 
 def _check_stale_cancelled_meta_jobs_sync():
     """
-    Synchronous implementation of stale cancelled meta-job check.
-    Find and reactivate meta-jobs that were cancelled but their jobs are OK.
+    Synchronous implementation of stale cancelled/failed meta-job check.
+    Find and reactivate meta-jobs that were cancelled/failed due to transient errors.
 
-    This handles the case where dshpc_api died while processing a meta-job:
-    - The jobs are completed or still running/pending
-    - But the meta-job got marked as cancelled because dshpc_api wasn't there to track it
+    This handles the case where:
+    1. dshpc_api died while processing a meta-job (marked as cancelled)
+    2. A transient network error occurred (marked as failed with network error)
 
     Only reactivates if ALL existing jobs in the chain are OK (no real failures).
     """
@@ -616,12 +623,28 @@ def _check_stale_cancelled_meta_jobs_sync():
         reactivated_count = 0
         pipeline_count = 0
 
-        # Find cancelled meta-jobs
-        cancelled_meta_jobs = meta_jobs_collection.find({
-            "status": "cancelled"
+        # Transient network errors that should trigger auto-retry
+        network_error_patterns = [
+            "Name or service not known",
+            "Timeout:",
+            "AutoReconnect",
+            "Connection refused",
+            "Connection reset",
+            "ServerSelectionTimeoutError",
+        ]
+
+        # Find cancelled meta-jobs OR failed meta-jobs with network errors
+        stale_meta_jobs = meta_jobs_collection.find({
+            "$or": [
+                {"status": "cancelled"},
+                {
+                    "status": "failed",
+                    "error": {"$regex": "|".join(network_error_patterns), "$options": "i"}
+                }
+            ]
         })
 
-        for meta_job in cancelled_meta_jobs:
+        for meta_job in stale_meta_jobs:
             meta_job_hash = meta_job["meta_job_hash"]
             chain = meta_job.get("chain", [])
 
@@ -665,12 +688,14 @@ def _check_stale_cancelled_meta_jobs_sync():
             # 1. No real job failures
             # 2. At least one job is active or completed
             if not has_real_failure and has_active_or_completed_job:
+                prev_status = meta_job.get("status")
+                prev_error = meta_job.get("error", "")[:50] if meta_job.get("error") else ""
                 result = meta_jobs_collection.update_one(
                     {"meta_job_hash": meta_job_hash},
                     {"$set": {"status": "running", "error": None}}
                 )
                 if result.modified_count > 0:
-                    logger.info(f"🔄 Reactivated stale meta-job {meta_job_hash} (jobs OK but meta-job was cancelled)")
+                    logger.info(f"🔄 Reactivated stale meta-job {meta_job_hash} (was {prev_status}: {prev_error}...)")
                     reactivated_count += 1
 
                     # Cascade reactivate pipelines
@@ -680,7 +705,7 @@ def _check_stale_cancelled_meta_jobs_sync():
             logger.info(f"🔄 Reactivated {reactivated_count} stale meta-job(s), {pipeline_count} pipeline(s)")
 
     except Exception as e:
-        logger.error(f"Error checking stale cancelled meta-jobs: {e}")
+        logger.error(f"Error checking stale cancelled/failed meta-jobs: {e}")
 
 
 def _check_pending_file_uploads_sync():
