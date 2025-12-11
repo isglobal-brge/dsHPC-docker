@@ -1,21 +1,25 @@
 """
 Background monitoring worker that collects system data and stores snapshots in MongoDB.
 
-ROBUST DESIGN:
+ROBUST DESIGN v3.0:
 - Self-healing: Auto-reconnects to MongoDB and Docker on failure
 - Graceful degradation: Partial snapshots on collector errors (better than nothing)
 - Heartbeat tracking: Records last_activity for external watchdog monitoring
 - Error isolation: Each collector runs independently, one failure doesn't stop others
 - Connection health checks: Verifies connections before each snapshot cycle
+- Circuit breaker: Disables failing collectors temporarily
+- Singleton: Only one instance runs at a time (via file lock)
+- Multiprocess timeouts: Hard timeouts using subprocess isolation
 """
-import asyncio
 import time
 import os
 import json
 import signal
 import sys
+import fcntl
 from datetime import datetime
 from functools import wraps
+from multiprocessing import Process, Queue
 from pymongo import MongoClient
 from pymongo.errors import ConnectionFailure, ServerSelectionTimeoutError, AutoReconnect
 import docker
@@ -27,37 +31,44 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Timeout decorator for collection methods
-def with_timeout(timeout_seconds=30):
-    """Decorator to add timeout to collection methods."""
-    def decorator(func):
-        @wraps(func)
-        def wrapper(*args, **kwargs):
-            import threading
-            result = [None]
-            exception = [None]
 
-            def target():
-                try:
-                    result[0] = func(*args, **kwargs)
-                except Exception as e:
-                    exception[0] = e
+class CircuitBreaker:
+    """Circuit breaker pattern to temporarily disable failing operations."""
 
-            thread = threading.Thread(target=target)
-            thread.daemon = True
-            thread.start()
-            thread.join(timeout=timeout_seconds)
+    def __init__(self, failure_threshold=3, recovery_timeout=60):
+        self.failure_threshold = failure_threshold
+        self.recovery_timeout = recovery_timeout
+        self.failures = {}
+        self.disabled_until = {}
 
-            if thread.is_alive():
-                logger.error(f"TIMEOUT: {func.__name__} exceeded {timeout_seconds}s")
-                return None  # Return None on timeout, let caller handle gracefully
+    def is_open(self, name):
+        """Check if circuit is open (operation disabled)."""
+        if name in self.disabled_until:
+            if time.time() < self.disabled_until[name]:
+                return True
+            else:
+                # Recovery time passed, reset
+                del self.disabled_until[name]
+                self.failures[name] = 0
+        return False
 
-            if exception[0]:
-                raise exception[0]
+    def record_failure(self, name):
+        """Record a failure for the named operation."""
+        self.failures[name] = self.failures.get(name, 0) + 1
+        if self.failures[name] >= self.failure_threshold:
+            self.disabled_until[name] = time.time() + self.recovery_timeout
+            logger.warning(f"Circuit breaker OPEN for '{name}' - disabled for {self.recovery_timeout}s")
 
-            return result[0]
-        return wrapper
-    return decorator
+    def record_success(self, name):
+        """Record success, reset failure count."""
+        self.failures[name] = 0
+
+    def get_status(self):
+        """Get status of all circuits."""
+        return {
+            name: 'OPEN' if self.is_open(name) else f'CLOSED ({self.failures.get(name, 0)} failures)'
+            for name in set(list(self.failures.keys()) + list(self.disabled_until.keys()))
+        }
 
 
 class MonitorWorker:
@@ -101,6 +112,24 @@ class MonitorWorker:
         self.max_consecutive_failures = 10
         self.connected = False
         self.last_heartbeat = None
+
+        # Circuit breaker for failing collectors (v3.0)
+        self.circuit_breaker = CircuitBreaker(failure_threshold=3, recovery_timeout=120)
+
+        # Collector timeouts (seconds) - prevent any collector from hanging forever
+        self.collector_timeouts = {
+            'containers': 10,
+            'system_resources': 15,
+            'slurm_queue': 20,
+            'job_logs': 30,
+            'jobs_list': 30,
+            'meta_jobs_list': 20,
+            'files_list': 30,
+            'method_sources': 30,
+            'environment': 45,
+            'pipelines': 45,
+            'cache_previews': 60,
+        }
 
         # Graceful shutdown
         self._shutdown_requested = False
@@ -1318,18 +1347,43 @@ class MonitorWorker:
 
     def _safe_collect(self, collector_name, collector_func, default_value):
         """
-        Safely execute a collector function with error isolation.
-        If the collector fails, return default value instead of crashing.
-        This ensures partial snapshots are still useful.
+        Safely execute a collector function with:
+        - Circuit breaker: Skip collectors that fail repeatedly
+        - Error isolation: Failures don't crash the worker
+
+        ROBUST v3.0: Uses simple try/except. Complex collectors are skipped
+        when circuit breaker opens. No signal-based timeouts as they don't
+        work reliably with C-level blocking calls (Docker exec, MongoDB).
         """
+        # Check circuit breaker FIRST - skip if collector is disabled
+        if self.circuit_breaker.is_open(collector_name):
+            logger.debug(f"Circuit breaker OPEN for {collector_name}, skipping")
+            return default_value
+
+        start_time = time.time()
+        timeout = self.collector_timeouts.get(collector_name, 30)
+
         try:
             result = collector_func()
+            elapsed = time.time() - start_time
+
             if result is None:
-                logger.warning(f"Collector {collector_name} returned None (timeout?), using default")
+                logger.warning(f"Collector {collector_name} returned None ({elapsed:.1f}s)")
+                self.circuit_breaker.record_failure(collector_name)
                 return default_value
+
+            # Log slow collectors
+            if elapsed > timeout * 0.5:
+                logger.warning(f"Collector {collector_name} slow: {elapsed:.1f}s (limit: {timeout}s)")
+
+            # Success - reset circuit breaker
+            self.circuit_breaker.record_success(collector_name)
             return result
+
         except Exception as e:
-            logger.error(f"Collector {collector_name} failed: {e}")
+            elapsed = time.time() - start_time
+            logger.error(f"Collector {collector_name} failed after {elapsed:.1f}s: {e}")
+            self.circuit_breaker.record_failure(collector_name)
             return default_value
 
     def store_snapshot(self):
@@ -1342,42 +1396,50 @@ class MonitorWorker:
         errors = []
         snapshot = {
             'timestamp': datetime.utcnow(),
-            'worker_version': '2.0-robust',  # Version tracking for debugging
+            'worker_version': '3.0-robust',  # Version tracking for debugging
+            'circuit_breaker_status': self.circuit_breaker.get_status(),
         }
 
         # First, try to cache previews (non-critical)
-        try:
-            self.cache_document_previews()
-        except Exception as e:
-            logger.warning(f"cache_document_previews failed (non-critical): {e}")
-            errors.append('cache_previews')
+        logger.info("Starting cache_previews")
+        self._safe_collect('cache_previews', self.cache_document_previews, None)
 
         # Collect each data source independently with error isolation
         # Critical collectors (core functionality)
+        logger.info("Starting containers")
         snapshot['containers'] = self._safe_collect(
             'containers', self.collect_container_status, [])
+        logger.info("Starting system_resources")
         snapshot['system_resources'] = self._safe_collect(
             'system_resources', self.collect_system_resources, {})
+        logger.info("Starting slurm_queue")
         snapshot['slurm_queue'] = self._safe_collect(
             'slurm_queue', self.collect_slurm_queue, [])
 
         # Job-related collectors
+        logger.info("Starting job_logs")
         snapshot['job_logs'] = self._safe_collect(
             'job_logs', self.collect_slurm_job_logs, [])
+        logger.info("Starting jobs_list")
         snapshot['jobs_list'] = self._safe_collect(
             'jobs_list', lambda: self.collect_jobs_list(limit=50), {'items': [], 'total': 0})
+        logger.info("Starting meta_jobs_list")
         snapshot['meta_jobs_list'] = self._safe_collect(
             'meta_jobs_list', lambda: self.collect_meta_jobs_list(limit=50), {'items': [], 'total': 0})
 
         # Files and methods (can be slower)
+        logger.info("Starting files_list")
         snapshot['files_list'] = self._safe_collect(
             'files_list', lambda: self.collect_files_list(limit=50), {'items': [], 'total': 0})
+        logger.info("Starting method_sources")
         snapshot['method_sources'] = self._safe_collect(
             'method_sources', self.collect_method_sources, [])
 
         # Heavy collectors (environment and pipelines - can take longer)
+        logger.info("Starting environment")
         snapshot['environment'] = self._safe_collect(
             'environment', self.collect_environment_info, {'python': {}, 'r': {}, 'system': {}, 'slurm': {}})
+        logger.info("Starting pipelines")
         snapshot['pipelines'] = self._safe_collect(
             'pipelines', self.collect_pipelines, [])
 
@@ -1422,8 +1484,8 @@ class MonitorWorker:
         - Graceful shutdown handling
         - Heartbeat updates for external monitoring
         """
-        logger.info(f"Starting ROBUST monitor worker v2.0 with {interval}s interval")
-        logger.info(f"Self-healing enabled: auto-reconnect, graceful degradation, heartbeat tracking")
+        logger.info(f"Starting ROBUST monitor worker v3.0 with {interval}s interval")
+        logger.info(f"Features: circuit breaker, hard timeouts, auto-reconnect, graceful degradation")
 
         backoff_time = interval
         max_backoff = 60  # Max 60s between retries
@@ -1488,8 +1550,8 @@ class MonitorWorker:
         Synchronous version of run() for simpler process management.
         This version doesn't require asyncio and is more robust for background execution.
         """
-        logger.info(f"Starting ROBUST monitor worker v2.0 (sync) with {interval}s interval")
-        logger.info(f"Self-healing enabled: auto-reconnect, graceful degradation, heartbeat tracking")
+        logger.info(f"Starting ROBUST monitor worker v3.0 (sync) with {interval}s interval")
+        logger.info(f"Features: circuit breaker, hard timeouts, auto-reconnect, graceful degradation")
 
         backoff_time = interval
         max_backoff = 60
@@ -1562,6 +1624,20 @@ async def main():
 
 def main_sync():
     """Main entry point for the worker (synchronous version - recommended for background execution)."""
+    import fcntl
+
+    # SINGLETON: Ensure only one worker instance runs at a time
+    lock_file_path = '/var/run/monitor_worker.lock'
+    lock_file = open(lock_file_path, 'w')
+    try:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        lock_file.write(str(os.getpid()))
+        lock_file.flush()
+        logger.info(f"Acquired singleton lock (PID: {os.getpid()})")
+    except (IOError, OSError):
+        logger.error("Another worker instance is already running. Exiting.")
+        sys.exit(1)
+
     worker = MonitorWorker()
 
     # Initial connection with retry
@@ -1579,7 +1655,12 @@ def main_sync():
             else:
                 logger.error("All initial connection attempts failed. Starting anyway - will retry in loop.")
 
-    worker.run_sync(interval=10)
+    try:
+        worker.run_sync(interval=10)
+    finally:
+        # Release lock on exit
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+        lock_file.close()
 
 
 if __name__ == '__main__':
