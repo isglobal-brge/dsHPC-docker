@@ -865,12 +865,27 @@ def process_job_output(job_hash: str, slurm_id: str, final_state: str) -> bool:
                     # Update job record with output file hash
                     jobs_collection.update_one(
                         {"job_hash": job_hash},
-                        {"$set": {"output_file_hash": output_file_hash}}
+                        {"$set": {"output_file_hash": output_file_hash, "output_file_upload_pending": False}}
                     )
                     logger.info(f"Job {job_hash} output uploaded as file with hash: {output_file_hash}")
+                else:
+                    # Upload returned None - files DB might be down
+                    # Save output to persistent storage for later retry
+                    _save_pending_output(job_hash, output)
+                    jobs_collection.update_one(
+                        {"job_hash": job_hash},
+                        {"$set": {"output_file_upload_pending": True}}
+                    )
+                    logger.warning(f"Job {job_hash} output saved to persistent storage for later upload")
             except Exception as e:
                 logger.error(f"Error uploading job output as file for {job_hash}: {e}")
-                # Don't fail the job processing if output upload fails
+                # Save output to persistent storage for later retry
+                _save_pending_output(job_hash, output)
+                jobs_collection.update_one(
+                    {"job_hash": job_hash},
+                    {"$set": {"output_file_upload_pending": True}}
+                )
+                logger.warning(f"Job {job_hash} output saved to persistent storage for later upload (error: {e})")
         
         # Clean up temporary files only after successful update
         if os.path.exists(output_path):
@@ -974,4 +989,138 @@ def upload_job_output_as_file(job_hash: str, output: str) -> Optional[str]:
         
     except Exception as e:
         logger.error(f"Error uploading job output as file: {e}")
-        return None 
+        return None
+
+
+# =============================================================================
+# PENDING OUTPUT UPLOAD FUNCTIONS
+# =============================================================================
+# These functions handle the case where files DB is unavailable when a job
+# completes. Outputs are stored in /persistent/pending_uploads/ and a background
+# task will retry uploading them when the DB becomes available.
+# =============================================================================
+
+PENDING_UPLOADS_DIR = "/persistent/pending_uploads"
+
+
+def _save_pending_output(job_hash: str, output: str) -> bool:
+    """
+    Save job output to persistent storage for later upload to files DB.
+
+    Args:
+        job_hash: The job hash
+        output: The output content to store
+
+    Returns:
+        True if saved successfully, False otherwise
+    """
+    try:
+        os.makedirs(PENDING_UPLOADS_DIR, exist_ok=True)
+        pending_path = os.path.join(PENDING_UPLOADS_DIR, f"{job_hash}.json")
+
+        with open(pending_path, 'w', encoding='utf-8') as f:
+            f.write(output)
+
+        logger.info(f"Saved pending output for job {job_hash} to {pending_path}")
+        return True
+    except Exception as e:
+        logger.error(f"Failed to save pending output for job {job_hash}: {e}")
+        return False
+
+
+def _load_pending_output(job_hash: str) -> Optional[str]:
+    """
+    Load job output from persistent storage.
+
+    Args:
+        job_hash: The job hash
+
+    Returns:
+        The output content if found, None otherwise
+    """
+    try:
+        pending_path = os.path.join(PENDING_UPLOADS_DIR, f"{job_hash}.json")
+
+        if not os.path.exists(pending_path):
+            return None
+
+        with open(pending_path, 'r', encoding='utf-8') as f:
+            return f.read()
+    except Exception as e:
+        logger.error(f"Failed to load pending output for job {job_hash}: {e}")
+        return None
+
+
+def _delete_pending_output(job_hash: str) -> bool:
+    """
+    Delete job output from persistent storage after successful upload.
+
+    Args:
+        job_hash: The job hash
+
+    Returns:
+        True if deleted successfully, False otherwise
+    """
+    try:
+        pending_path = os.path.join(PENDING_UPLOADS_DIR, f"{job_hash}.json")
+
+        if os.path.exists(pending_path):
+            os.remove(pending_path)
+            logger.info(f"Deleted pending output file for job {job_hash}")
+
+        return True
+    except Exception as e:
+        logger.error(f"Failed to delete pending output for job {job_hash}: {e}")
+        return False
+
+
+def process_pending_file_upload(job_hash: str) -> bool:
+    """
+    Process a single pending file upload.
+
+    This function is called by the background task to retry uploading
+    job outputs that failed to upload when the job completed.
+
+    Args:
+        job_hash: The job hash to process
+
+    Returns:
+        True if upload succeeded, False otherwise
+    """
+    try:
+        # Load output from persistent storage
+        output = _load_pending_output(job_hash)
+
+        if output is None:
+            # No pending file found - might have been processed already
+            # Just clear the flag
+            jobs_collection.update_one(
+                {"job_hash": job_hash},
+                {"$set": {"output_file_upload_pending": False}}
+            )
+            logger.warning(f"No pending output file found for job {job_hash}, clearing flag")
+            return True
+
+        # Try to upload to files DB
+        output_file_hash = upload_job_output_as_file(job_hash, output)
+
+        if output_file_hash:
+            # Success! Update job record and clean up
+            jobs_collection.update_one(
+                {"job_hash": job_hash},
+                {"$set": {
+                    "output_file_hash": output_file_hash,
+                    "output_file_upload_pending": False
+                }}
+            )
+            _delete_pending_output(job_hash)
+            logger.info(f"Successfully uploaded pending output for job {job_hash} as file {output_file_hash}")
+            return True
+        else:
+            # Upload still failing - leave for next retry
+            logger.warning(f"Failed to upload pending output for job {job_hash}, will retry later")
+            return False
+
+    except Exception as e:
+        logger.error(f"Error processing pending file upload for job {job_hash}: {e}")
+        return False

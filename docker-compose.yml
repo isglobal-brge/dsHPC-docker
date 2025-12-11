@@ -82,6 +82,16 @@ services:
         max-size: "10m"
         max-file: "3"
 
+  # =============================================================================
+  # MongoDB Containers - Protected from OOM kills
+  # =============================================================================
+  # These containers store critical data (jobs, files, methods) and must be
+  # protected from OOM kills. We use:
+  #   - oom_score_adj: -500 (lower = less likely to be killed, range: -1000 to 1000)
+  #   - mem_limit: Soft cap to prevent runaway memory usage
+  #   - restart: always (auto-restart if killed despite protections)
+  # =============================================================================
+
   __DOCKER_PREFIX__-jobs:
     container_name: __DOCKER_PREFIX__-jobs
     image: mongo:latest
@@ -92,6 +102,11 @@ services:
     networks:
       - __DOCKER_PREFIX__-internal-network
     command: mongod --port 27017 --quiet --logpath /dev/null
+    # OOM Protection: Make this container less likely to be killed
+    oom_score_adj: -500
+    mem_limit: 1g
+    memswap_limit: 1g
+    restart: always
     logging:
       driver: "none"
 
@@ -105,6 +120,11 @@ services:
     networks:
       - __DOCKER_PREFIX__-internal-network
     command: mongod --port 27017 --quiet --logpath /dev/null
+    # OOM Protection: Make this container less likely to be killed
+    oom_score_adj: -500
+    mem_limit: 1g
+    memswap_limit: 1g
+    restart: always
     logging:
       driver: "none"
 
@@ -118,6 +138,11 @@ services:
     networks:
       - __DOCKER_PREFIX__-internal-network
     command: mongod --port 27017 --quiet --logpath /dev/null
+    # OOM Protection: Make this container less likely to be killed
+    oom_score_adj: -500
+    mem_limit: 512m
+    memswap_limit: 512m
+    restart: always
     logging:
       driver: "none"
 

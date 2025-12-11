@@ -5,7 +5,7 @@ from slurm_api.config.db_config import jobs_collection, meta_jobs_collection, pi
 from slurm_api.config.logging_config import logger
 from slurm_api.models.job import JobStatus
 from slurm_api.services.slurm_service import get_active_jobs, get_job_final_state
-from slurm_api.services.job_service import process_job_output
+from slurm_api.services.job_service import process_job_output, process_pending_file_upload
 from slurm_api.utils.db_utils import update_job_status
 
 
@@ -649,6 +649,41 @@ async def check_stale_cancelled_meta_jobs():
         logger.error(f"Error checking stale cancelled meta-jobs: {e}")
 
 
+async def check_pending_file_uploads():
+    """
+    Process pending file uploads that failed when jobs completed.
+
+    This handles the case where files DB was unavailable when a job completed:
+    - The job output was saved to persistent storage
+    - The job was marked with output_file_upload_pending: true
+    - We now retry uploading to files DB
+
+    This ensures job outputs are eventually uploaded as files for deduplication/caching.
+    """
+    try:
+        # Find jobs with pending file uploads (limit to 10 at a time)
+        pending_jobs = jobs_collection.find({
+            "status": JobStatus.COMPLETED,
+            "output_file_upload_pending": True
+        }).limit(10)
+
+        processed_count = 0
+        success_count = 0
+
+        for job in pending_jobs:
+            job_hash = job["job_hash"]
+            processed_count += 1
+
+            if process_pending_file_upload(job_hash):
+                success_count += 1
+
+        if processed_count > 0:
+            logger.info(f"📤 Processed {processed_count} pending file uploads, {success_count} successful")
+
+    except Exception as e:
+        logger.error(f"Error checking pending file uploads: {e}")
+
+
 async def check_stale_cancelled_pipelines():
     """
     Find and reactivate pipelines that were cancelled but their meta-jobs are running/completed.
@@ -733,6 +768,9 @@ async def check_jobs_once():
 
         # Check for pipelines that were cancelled but their meta-jobs are active
         await check_stale_cancelled_pipelines()
+
+        # Check for pending file uploads (files DB was down when job completed)
+        await check_pending_file_uploads()
 
         # Find all jobs that are in a non-terminal state AND have slurm_id
         active_jobs = jobs_collection.find({
