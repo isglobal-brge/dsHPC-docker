@@ -947,41 +947,55 @@ async def get_meta_job_info(meta_job_hash: str, auto_requeue: bool = True) -> Op
         requeue_reason = None
 
         if current_status in [MetaJobStatus.FAILED, MetaJobStatus.CANCELLED, "failed", "cancelled"]:
-            # Check if the error is retriable before requeuing
-            # Non-retriable errors (genuine code failures) should return the error, not requeue
+            # Check if ALL errors are retriable before requeuing
+            # If ANY error is non-retriable, don't requeue - that job will fail again
             from dshpc_api.services.job_service import is_retriable_error
 
             meta_job_error = meta_job.get("error", "")
-            is_error_retriable = False
+            all_errors_retriable = True
+            has_any_error = False
+            first_non_retriable_error = None
 
-            # First check meta-job level error
-            if meta_job_error and is_retriable_error(meta_job_error):
-                is_error_retriable = True
+            # Check all underlying jobs for errors
+            jobs_db = await get_jobs_db()
+            failed_jobs = await jobs_db.jobs.find({
+                "meta_job_hash": meta_job_hash,
+                "status": {"$in": ["F", "failed", "CA", "cancelled"]}
+            }).to_list(length=100)
 
-            # Then check the actual underlying jobs - this is the most accurate check
-            if not is_error_retriable:
-                jobs_db = await get_jobs_db()
-                failed_jobs = await jobs_db.jobs.find({
-                    "meta_job_hash": meta_job_hash,
-                    "status": {"$in": ["F", "failed", "CA", "cancelled"]}
-                }).to_list(length=100)
+            for job in failed_jobs:
+                job_error = job.get("error", "")
+                if job_error:
+                    has_any_error = True
+                    if not is_retriable_error(job_error):
+                        all_errors_retriable = False
+                        if not first_non_retriable_error:
+                            first_non_retriable_error = job_error
 
-                for job in failed_jobs:
-                    job_error = job.get("error", "")
-                    if job_error and is_retriable_error(job_error):
-                        is_error_retriable = True
-                        break
+            # Also check meta-job level error
+            if meta_job_error:
+                has_any_error = True
+                if not is_retriable_error(meta_job_error):
+                    all_errors_retriable = False
+                    if not first_non_retriable_error:
+                        first_non_retriable_error = meta_job_error
 
             # For cancelled status (scancel, etc.), always allow requeue
             if current_status in [MetaJobStatus.CANCELLED, "cancelled"]:
                 should_requeue = True
                 requeue_reason = f"requeued from {current_status} on query"
-            elif is_error_retriable:
+            elif has_any_error and all_errors_retriable:
+                # ALL errors are retriable - safe to requeue
                 should_requeue = True
-                requeue_reason = f"requeued from {current_status} (retriable error) on query"
+                requeue_reason = f"requeued from {current_status} (all errors retriable) on query"
+            elif not has_any_error:
+                # No errors found - might be stale state, allow requeue
+                should_requeue = True
+                requeue_reason = f"requeued from {current_status} (no error details) on query"
             else:
-                # Non-retriable error - don't requeue, return the failed status as-is
-                logger.info(f"⛔ Meta-job {meta_job_hash} failed with non-retriable error, not requeuing: {meta_job_error[:80] if meta_job_error else 'unknown'}...")
+                # At least one non-retriable error - don't requeue
+                display_error = first_non_retriable_error or meta_job_error or "unknown"
+                logger.info(f"⛔ Meta-job {meta_job_hash} has non-retriable error, not requeuing: {display_error[:80]}...")
 
         elif current_status in [MetaJobStatus.RUNNING, MetaJobStatus.PENDING, "running", "pending"]:
             # Check if stalled (no updates for 10+ minutes)

@@ -475,58 +475,69 @@ async def get_pipeline_status(pipeline_hash: str, auto_requeue: bool = True) -> 
         requeue_reason = None
 
         if current_status in [PipelineStatus.FAILED.value, PipelineStatus.CANCELLED.value, "failed", "cancelled"]:
-            # Check if the error is retriable before requeuing
-            # Non-retriable errors (genuine code failures) should return the error, not requeue
+            # Check if ALL errors are retriable before requeuing
+            # If ANY error is non-retriable, don't requeue - that job will fail again
             from dshpc_api.services.job_service import is_retriable_error
 
             pipeline_error = pipeline.get("error", "")
-            is_error_retriable = False
+            all_errors_retriable = True
+            has_any_error = False
+            first_non_retriable_error = None
 
-            # First check pipeline-level error
-            if pipeline_error and is_retriable_error(pipeline_error):
-                is_error_retriable = True
+            # Collect all errors from failed jobs across all nodes
+            for node_id, node_data in pipeline.get("nodes", {}).items():
+                if node_data.get("status") in [PipelineNodeStatus.FAILED.value, "failed"]:
+                    meta_job_hash = node_data.get("meta_job_hash")
+                    if meta_job_hash:
+                        # Check actual job errors (most accurate)
+                        jobs_db = await get_jobs_db()
+                        failed_jobs = await jobs_db.jobs.find({
+                            "meta_job_hash": meta_job_hash,
+                            "status": {"$in": ["F", "failed", "CA", "cancelled"]}
+                        }).to_list(length=100)
 
-            # Then check node errors
-            if not is_error_retriable:
-                for node_id, node_data in pipeline.get("nodes", {}).items():
+                        for job in failed_jobs:
+                            job_error = job.get("error", "")
+                            if job_error:
+                                has_any_error = True
+                                if not is_retriable_error(job_error):
+                                    all_errors_retriable = False
+                                    if not first_non_retriable_error:
+                                        first_non_retriable_error = job_error
+
+                    # Also check node-level error if no job errors found
                     node_error = node_data.get("error", "")
-                    if node_error and is_retriable_error(node_error):
-                        is_error_retriable = True
-                        break
+                    if node_error:
+                        has_any_error = True
+                        if not is_retriable_error(node_error):
+                            all_errors_retriable = False
+                            if not first_non_retriable_error:
+                                first_non_retriable_error = node_error
 
-            # Finally, check the actual underlying jobs for failed nodes
-            # This is the most accurate check since jobs have the original error
-            if not is_error_retriable:
-                for node_id, node_data in pipeline.get("nodes", {}).items():
-                    if node_data.get("status") in [PipelineNodeStatus.FAILED.value, "failed"]:
-                        meta_job_hash = node_data.get("meta_job_hash")
-                        if meta_job_hash:
-                            # Check jobs in this meta-job
-                            jobs_db = await get_jobs_db()
-                            failed_jobs = await jobs_db.jobs.find({
-                                "meta_job_hash": meta_job_hash,
-                                "status": {"$in": ["F", "failed", "CA", "cancelled"]}
-                            }).to_list(length=100)
-
-                            for job in failed_jobs:
-                                job_error = job.get("error", "")
-                                if job_error and is_retriable_error(job_error):
-                                    is_error_retriable = True
-                                    break
-
-                            if is_error_retriable:
-                                break
+            # Check pipeline-level error too
+            if pipeline_error:
+                has_any_error = True
+                if not is_retriable_error(pipeline_error):
+                    all_errors_retriable = False
+                    if not first_non_retriable_error:
+                        first_non_retriable_error = pipeline_error
 
             # For cancelled status (scancel, etc.), always allow requeue
             if current_status in [PipelineStatus.CANCELLED.value, "cancelled"]:
                 should_requeue = True
                 requeue_reason = f"requeued from {current_status} on query"
-            elif is_error_retriable:
+            elif has_any_error and all_errors_retriable:
+                # ALL errors are retriable - safe to requeue
                 should_requeue = True
-                requeue_reason = f"requeued from {current_status} (retriable error) on query"
+                requeue_reason = f"requeued from {current_status} (all errors retriable) on query"
+            elif not has_any_error:
+                # No errors found - might be stale state, allow requeue
+                should_requeue = True
+                requeue_reason = f"requeued from {current_status} (no error details) on query"
             else:
-                # Non-retriable error - don't requeue, return the failed status as-is
-                logger.info(f"⛔ Pipeline {pipeline_hash} failed with non-retriable error, not requeuing: {pipeline_error[:80] if pipeline_error else 'unknown'}...")
+                # At least one non-retriable error - don't requeue
+                display_error = first_non_retriable_error or pipeline_error or "unknown"
+                logger.info(f"⛔ Pipeline {pipeline_hash} has non-retriable error, not requeuing: {display_error[:80]}...")
 
         elif current_status in [PipelineStatus.RUNNING.value, PipelineStatus.PENDING.value, "running", "pending"]:
             # Check if stalled (no updates for 10+ minutes)
