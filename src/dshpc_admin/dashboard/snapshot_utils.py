@@ -185,3 +185,28 @@ def get_files_list():
         return None
     return snapshot['files_list']
 
+
+def get_stats_from_snapshot():
+    """
+    Get system statistics from latest snapshot.
+
+    This avoids hitting the databases directly on page load.
+    Stats are collected by the worker and stored in snapshot.
+    """
+    snapshot = get_latest_snapshot()
+    if not snapshot or 'stats' not in snapshot:
+        # Return empty stats if not available yet
+        return {
+            'total_jobs': 0,
+            'active_jobs': 0,
+            'completed_jobs': 0,
+            'failed_jobs': 0,
+            'cancelled_jobs': 0,
+            'total_meta_jobs': 0,
+            'running_meta_jobs': 0,
+            'total_files': 0,
+            'total_methods': 0,
+            'active_methods': 0,
+        }
+    return snapshot['stats']
+

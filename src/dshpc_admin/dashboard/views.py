@@ -5,9 +5,13 @@ from django.shortcuts import render, redirect
 from django.http import JsonResponse
 from django.urls import reverse
 from django.contrib import messages
-from .db_connections import MongoDBConnections, get_stats
+from .db_connections import MongoDBConnections
 from .auth import login_required_simple
-from .snapshot_utils import get_container_status, get_system_resources, get_job_logs, get_environment_info, get_slurm_queue, get_latest_snapshot
+from .snapshot_utils import (
+    get_container_status, get_system_resources, get_job_logs,
+    get_environment_info, get_slurm_queue, get_latest_snapshot,
+    get_stats_from_snapshot
+)
 import requests
 from django.conf import settings
 import logging
@@ -63,8 +67,8 @@ def logout_view(request):
 
 @login_required_simple
 def dashboard_home(request):
-    """Main dashboard view."""
-    stats = get_stats()
+    """Main dashboard view - uses snapshot for instant load."""
+    stats = get_stats_from_snapshot()
     
     # Try to load environment-config.json
     env_config = None
@@ -183,39 +187,47 @@ def files_list(request):
     # FAST PATH: First page with no filters - use pre-cached snapshot
     if page == 1 and not has_filters:
         cached_data = get_files_list()
+        snapshot = get_latest_snapshot()
+        snapshot_time = snapshot['timestamp'] if snapshot else timezone.now()
+
+        # If we have cached data, show it
         if cached_data and cached_data.get('items'):
             files = cached_data['items'][:per_page]
             total_files = cached_data.get('total', len(files))
-            total_pages = max(1, (total_files + per_page - 1) // per_page)
+        else:
+            # No cached data yet - show empty with loading indicator
+            # Don't hit the DB - let the snapshot worker populate it
+            files = []
+            total_files = 0
 
-            # Generate page range for pagination
-            page_range = []
-            if total_pages <= 10:
-                page_range = list(range(1, total_pages + 1))
-            else:
-                page_range = list(range(1, 6)) + ['...', total_pages]
+        total_pages = max(1, (total_files + per_page - 1) // per_page)
 
-            snapshot = get_latest_snapshot()
-            snapshot_time = snapshot['timestamp'] if snapshot else timezone.now()
+        # Generate page range for pagination
+        page_range = []
+        if total_pages <= 10:
+            page_range = list(range(1, total_pages + 1))
+        else:
+            page_range = list(range(1, 6)) + ['...', total_pages]
 
-            context = {
-                'files': files,
-                'page': 1,
-                'total_pages': total_pages,
-                'total_files': total_files,
-                'per_page': per_page,
-                'page_range': page_range,
-                'search': '',
-                'size_min': '',
-                'size_max': '',
-                'date_from': '',
-                'date_to': '',
-                'snapshot_time': snapshot_time,
-                'env_config': get_env_config(),
-                'page_title': 'Files',
-                'from_cache': True
-            }
-            return render(request, 'dashboard/files_list.html', context)
+        context = {
+            'files': files,
+            'page': 1,
+            'total_pages': total_pages,
+            'total_files': total_files,
+            'per_page': per_page,
+            'page_range': page_range,
+            'search': '',
+            'size_min': '',
+            'size_max': '',
+            'date_from': '',
+            'date_to': '',
+            'snapshot_time': snapshot_time,
+            'env_config': get_env_config(),
+            'page_title': 'Files',
+            'from_cache': True,
+            'loading': not cached_data  # True if no data yet
+        }
+        return render(request, 'dashboard/files_list.html', context)
 
     # SLOW PATH: DB query for filters/pagination (but NO GridFS preview loading)
     files_db = MongoDBConnections.get_files_db()

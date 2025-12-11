@@ -1019,6 +1019,33 @@ class MonitorWorker:
 
         return pipelines_data
 
+    def collect_stats(self):
+        """
+        Collect system statistics for the overview page.
+
+        PERFORMANCE: Uses estimated_document_count() for totals (instant) and
+        count_documents() only for filtered queries (which use indexes).
+        This is stored in snapshot so the overview page doesn't need to hit DBs.
+        """
+        try:
+            stats = {
+                # PERFORMANCE: estimated_document_count() uses collection metadata (instant)
+                'total_jobs': self.jobs_db.jobs.estimated_document_count(),
+                'active_jobs': self.jobs_db.jobs.count_documents({'status': {'$in': ['PD', 'R', 'CG', 'CF']}}),
+                'completed_jobs': self.jobs_db.jobs.count_documents({'status': 'CD'}),
+                'failed_jobs': self.jobs_db.jobs.count_documents({'status': 'F'}),
+                'cancelled_jobs': self.jobs_db.jobs.count_documents({'status': 'CA'}),
+                'total_meta_jobs': self.jobs_db.meta_jobs.estimated_document_count(),
+                'running_meta_jobs': self.jobs_db.meta_jobs.count_documents({'status': 'running'}),
+                'total_files': self.files_db.files.estimated_document_count(),
+                'total_methods': self.methods_db.methods.estimated_document_count(),
+                'active_methods': self.methods_db.methods.count_documents({'active': True}),
+            }
+            return stats
+        except Exception as e:
+            logger.error(f"Error collecting stats: {e}")
+            return {}
+
     def collect_jobs_list(self, limit=50):
         """Collect pre-enriched jobs list for admin panel with output/error previews.
 
@@ -1291,18 +1318,10 @@ class MonitorWorker:
                     file_item['preview_type'] = f.get('preview_type', 'text')
                     file_item['content_truncated'] = f.get('content_preview_truncated', True)
                 else:
-                    is_binary = any(filename.endswith(ext) for ext in BINARY_EXTENSIONS)
-                    is_large = file_size > 100000
-
-                    if is_binary:
-                        file_item['content_preview'] = '[Binary file]'
-                        file_item['preview_type'] = 'binary'
-                    elif is_large:
-                        file_item['content_preview'] = f'[Large file ({file_size:,} bytes)]'
-                        file_item['preview_type'] = 'large'
-                    else:
-                        file_item['content_preview'] = '[Preview loading...]'
-                        file_item['preview_type'] = 'pending'
+                    # No cached preview yet - show loading state
+                    # The cache_document_previews() will eventually populate this
+                    file_item['content_preview'] = '[Preview loading...]'
+                    file_item['preview_type'] = 'pending'
                     file_item['content_truncated'] = True
 
                 files_data['items'].append(file_item)
@@ -1338,7 +1357,7 @@ class MonitorWorker:
         HEX_PREVIEW_SIZE = 64
         BINARY_EXTENSIONS = ['.nii', '.nii.gz', '.gz', '.zip', '.tar', '.png', '.jpg', '.jpeg', '.gif', '.dcm', '.nrrd']
         PER_FILE_TIMEOUT = 2.0  # 2 seconds max per GridFS read
-        MAX_FILES_PER_CYCLE = 20  # Process fewer files but faster
+        MAX_FILES_PER_CYCLE = 20  # Conservative batch size per cycle
 
         def read_gridfs_with_timeout(fs, grid_id, read_size):
             """Read from GridFS - runs in thread pool for timeout protection."""
@@ -1553,6 +1572,8 @@ class MonitorWorker:
             'slurm_queue', self.collect_slurm_queue, [])
         snapshot['job_logs'] = self._safe_collect(
             'job_logs', self.collect_slurm_job_logs, [])
+        snapshot['stats'] = self._safe_collect(
+            'stats', self.collect_stats, {})
 
         # ========== MEDIUM COLLECTORS (every 30s) ==========
         if run_medium:

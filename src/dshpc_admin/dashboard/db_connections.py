@@ -121,23 +121,30 @@ class MongoDBConnections:
 
 
 def get_stats():
-    """Get system statistics."""
+    """
+    Get system statistics.
+
+    PERFORMANCE: Uses estimated_document_count() for totals (instant) and
+    count_documents() only for filtered queries (which use indexes).
+    """
     jobs_db = MongoDBConnections.get_jobs_db()
     files_db = MongoDBConnections.get_files_db()
     methods_db = MongoDBConnections.get_methods_db()
-    
+
     stats = {
-        'total_jobs': jobs_db.jobs.count_documents({}),
+        # PERFORMANCE: estimated_document_count() uses collection metadata (instant)
+        # count_documents({}) does a full collection scan (can take 20-30+ seconds)
+        'total_jobs': jobs_db.jobs.estimated_document_count(),
         'active_jobs': jobs_db.jobs.count_documents({'status': {'$in': ['PD', 'R', 'CG', 'CF']}}),
         'completed_jobs': jobs_db.jobs.count_documents({'status': 'CD'}),
         'failed_jobs': jobs_db.jobs.count_documents({'status': 'F'}),
-        'total_meta_jobs': jobs_db.meta_jobs.count_documents({}),
+        'total_meta_jobs': jobs_db.meta_jobs.estimated_document_count(),
         'running_meta_jobs': jobs_db.meta_jobs.count_documents({'status': 'running'}),
-        'total_files': files_db.files.count_documents({}),
+        'total_files': files_db.files.estimated_document_count(),
         'completed_files': files_db.files.count_documents({'status': 'completed'}),
-        'total_methods': methods_db.methods.count_documents({}),
+        'total_methods': methods_db.methods.estimated_document_count(),
         'active_methods': methods_db.methods.count_documents({'active': True}),
     }
-    
+
     return stats
 
