@@ -149,6 +149,63 @@ def cascade_cancel_meta_jobs(job_hash: str) -> tuple[int, int]:
     return meta_cancelled_count, pipeline_cancelled_count
 
 
+def _sync_ghost_running_jobs():
+    """
+    Synchronize MongoDB 'Running' jobs with actual Slurm queue state.
+
+    This handles the critical scenario where:
+    1. Slurm restarts or crashes
+    2. Jobs that were running disappear from Slurm queue
+    3. MongoDB still thinks they are 'R' (Running)
+
+    These "ghost" running jobs need to be reset to PENDING so they can be
+    resubmitted to Slurm. This must run BEFORE orphaned job processing
+    to prevent a cascade of incorrect retries.
+    """
+    try:
+        slurm_statuses = get_active_jobs()
+        reset_count = 0
+
+        # Find all jobs marked as RUNNING in MongoDB that have a slurm_id
+        running_jobs = jobs_collection.find({
+            "status": {"$in": [JobStatus.RUNNING, "R"]},
+            "slurm_id": {"$ne": None}
+        })
+
+        for job in running_jobs:
+            slurm_id = job["slurm_id"]
+            job_hash = job["job_hash"]
+
+            # If the slurm_id is not in the actual Slurm queue...
+            if slurm_id not in slurm_statuses:
+                # Check if there are output files (job actually completed)
+                output_path = f"/tmp/output_{job_hash}.txt"
+                exit_code_path = f"/tmp/exit_code_{job_hash}"
+
+                if not os.path.exists(output_path) and not os.path.exists(exit_code_path):
+                    # No output files = job never completed, ghost running
+                    # Reset to PENDING with cleared slurm_id for resubmission
+                    logger.warning(f"👻 Found ghost running job {job_hash} (slurm_id={slurm_id} not in Slurm queue) - resetting to PENDING")
+
+                    result = jobs_collection.update_one(
+                        {"job_hash": job_hash},
+                        {"$set": {
+                            "status": JobStatus.PENDING,
+                            "slurm_id": None,  # Clear so it gets resubmitted
+                            "error": None,
+                            "last_submission_attempt": None  # Allow immediate resubmission
+                        }}
+                    )
+                    if result.modified_count > 0:
+                        reset_count += 1
+
+        if reset_count > 0:
+            logger.info(f"👻 Reset {reset_count} ghost running job(s) to PENDING for resubmission")
+
+    except Exception as e:
+        logger.error(f"Error syncing ghost running jobs: {e}")
+
+
 def _check_cancelled_jobs_sync():
     """
     Synchronous implementation of cancelled job detection.
@@ -171,8 +228,9 @@ def _check_cancelled_jobs_sync():
         # Part 1: Check active jobs that disappeared from Slurm queue
         slurm_statuses = get_active_jobs()
 
+        # Only check PENDING jobs with slurm_id (not RUNNING - those are handled by _sync_ghost_running_jobs)
         active_db_jobs = jobs_collection.find({
-            "status": {"$in": [JobStatus.PENDING, JobStatus.RUNNING, "PD", "R", "CG"]},
+            "status": {"$in": [JobStatus.PENDING, "PD", "CG"]},
             "slurm_id": {"$ne": None}
         })
 
@@ -954,6 +1012,11 @@ def _check_jobs_once_sync():
     from slurm_api.services.job_service import is_files_db_available, PENDING_UPLOADS_DIR
 
     try:
+        # ========== Part 0: Sync ghost running jobs (MUST run first!) ==========
+        # This detects jobs marked as RUNNING in MongoDB but not in Slurm queue
+        # Critical after Slurm restart - prevents cascade of incorrect retries
+        _sync_ghost_running_jobs()
+
         # ========== Part 1: Check for cancelled jobs ==========
         _check_cancelled_jobs_sync()
 
