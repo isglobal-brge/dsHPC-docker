@@ -99,18 +99,23 @@ def is_retriable_error(error_message: str) -> bool:
     """
     Check if error is retriable (transient infrastructure failure, not job logic error).
 
-    Retriable errors include:
+    Retriable errors (will be auto-retried):
+    - Exit code 75 (EX_TEMPFAIL) - explicit retriable error set by developer
     - OOM kills (exit code 137, SIGKILL)
     - SIGTERM (exit code 143)
     - Service unavailability / connection errors
     - Timeouts and transient network issues
 
     NOT retriable (will NOT be auto-retried):
-    - Exit code 75 - explicit non-retriable error set by developer
+    - Exit code 78 (EX_CONFIG) - explicit non-retriable error set by developer
     - SIGSEGV (exit code 139) - indicates code bug
     - Assertion errors, value errors - logic errors
     - File format errors - data issues
     - Any error not matching retriable patterns
+
+    Developer exit codes (from BSD sysexits.h):
+    - sys.exit(75)  # EX_TEMPFAIL - temporary failure, WILL retry
+    - sys.exit(78)  # EX_CONFIG - configuration error, will NOT retry
 
     Args:
         error_message: Error message to check
@@ -125,6 +130,8 @@ def is_retriable_error(error_message: str) -> bool:
 
     # Retriable patterns - infrastructure/transient failures
     retriable_patterns = [
+        # Developer-set retriable error (EX_TEMPFAIL from sysexits.h)
+        "exit code: 75", "exit code 75", "code: 75",
         # OOM and signal kills (except SIGSEGV)
         "exit code: 137", "exit code 137", "code: 137",
         "sigkill", "oom", "out of memory", "killed",
