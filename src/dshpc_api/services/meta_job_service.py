@@ -445,35 +445,46 @@ async def submit_meta_job(request: MetaJobRequest) -> Tuple[bool, str, Optional[
 async def process_meta_job_chain(meta_job_hash: str):
     """
     Process a meta-job chain asynchronously.
-    
+
     Args:
         meta_job_hash: Hash of the meta-job to process
     """
     meta_jobs_db = await get_meta_jobs_db()
-    
+    current_step_for_error = None  # Track current step for error handling (defined outside try)
+
     try:
-        # Update status to running
+        # Get meta-job document first to check current status
+        meta_job = await meta_jobs_db.meta_jobs.find_one({"meta_job_hash": meta_job_hash})
+        if not meta_job:
+            logger.error(f"Meta-job {meta_job_hash} not found")
+            return
+
+        # Check if meta-job is already in terminal state (prevents race condition with recovery)
+        current_status = meta_job.get("status")
+        if current_status in [MetaJobStatus.COMPLETED, MetaJobStatus.FAILED, MetaJobStatus.CANCELLED,
+                              "completed", "failed", "cancelled"]:
+            logger.info(f"Meta-job {meta_job_hash} already in terminal state '{current_status}', skipping processing")
+            return
+
+        # Update status to running (only if not in terminal state)
         await meta_jobs_db.meta_jobs.update_one(
-            {"meta_job_hash": meta_job_hash},
+            {"meta_job_hash": meta_job_hash,
+             "status": {"$nin": [MetaJobStatus.COMPLETED, MetaJobStatus.FAILED, MetaJobStatus.CANCELLED,
+                                 "completed", "failed", "cancelled"]}},
             {"$set": {
                 "status": MetaJobStatus.RUNNING,
                 "updated_at": datetime.utcnow()
             }}
         )
         
-        # Get meta-job document
-        meta_job = await meta_jobs_db.meta_jobs.find_one({"meta_job_hash": meta_job_hash})
-        if not meta_job:
-            logger.error(f"Meta-job {meta_job_hash} not found")
-            return
-        
         # Initialize with initial file hash or file_inputs
         current_input_hash = meta_job.get("initial_file_hash")
         current_file_inputs = meta_job.get("initial_file_inputs")
         accumulated_file_inputs = {}  # Track file_inputs across chain steps
-        
+
         # Process each step in the chain
         for i, step in enumerate(meta_job["chain"]):
+            current_step_for_error = i  # Track for exception handler
             # Check if step is already completed (recovery scenario)
             # If step.status is 'completed' or 'cached', skip processing and use its output
             step_status = step.get("status")
@@ -773,15 +784,22 @@ async def process_meta_job_chain(meta_job_hash: str):
         
     except Exception as e:
         logger.error(f"Error processing meta-job {meta_job_hash}: {e}")
-        
-        # Update meta-job as failed
+
+        # Build update dict - always update status and error
+        update_dict = {
+            "status": MetaJobStatus.FAILED,
+            "error": str(e),
+            "updated_at": datetime.utcnow()
+        }
+
+        # Also update the current step status to "failed" if we know which step failed
+        # This prevents the recovery system from re-launching failed meta-jobs
+        if current_step_for_error is not None:
+            update_dict[f"chain.{current_step_for_error}.status"] = "failed"
+
         await meta_jobs_db.meta_jobs.update_one(
             {"meta_job_hash": meta_job_hash},
-            {"$set": {
-                "status": MetaJobStatus.FAILED,
-                "error": str(e),
-                "updated_at": datetime.utcnow()
-            }}
+            {"$set": update_dict}
         )
 
 
