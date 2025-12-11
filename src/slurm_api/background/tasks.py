@@ -421,13 +421,22 @@ async def check_orphaned_jobs():
 
     Jobs cancelled due to service unavailability can be retried automatically
     because the failure wasn't caused by the job itself.
+
+    IMPORTANT: This function runs in a thread pool to avoid blocking the API event loop.
+    All MongoDB and file download operations can block for up to 30s on connection issues.
     """
-    from slurm_api.services.job_service import prepare_job_script
+    from slurm_api.services.job_service import prepare_job_script, is_files_db_available
     from slurm_api.services.slurm_service import submit_slurm_job
     from slurm_api.models.job import JobSubmission
     from datetime import datetime, timedelta
 
     try:
+        # CRITICAL: Check if files DB is available BEFORE processing orphaned jobs
+        # This prevents the API from blocking for 30s per job when files DB is down
+        if not is_files_db_available():
+            logger.warning("⏸️ Files DB unavailable - skipping orphaned job retry to prevent API blocking")
+            return
+
         two_minutes_ago = datetime.utcnow() - timedelta(minutes=2)
 
         # Patterns that indicate service/infrastructure failure
@@ -660,7 +669,15 @@ async def check_pending_file_uploads():
 
     This ensures job outputs are eventually uploaded as files for deduplication/caching.
     """
+    from slurm_api.services.job_service import is_files_db_available
+
     try:
+        # CRITICAL: Check if files DB is available BEFORE processing uploads
+        # This prevents blocking the API when files DB is down
+        if not is_files_db_available():
+            logger.debug("⏸️ Files DB unavailable - skipping pending file uploads")
+            return
+
         # Find jobs with pending file uploads (limit to 10 at a time)
         pending_jobs = jobs_collection.find({
             "status": JobStatus.COMPLETED,

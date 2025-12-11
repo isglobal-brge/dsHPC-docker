@@ -1002,6 +1002,63 @@ def upload_job_output_as_file(job_hash: str, output: str) -> Optional[str]:
 
 PENDING_UPLOADS_DIR = "/persistent/pending_uploads"
 
+# Cache for files DB availability check
+_files_db_available_cache = {"available": None, "last_check": 0}
+
+
+def is_files_db_available(timeout_seconds: float = 2.0) -> bool:
+    """
+    Quick check if files DB is reachable.
+
+    This is used to prevent the background task from blocking the API
+    when files DB is down. Uses a short timeout and caching.
+
+    Args:
+        timeout_seconds: Maximum time to wait for connection
+
+    Returns:
+        True if files DB is reachable, False otherwise
+    """
+    import time
+    from pymongo import MongoClient
+    from pymongo.errors import ServerSelectionTimeoutError, ConnectionFailure
+
+    # Cache for 30 seconds to avoid hammering the DB
+    cache_ttl = 30
+    now = time.time()
+
+    if (_files_db_available_cache["last_check"] > 0 and
+        now - _files_db_available_cache["last_check"] < cache_ttl):
+        return _files_db_available_cache["available"]
+
+    try:
+        # Get files DB connection string from environment
+        files_db_host = os.environ.get("FILES_DB_HOST", "dshpc-imaging-files")
+        files_db_port = int(os.environ.get("FILES_DB_PORT", "27017"))
+
+        # Quick ping with short timeout
+        client = MongoClient(
+            host=files_db_host,
+            port=files_db_port,
+            serverSelectionTimeoutMS=int(timeout_seconds * 1000),
+            connectTimeoutMS=int(timeout_seconds * 1000),
+            socketTimeoutMS=int(timeout_seconds * 1000),
+        )
+
+        # Ping the server
+        client.admin.command('ping')
+        client.close()
+
+        _files_db_available_cache["available"] = True
+        _files_db_available_cache["last_check"] = now
+        return True
+
+    except (ServerSelectionTimeoutError, ConnectionFailure, Exception) as e:
+        logger.debug(f"Files DB not available: {e}")
+        _files_db_available_cache["available"] = False
+        _files_db_available_cache["last_check"] = now
+        return False
+
 
 def _save_pending_output(job_hash: str, output: str) -> bool:
     """

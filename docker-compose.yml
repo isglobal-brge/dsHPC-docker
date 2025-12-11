@@ -101,11 +101,12 @@ services:
       - mongodb_jobs_data:/data/db
     networks:
       - __DOCKER_PREFIX__-internal-network
-    command: mongod --port 27017 --quiet --logpath /dev/null
+    # Limit MongoDB cache to prevent OOM (wiredTigerCacheSizeGB=0.25 means 256MB cache)
+    command: mongod --port 27017 --quiet --logpath /dev/null --wiredTigerCacheSizeGB 0.25
     # OOM Protection: Make this container less likely to be killed
     oom_score_adj: -500
     mem_limit: 1g
-    memswap_limit: 1g
+    mem_reservation: 512m
     restart: always
     logging:
       driver: "none"
@@ -119,11 +120,12 @@ services:
       - mongodb_files_data:/data/db
     networks:
       - __DOCKER_PREFIX__-internal-network
-    command: mongod --port 27017 --quiet --logpath /dev/null
+    # Limit MongoDB cache to prevent OOM (wiredTigerCacheSizeGB=0.5 means 500MB cache)
+    command: mongod --port 27017 --quiet --logpath /dev/null --wiredTigerCacheSizeGB 0.5
     # OOM Protection: Make this container less likely to be killed
     oom_score_adj: -500
-    mem_limit: 1g
-    memswap_limit: 1g
+    mem_limit: 2g
+    mem_reservation: 1g
     restart: always
     logging:
       driver: "none"
@@ -137,11 +139,12 @@ services:
       - mongodb_methods_data:/data/db
     networks:
       - __DOCKER_PREFIX__-internal-network
-    command: mongod --port 27017 --quiet --logpath /dev/null
+    # Limit MongoDB cache to prevent OOM (wiredTigerCacheSizeGB=0.25 means 256MB cache)
+    command: mongod --port 27017 --quiet --logpath /dev/null --wiredTigerCacheSizeGB 0.25
     # OOM Protection: Make this container less likely to be killed
     oom_score_adj: -500
     mem_limit: 512m
-    memswap_limit: 512m
+    mem_reservation: 256m
     restart: always
     logging:
       driver: "none"
