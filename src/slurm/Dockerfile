@@ -1,7 +1,38 @@
-FROM ubuntu:22.04
+# =============================================================================
+# dsHPC Slurm Container - Adaptive GPU Support
+# =============================================================================
+# This Dockerfile supports multiple GPU configurations:
+#   - CPU only (default): Uses ubuntu:22.04 base
+#   - NVIDIA GPU: Uses nvidia/cuda base with CUDA runtime
+#   - AMD GPU: Uses ubuntu:22.04 with ROCm support
+#
+# Build arguments:
+#   GPU_TYPE: none (default), nvidia, amd
+#   CUDA_VERSION: CUDA version for NVIDIA (default: 12.0)
+#   ROCM_VERSION: ROCm version for AMD (default: 6.0)
+# =============================================================================
+
+ARG GPU_TYPE=none
+ARG CUDA_VERSION=12.0
+ARG ROCM_VERSION=6.0
+
+# Select base image based on GPU type
+# For NVIDIA: Use CUDA runtime image (includes cuDNN-ready base)
+# For AMD: Use Ubuntu and install ROCm
+# For CPU: Use plain Ubuntu
+FROM nvidia/cuda:${CUDA_VERSION}-runtime-ubuntu22.04 AS base-nvidia
+FROM ubuntu:22.04 AS base-amd
+FROM ubuntu:22.04 AS base-none
+
+# Select the appropriate base image based on GPU_TYPE
+FROM base-${GPU_TYPE} AS final
 
 # Prevent interactive prompts during package installation
 ENV DEBIAN_FRONTEND=noninteractive
+
+# GPU type environment variable (for runtime detection)
+ARG GPU_TYPE
+ENV DSHPC_GPU_TYPE=${GPU_TYPE}
 
 # Copy configuration files from the environment directory for build process
 COPY environment/python.json /tmp/python.json
@@ -67,6 +98,43 @@ RUN apt-get clean && \
         jq \
         cgroup-tools) \
     && rm -rf /var/lib/apt/lists/*
+
+# =============================================================================
+# GPU-SPECIFIC PACKAGES
+# =============================================================================
+# Install GPU libraries based on GPU_TYPE build argument
+# These are installed conditionally to keep CPU-only images smaller
+
+# AMD ROCm installation (only for amd GPU type)
+# ROCm provides HIP runtime for AMD GPUs
+ARG GPU_TYPE
+ARG ROCM_VERSION
+RUN if [ "$GPU_TYPE" = "amd" ]; then \
+        echo "Installing AMD ROCm ${ROCM_VERSION} support..." && \
+        apt-get update && \
+        apt-get install -y --no-install-recommends \
+            wget \
+            gnupg2 && \
+        # Add ROCm repository
+        wget -q -O - https://repo.radeon.com/rocm/rocm.gpg.key | apt-key add - && \
+        echo "deb [arch=amd64] https://repo.radeon.com/rocm/apt/${ROCM_VERSION} ubuntu main" > /etc/apt/sources.list.d/rocm.list && \
+        apt-get update && \
+        # Install minimal ROCm runtime (not full dev kit to save space)
+        apt-get install -y --no-install-recommends \
+            rocm-hip-runtime \
+            rocm-smi-lib && \
+        rm -rf /var/lib/apt/lists/* && \
+        echo "ROCm installation complete"; \
+    else \
+        echo "Skipping ROCm installation (GPU_TYPE=${GPU_TYPE})"; \
+    fi
+
+# NVIDIA: CUDA is already included in the nvidia/cuda base image
+# Just ensure nvidia-smi is available for GPU detection
+RUN if [ "$GPU_TYPE" = "nvidia" ]; then \
+        echo "NVIDIA CUDA support enabled via base image"; \
+        # nvidia-smi is included in the CUDA base image
+    fi
 
 # Install system dependencies from config file if not empty
 RUN apt-get clean && \

@@ -98,6 +98,99 @@ if [ "$USER_CUSTOM_SLURM" = false ]; then
     DETECTED_MEMORY_KB=$(grep MemTotal /proc/meminfo 2>/dev/null | awk '{print $2}' || echo 16777216)
     TOTAL_MEMORY_MB=$((DETECTED_MEMORY_KB / 1024))
 
+    # ==========================================================================
+    # GPU DETECTION AT RUNTIME
+    # ==========================================================================
+    # Detect GPUs available inside the container
+    # This validates that Docker GPU passthrough is working correctly
+    GPU_TYPE="none"
+    GPU_COUNT=0
+    GRES_CONFIG=""
+    GRES_TYPES_LINE=""
+
+    # Check for NVIDIA GPUs
+    if command -v nvidia-smi &> /dev/null; then
+        NVIDIA_COUNT=$(nvidia-smi --query-gpu=count --format=csv,noheader 2>/dev/null | head -1 || echo 0)
+        if [ -n "$NVIDIA_COUNT" ] && [ "$NVIDIA_COUNT" -gt 0 ]; then
+            GPU_TYPE="nvidia"
+            GPU_COUNT=$NVIDIA_COUNT
+            GPU_NAMES=$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | head -1 || echo "NVIDIA GPU")
+            GPU_MEMORY=$(nvidia-smi --query-gpu=memory.total --format=csv,noheader 2>/dev/null | head -1 || echo "unknown")
+            echo -e "${GREEN}>> NVIDIA GPU(s) detected: ${GPU_COUNT}x ${GPU_NAMES} (${GPU_MEMORY})${NC}"
+
+            GRES_TYPES_LINE="GresTypes=gpu"
+            GRES_CONFIG="Gres=gpu:nvidia:${GPU_COUNT}"
+
+            # Create gres.conf for NVIDIA
+            echo -e "${CYAN}>> Generating gres.conf for NVIDIA GPU(s)...${NC}"
+            cat > /etc/slurm/gres.conf << GRESEOF
+# Auto-generated GPU configuration
+# Detected: ${GPU_COUNT} NVIDIA GPU(s)
+AutoDetect=nvml
+GRESEOF
+        fi
+    fi
+
+    # Check for AMD GPUs (ROCm)
+    if [ "$GPU_TYPE" = "none" ] && [ -e /dev/kfd ]; then
+        if command -v rocm-smi &> /dev/null; then
+            AMD_COUNT=$(rocm-smi --showid 2>/dev/null | grep -c "GPU" || echo 0)
+            if [ "$AMD_COUNT" -gt 0 ]; then
+                GPU_TYPE="amd"
+                GPU_COUNT=$AMD_COUNT
+                echo -e "${GREEN}>> AMD GPU(s) detected: ${GPU_COUNT} GPU(s) via ROCm${NC}"
+
+                GRES_TYPES_LINE="GresTypes=gpu"
+                GRES_CONFIG="Gres=gpu:amd:${GPU_COUNT}"
+
+                # Create gres.conf for AMD
+                echo -e "${CYAN}>> Generating gres.conf for AMD GPU(s)...${NC}"
+                cat > /etc/slurm/gres.conf << GRESEOF
+# Auto-generated GPU configuration
+# Detected: ${GPU_COUNT} AMD GPU(s)
+AutoDetect=rsmi
+GRESEOF
+            fi
+        elif [ -d /dev/dri ]; then
+            # Fallback: count render devices
+            RENDER_COUNT=$(ls /dev/dri/renderD* 2>/dev/null | wc -l)
+            if [ "$RENDER_COUNT" -gt 0 ]; then
+                GPU_TYPE="amd"
+                GPU_COUNT=$RENDER_COUNT
+                echo -e "${GREEN}>> AMD GPU(s) detected: ${GPU_COUNT} render device(s)${NC}"
+
+                GRES_TYPES_LINE="GresTypes=gpu"
+                GRES_CONFIG="Gres=gpu:amd:${GPU_COUNT}"
+
+                # Create gres.conf with manual device mapping
+                echo -e "${CYAN}>> Generating gres.conf for AMD GPU(s)...${NC}"
+                echo "# Auto-generated GPU configuration" > /etc/slurm/gres.conf
+                echo "# Detected: ${GPU_COUNT} AMD GPU(s) via /dev/dri" >> /etc/slurm/gres.conf
+                for i in $(seq 0 $((GPU_COUNT-1))); do
+                    RENDER_ID=$((128 + i))
+                    echo "NodeName=localhost Name=gpu Type=amd File=/dev/dri/renderD${RENDER_ID}" >> /etc/slurm/gres.conf
+                done
+            fi
+        fi
+    fi
+
+    # Also check build-time GPU type from environment variable
+    if [ "$GPU_TYPE" = "none" ] && [ -n "$DSHPC_GPU_TYPE" ] && [ "$DSHPC_GPU_TYPE" != "none" ]; then
+        echo -e "${YELLOW}>> Container built with ${DSHPC_GPU_TYPE} GPU support but no GPU detected at runtime${NC}"
+        echo -e "${YELLOW}>> Ensure Docker is configured with GPU passthrough${NC}"
+    fi
+
+    if [ "$GPU_TYPE" != "none" ]; then
+        echo -e "${GREEN}>> GPU support enabled: ${GPU_COUNT} ${GPU_TYPE} GPU(s) available for jobs${NC}"
+    else
+        echo -e "${CYAN}>> No GPU detected - running in CPU-only mode${NC}"
+        # Remove gres.conf if it exists from a previous GPU-enabled run
+        rm -f /etc/slurm/gres.conf
+    fi
+
+    # ==========================================================================
+    # MEMORY ALLOCATION
+    # ==========================================================================
     # CONSERVATIVE MEMORY ALLOCATION:
     # Reserve memory for system services (MongoDB, Slurm daemons, OS, etc.)
     # - Base reservation: 2 GB for OS/Slurm
@@ -146,6 +239,16 @@ if [ "$USER_CUSTOM_SLURM" = false ]; then
     echo -e "${CYAN}>> Default job: 1 CPU, ${DEF_MEM_PER_CPU} MB RAM (2GB) → max ~${MAX_PARALLEL_JOBS} parallel jobs${NC}"
     echo -e "${CYAN}>> OOM prevention: generous defaults + 20% safety buffer on min_memory_mb${NC}"
 
+    # ==========================================================================
+    # GENERATE SLURM.CONF
+    # ==========================================================================
+    # Build NodeName line with optional GPU GRES
+    if [ -n "$GRES_CONFIG" ]; then
+        NODE_LINE="NodeName=localhost CPUs=${DETECTED_CPUS} RealMemory=${SLURM_MEMORY_MB} TmpDisk=100000 ${GRES_CONFIG} State=UNKNOWN"
+    else
+        NODE_LINE="NodeName=localhost CPUs=${DETECTED_CPUS} RealMemory=${SLURM_MEMORY_MB} TmpDisk=100000 State=UNKNOWN"
+    fi
+
     cat > /etc/slurm/slurm.conf << EOF
 ClusterName=${CLUSTER_NAME:-dshpc-slurm}
 SlurmctldHost=localhost
@@ -159,14 +262,26 @@ SlurmctldDebug=debug5
 # SCHEDULER - Allow multiple jobs to run simultaneously
 SelectType=select/cons_tres
 SelectTypeParameters=CR_Core_Memory
+EOF
+
+    # Add GPU configuration if detected
+    if [ -n "$GRES_TYPES_LINE" ]; then
+        cat >> /etc/slurm/slurm.conf << EOF
+
+# GPU RESOURCES - Auto-detected at container startup
+${GRES_TYPES_LINE}
+EOF
+    fi
+
+    cat >> /etc/slurm/slurm.conf << EOF
 
 # COMPUTE NODES - Auto-configured based on system resources
-# Total system: ${DETECTED_CPUS} CPUs, ${TOTAL_MEMORY_MB} MB RAM
+# Total system: ${DETECTED_CPUS} CPUs, ${TOTAL_MEMORY_MB} MB RAM, ${GPU_COUNT} GPU(s)
 # Reserved for system (MongoDB, Slurm, OS): ${SYSTEM_RESERVED_MB} MB
 # Available for jobs: ${SLURM_MEMORY_MB} MB
 # Default job: 1 CPU, ${DEF_MEM_PER_CPU} MB RAM
 # Estimated max parallel jobs: ${MAX_PARALLEL_JOBS}
-NodeName=localhost CPUs=${DETECTED_CPUS} RealMemory=${SLURM_MEMORY_MB} TmpDisk=100000 State=UNKNOWN
+${NODE_LINE}
 PartitionName=debug Nodes=localhost Default=YES MaxTime=INFINITE State=UP DefMemPerCPU=${DEF_MEM_PER_CPU} MaxMemPerCPU=${MAX_MEM_PER_CPU}
 
 # PROCESS TRACKING

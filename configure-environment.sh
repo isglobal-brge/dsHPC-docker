@@ -499,14 +499,235 @@ get_nested_config_value() {
     fi
 }
 
+# =============================================================================
+# GPU DETECTION AND CONFIGURATION
+# =============================================================================
+# Comprehensive GPU detection for all supported platforms:
+# - Linux + NVIDIA (full support via nvidia-container-toolkit)
+# - Linux + AMD (full support via ROCm/amd-container-toolkit)
+# - Windows WSL2 + NVIDIA (full support via Docker Desktop)
+# - macOS (no GPU support in containers - Metal not compatible)
+# =============================================================================
+
+# Global GPU configuration variables
+GPU_TYPE="none"           # none, nvidia, amd, intel
+GPU_COUNT=0
+GPU_NAMES=""
+GPU_MEMORY=""
+GPU_DOCKER_READY=false
+GPU_CUDA_VERSION=""
+GPU_ROCM_VERSION=""
+
+detect_gpu_comprehensive() {
+    echo -e "${CYAN}🔍 Detecting GPU configuration...${NC}"
+
+    local os_type=$(uname -s)
+    local is_wsl=false
+
+    # Detect WSL
+    if [[ -f /proc/version ]] && grep -qi "microsoft\|wsl" /proc/version 2>/dev/null; then
+        is_wsl=true
+        echo -e "${CYAN}  Running in WSL2 environment${NC}"
+    fi
+
+    # ==========================================================================
+    # macOS Detection (No container GPU support)
+    # ==========================================================================
+    if [[ "$os_type" == "Darwin" ]]; then
+        echo -e "${YELLOW}  macOS detected - GPU passthrough to Docker containers is not supported${NC}"
+
+        # Still detect for informational purposes
+        if system_profiler SPDisplaysDataType 2>/dev/null | grep -q "Apple M"; then
+            local apple_gpu=$(system_profiler SPDisplaysDataType 2>/dev/null | grep "Chipset Model" | head -1 | sed 's/.*: //')
+            echo -e "${CYAN}  Host GPU: ${apple_gpu} (Metal - not available in containers)${NC}"
+            echo -e "${YELLOW}  Note: Apple Silicon uses Metal framework, incompatible with CUDA/ROCm${NC}"
+        fi
+
+        GPU_TYPE="none"
+        GPU_COUNT=0
+        GPU_DOCKER_READY=false
+        return 0
+    fi
+
+    # ==========================================================================
+    # NVIDIA GPU Detection (Linux / WSL2)
+    # ==========================================================================
+    if command -v nvidia-smi &> /dev/null; then
+        echo -e "${CYAN}  Checking NVIDIA GPU...${NC}"
+
+        # Get GPU count
+        local nvidia_count=$(nvidia-smi --query-gpu=count --format=csv,noheader 2>/dev/null | head -1)
+
+        if [[ -n "$nvidia_count" ]] && [[ "$nvidia_count" -gt 0 ]]; then
+            GPU_TYPE="nvidia"
+            GPU_COUNT=$nvidia_count
+            GPU_NAMES=$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | tr '\n' ', ' | sed 's/,$//')
+            GPU_MEMORY=$(nvidia-smi --query-gpu=memory.total --format=csv,noheader 2>/dev/null | head -1)
+
+            # Get CUDA version
+            GPU_CUDA_VERSION=$(nvidia-smi --query-gpu=driver_version --format=csv,noheader 2>/dev/null | head -1)
+
+            echo -e "${GREEN}  ✓ NVIDIA GPU(s) detected: ${GPU_COUNT}x ${GPU_NAMES}${NC}"
+            echo -e "${GREEN}    Memory: ${GPU_MEMORY}, Driver: ${GPU_CUDA_VERSION}${NC}"
+
+            # Test Docker GPU passthrough
+            test_docker_gpu_nvidia
+        fi
+    fi
+
+    # ==========================================================================
+    # AMD GPU Detection (Linux only, not WSL)
+    # ==========================================================================
+    if [[ "$GPU_TYPE" == "none" ]] && [[ "$is_wsl" == false ]]; then
+        # Check for AMD GPU via /dev/kfd (ROCm kernel interface)
+        if [[ -e /dev/kfd ]]; then
+            echo -e "${CYAN}  Checking AMD GPU (ROCm)...${NC}"
+
+            # Try rocm-smi if available
+            if command -v rocm-smi &> /dev/null; then
+                local amd_count=$(rocm-smi --showid 2>/dev/null | grep -c "GPU" || echo 0)
+                if [[ "$amd_count" -gt 0 ]]; then
+                    GPU_TYPE="amd"
+                    GPU_COUNT=$amd_count
+                    GPU_NAMES=$(rocm-smi --showproductname 2>/dev/null | grep "Card" | head -1 | sed 's/.*: //' || echo "AMD GPU")
+
+                    # Get ROCm version
+                    GPU_ROCM_VERSION=$(cat /opt/rocm/.info/version 2>/dev/null || echo "unknown")
+
+                    echo -e "${GREEN}  ✓ AMD GPU(s) detected: ${GPU_COUNT}x ${GPU_NAMES}${NC}"
+                    echo -e "${GREEN}    ROCm version: ${GPU_ROCM_VERSION}${NC}"
+
+                    test_docker_gpu_amd
+                fi
+            elif [[ -d /dev/dri ]]; then
+                # Fallback: check render nodes
+                local render_count=$(ls /dev/dri/renderD* 2>/dev/null | wc -l)
+                if [[ "$render_count" -gt 0 ]]; then
+                    # Check if it's actually AMD via lspci
+                    if command -v lspci &> /dev/null && lspci | grep -qi "amd.*vga\|radeon"; then
+                        GPU_TYPE="amd"
+                        GPU_COUNT=$render_count
+                        GPU_NAMES="AMD GPU (detected via /dev/dri)"
+                        echo -e "${GREEN}  ✓ AMD GPU detected via render nodes${NC}"
+                        test_docker_gpu_amd
+                    fi
+                fi
+            fi
+        fi
+    fi
+
+    # ==========================================================================
+    # Intel GPU Detection (Experimental)
+    # ==========================================================================
+    if [[ "$GPU_TYPE" == "none" ]] && [[ "$is_wsl" == false ]]; then
+        if command -v xpu-smi &> /dev/null || [[ -d /dev/dri ]] && command -v lspci &> /dev/null && lspci | grep -qi "intel.*vga"; then
+            echo -e "${YELLOW}  Intel GPU detected - experimental support only${NC}"
+            # Not enabling by default due to immature container support
+        fi
+    fi
+
+    # ==========================================================================
+    # Summary
+    # ==========================================================================
+    if [[ "$GPU_DOCKER_READY" == true ]]; then
+        echo -e "${GREEN}  ✓ GPU is ready for Docker containers${NC}"
+    elif [[ "$GPU_TYPE" != "none" ]]; then
+        echo -e "${YELLOW}  ⚠️  GPU detected but Docker passthrough not available${NC}"
+        echo -e "${YELLOW}     See GPU_USAGE.md for setup instructions${NC}"
+    else
+        echo -e "${CYAN}  No compatible GPU detected for container use${NC}"
+    fi
+
+    # Export for other functions
+    export GPU_TYPE
+    export GPU_COUNT
+    export GPU_NAMES
+    export GPU_MEMORY
+    export GPU_DOCKER_READY
+    export GPU_CUDA_VERSION
+    export GPU_ROCM_VERSION
+}
+
+test_docker_gpu_nvidia() {
+    echo -e "${CYAN}  Testing Docker NVIDIA GPU passthrough...${NC}"
+
+    if ! command -v docker &> /dev/null; then
+        echo -e "${YELLOW}    Docker not found, skipping GPU test${NC}"
+        GPU_DOCKER_READY=false
+        return 1
+    fi
+
+    # Check if nvidia-container-toolkit is configured
+    local docker_runtime_check=$(docker info 2>/dev/null | grep -i "nvidia" || echo "")
+
+    # Try running a minimal NVIDIA container
+    # Use a lightweight test that doesn't require pulling large images
+    local gpu_test_result
+    gpu_test_result=$(docker run --rm --gpus all \
+        nvidia/cuda:12.0-base-ubuntu22.04 \
+        nvidia-smi --query-gpu=name --format=csv,noheader 2>&1)
+    local test_exit=$?
+
+    if [[ $test_exit -eq 0 ]] && [[ -n "$gpu_test_result" ]] && [[ ! "$gpu_test_result" =~ "error" ]]; then
+        echo -e "${GREEN}    ✓ Docker GPU passthrough working${NC}"
+        GPU_DOCKER_READY=true
+        return 0
+    else
+        echo -e "${YELLOW}    ✗ Docker GPU passthrough failed${NC}"
+
+        # Provide specific guidance
+        if [[ -z "$docker_runtime_check" ]]; then
+            echo -e "${YELLOW}    nvidia-container-toolkit may not be installed${NC}"
+            echo -e "${CYAN}    Install with: ${NC}"
+            echo -e "${CYAN}      curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | sudo gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg${NC}"
+            echo -e "${CYAN}      sudo apt-get update && sudo apt-get install -y nvidia-container-toolkit${NC}"
+            echo -e "${CYAN}      sudo nvidia-ctk runtime configure --runtime=docker${NC}"
+            echo -e "${CYAN}      sudo systemctl restart docker${NC}"
+        fi
+
+        GPU_DOCKER_READY=false
+        return 1
+    fi
+}
+
+test_docker_gpu_amd() {
+    echo -e "${CYAN}  Testing Docker AMD GPU passthrough...${NC}"
+
+    if ! command -v docker &> /dev/null; then
+        echo -e "${YELLOW}    Docker not found, skipping GPU test${NC}"
+        GPU_DOCKER_READY=false
+        return 1
+    fi
+
+    # Test ROCm container access
+    local gpu_test_result
+    gpu_test_result=$(docker run --rm \
+        --device=/dev/kfd \
+        --device=/dev/dri \
+        --security-opt seccomp=unconfined \
+        rocm/rocm-terminal:latest \
+        rocm-smi --showid 2>&1)
+    local test_exit=$?
+
+    if [[ $test_exit -eq 0 ]] && [[ "$gpu_test_result" =~ "GPU" ]]; then
+        echo -e "${GREEN}    ✓ Docker AMD GPU passthrough working${NC}"
+        GPU_DOCKER_READY=true
+        return 0
+    else
+        echo -e "${YELLOW}    ✗ Docker AMD GPU passthrough failed${NC}"
+        echo -e "${YELLOW}    Ensure ROCm kernel driver is installed on host${NC}"
+        echo -e "${CYAN}    See: https://rocm.docs.amd.com/projects/install-on-linux/en/latest/${NC}"
+        GPU_DOCKER_READY=false
+        return 1
+    fi
+}
+
 # Detect system resources
 detect_system_resources() {
     echo -e "${CYAN}🔍 Detecting system resources...${NC}"
 
     local cpus=8
     local memory_mb=16000
-    local gpus=0
-    local gpu_info=""
 
     # Detect CPUs
     if [[ "$(uname)" == "Darwin" ]]; then
@@ -523,22 +744,6 @@ detect_system_resources() {
         memory_mb=$((memory_kb / 1024))
     fi
 
-    # Detect NVIDIA GPUs
-    if command -v nvidia-smi &> /dev/null; then
-        gpus=$(nvidia-smi --query-gpu=count --format=csv,noheader 2>/dev/null | head -1 || echo 0)
-        if [[ $gpus -gt 0 ]]; then
-            gpu_info=$(nvidia-smi --query-gpu=name,memory.total --format=csv,noheader 2>/dev/null | head -1 || echo "Unknown")
-            echo -e "${GREEN}  NVIDIA GPU detected: ${gpus} GPU(s) - ${gpu_info}${NC}"
-        fi
-    elif [[ "$(uname)" == "Darwin" ]]; then
-        # Check for Apple Silicon GPU (MPS)
-        if system_profiler SPDisplaysDataType 2>/dev/null | grep -q "Apple"; then
-            gpu_info="Apple Silicon (MPS available)"
-            echo -e "${GREEN}  Apple Silicon GPU detected: ${gpu_info}${NC}"
-            gpus=1
-        fi
-    fi
-
     # Docker Desktop typically has less memory than the system
     # Check Docker's actual memory limit
     if command -v docker &> /dev/null; then
@@ -551,26 +756,28 @@ detect_system_resources() {
                 echo -e "${YELLOW}  Docker memory limit detected: ${memory_mb} MB${NC}"
             fi
         fi
-
-        # Check Docker GPU support
-        if [[ $gpus -gt 0 ]] && command -v nvidia-smi &> /dev/null; then
-            docker_gpu_test=$(docker run --rm --gpus all nvidia/cuda:11.0-base nvidia-smi 2>/dev/null && echo "yes" || echo "no")
-            if [[ "$docker_gpu_test" == "no" ]]; then
-                echo -e "${YELLOW}  ⚠️  Docker GPU passthrough not configured. Install nvidia-container-toolkit for GPU support.${NC}"
-                gpus=0
-            fi
-        fi
     fi
 
     # Leave some memory for the system (use 90% of available)
     memory_mb=$((memory_mb * 90 / 100))
 
-    echo -e "${GREEN}✓ Detected: ${cpus} CPUs, ${memory_mb} MB RAM, ${gpus} GPU(s) available for Slurm${NC}"
+    # Run comprehensive GPU detection
+    detect_gpu_comprehensive
+
+    # Summary
+    local gpu_summary="no GPU"
+    if [[ "$GPU_DOCKER_READY" == true ]]; then
+        gpu_summary="${GPU_COUNT} ${GPU_TYPE} GPU(s) ready"
+    elif [[ "$GPU_TYPE" != "none" ]]; then
+        gpu_summary="${GPU_COUNT} ${GPU_TYPE} GPU(s) detected (not Docker-ready)"
+    fi
+
+    echo -e "${GREEN}✓ System resources: ${cpus} CPUs, ${memory_mb} MB RAM, ${gpu_summary}${NC}"
 
     # Export for use in other functions
     export DETECTED_CPUS=$cpus
     export DETECTED_MEMORY=$memory_mb
-    export DETECTED_GPUS=$gpus
+    export DETECTED_GPUS=$GPU_COUNT
 
     # Check resource requirements from environment-config.json
     local min_memory_gb=$(get_nested_config_value "resource_requirements" "min_memory_gb")
@@ -638,25 +845,48 @@ detect_system_resources() {
 # Configure Slurm with detected resources
 configure_slurm() {
     echo -e "${CYAN}⚙️  Configuring Slurm with detected resources...${NC}"
-    
+
     if [[ ! -d "config" ]]; then
         mkdir -p config
     fi
-    
+
     # Only create slurm.conf if it doesn't exist
     if [[ -f "config/slurm.conf" ]]; then
         echo -e "${GREEN}✓ Slurm configuration already exists: config/slurm.conf${NC}"
         echo -e "${CYAN}💡 To regenerate, delete config/slurm.conf and run setup again${NC}"
-        
+
         # Show current configuration resources if available
         if grep -q "CPUs=" "config/slurm.conf" 2>/dev/null; then
             local current_cpus=$(grep "CPUs=" "config/slurm.conf" | sed 's/.*CPUs=\([0-9]*\).*/\1/')
             local current_mem=$(grep "RealMemory=" "config/slurm.conf" | sed 's/.*RealMemory=\([0-9]*\).*/\1/')
-            echo -e "${CYAN}Current config: ${current_cpus} CPUs, ${current_mem} MB RAM${NC}"
+            local current_gpu=$(grep "Gres=" "config/slurm.conf" | sed 's/.*Gres=\([^ ]*\).*/\1/' || echo "none")
+            echo -e "${CYAN}Current config: ${current_cpus} CPUs, ${current_mem} MB RAM, GPU: ${current_gpu}${NC}"
             echo -e "${CYAN}Detected resources: ${DETECTED_CPUS} CPUs, ${DETECTED_MEMORY} MB RAM${NC}"
         fi
     else
         echo -e "${YELLOW}Creating new Slurm configuration...${NC}"
+
+        # Build GPU configuration if available
+        local gres_types=""
+        local gres_config=""
+        local node_gres=""
+
+        if [[ "$GPU_DOCKER_READY" == true ]] && [[ "$GPU_COUNT" -gt 0 ]]; then
+            echo -e "${GREEN}  Configuring Slurm for ${GPU_COUNT} ${GPU_TYPE} GPU(s)${NC}"
+            gres_types="GresTypes=gpu"
+
+            if [[ "$GPU_TYPE" == "nvidia" ]]; then
+                node_gres="Gres=gpu:nvidia:${GPU_COUNT}"
+            elif [[ "$GPU_TYPE" == "amd" ]]; then
+                node_gres="Gres=gpu:amd:${GPU_COUNT}"
+            else
+                node_gres="Gres=gpu:${GPU_COUNT}"
+            fi
+
+            # Create gres.conf
+            configure_slurm_gres
+        fi
+
         # Create slurm.conf with detected resources
         cat > "config/slurm.conf" << EOF
 ClusterName=${DOCKER_PREFIX}-slurm
@@ -670,26 +900,102 @@ SlurmctldDebug=debug5
 
 # SCHEDULER - Allow multiple jobs to run simultaneously
 SelectType=select/cons_tres
-SelectTypeParameters=CR_Core
+SelectTypeParameters=CR_Core_Memory
+EOF
+
+        # Add GPU configuration if available
+        if [[ -n "$gres_types" ]]; then
+            cat >> "config/slurm.conf" << EOF
+
+# GPU RESOURCES
+${gres_types}
+EOF
+        fi
+
+        # Add node and partition configuration
+        local node_line="NodeName=localhost CPUs=${DETECTED_CPUS} RealMemory=${DETECTED_MEMORY} TmpDisk=100000"
+        if [[ -n "$node_gres" ]]; then
+            node_line="${node_line} ${node_gres}"
+        fi
+        node_line="${node_line} State=UNKNOWN"
+
+        cat >> "config/slurm.conf" << EOF
 
 # COMPUTE NODES - Auto-configured based on system resources
-# Detected: ${DETECTED_CPUS} CPUs, ${DETECTED_MEMORY} MB RAM
-NodeName=localhost CPUs=${DETECTED_CPUS} RealMemory=${DETECTED_MEMORY} TmpDisk=100000 State=UNKNOWN
+# Detected: ${DETECTED_CPUS} CPUs, ${DETECTED_MEMORY} MB RAM, ${GPU_COUNT} GPU(s)
+${node_line}
 PartitionName=debug Nodes=localhost Default=YES MaxTime=INFINITE State=UP DefMemPerCPU=$((DETECTED_MEMORY / DETECTED_CPUS)) MaxMemPerCPU=$((DETECTED_MEMORY / DETECTED_CPUS * 2))
 
 # PROCESS TRACKING
 ProctrackType=proctrack/linuxproc
 EOF
-        echo -e "${GREEN}✓ Slurm configured with: ${DETECTED_CPUS} CPUs, ${DETECTED_MEMORY} MB RAM${NC}"
+
+        local gpu_msg=""
+        if [[ "$GPU_DOCKER_READY" == true ]] && [[ "$GPU_COUNT" -gt 0 ]]; then
+            gpu_msg=", ${GPU_COUNT} ${GPU_TYPE} GPU(s)"
+        fi
+        echo -e "${GREEN}✓ Slurm configured with: ${DETECTED_CPUS} CPUs, ${DETECTED_MEMORY} MB RAM${gpu_msg}${NC}"
     fi
-    
+
     echo
 }
 
-# Configure docker-compose with dynamic prefix
+# Configure Slurm GRES (Generic Resources) for GPU
+configure_slurm_gres() {
+    echo -e "${CYAN}  Creating gres.conf for GPU resources...${NC}"
+
+    cat > "config/gres.conf" << 'EOF'
+# =============================================================================
+# Slurm Generic Resources (GRES) Configuration
+# Auto-generated by configure-environment.sh
+# =============================================================================
+# This file defines GPU resources available to Slurm jobs.
+#
+# IMPORTANT: This configuration is validated at container startup.
+# If the actual GPU configuration differs, start-services.sh will
+# regenerate this file based on detected hardware.
+# =============================================================================
+
+EOF
+
+    if [[ "$GPU_TYPE" == "nvidia" ]]; then
+        cat >> "config/gres.conf" << EOF
+# NVIDIA GPU Configuration
+# AutoDetect=nvml will use NVIDIA Management Library for automatic detection
+# This is the recommended approach as it handles GPU topology automatically
+AutoDetect=nvml
+
+# Manual configuration (used as fallback if AutoDetect fails)
+# Uncomment and modify if you need explicit device mapping:
+EOF
+        # Add manual entries for each GPU
+        for ((i=0; i<GPU_COUNT; i++)); do
+            echo "# NodeName=localhost Name=gpu Type=nvidia File=/dev/nvidia${i}" >> "config/gres.conf"
+        done
+
+    elif [[ "$GPU_TYPE" == "amd" ]]; then
+        cat >> "config/gres.conf" << EOF
+# AMD GPU Configuration (ROCm)
+# AMD GPUs use /dev/dri/renderD* devices
+# AutoDetect=rsmi uses ROCm SMI for detection (requires ROCm 5.0+)
+AutoDetect=rsmi
+
+# Manual configuration (used as fallback if AutoDetect fails)
+EOF
+        # Add manual entries - AMD uses renderD128, renderD129, etc.
+        for ((i=0; i<GPU_COUNT; i++)); do
+            local render_id=$((128 + i))
+            echo "# NodeName=localhost Name=gpu Type=amd File=/dev/dri/renderD${render_id}" >> "config/gres.conf"
+        done
+    fi
+
+    echo -e "${GREEN}  ✓ gres.conf created${NC}"
+}
+
+# Configure docker-compose with dynamic prefix and GPU support
 configure_docker_compose() {
     echo -e "${CYAN}⚙️  Configuring Docker Compose with prefix: $DOCKER_PREFIX${NC}"
-    
+
     if [[ -f "docker-compose.yml" ]]; then
         # Replace the template placeholder with the actual prefix
         if command -v sed &> /dev/null; then
@@ -700,28 +1006,151 @@ configure_docker_compose() {
         else
             echo -e "${YELLOW}⚠️  sed not available, docker-compose.yml may need manual configuration${NC}"
         fi
+
+        # Configure GPU support if available
+        if [[ "$GPU_DOCKER_READY" == true ]] && [[ "$GPU_COUNT" -gt 0 ]]; then
+            configure_docker_compose_gpu
+        fi
     else
         echo -e "${RED}❌ docker-compose.yml not found${NC}"
     fi
-    
+
     echo
+}
+
+# Add GPU configuration to docker-compose.yml
+configure_docker_compose_gpu() {
+    echo -e "${CYAN}  Adding GPU configuration to docker-compose.yml...${NC}"
+
+    # Check if GPU is already configured
+    if grep -q "deploy:" docker-compose.yml && grep -q "capabilities:" docker-compose.yml; then
+        echo -e "${YELLOW}  GPU configuration already present in docker-compose.yml${NC}"
+        return 0
+    fi
+
+    # Create GPU configuration based on type
+    local gpu_config=""
+
+    if [[ "$GPU_TYPE" == "nvidia" ]]; then
+        # NVIDIA GPU configuration using deploy.resources.reservations
+        gpu_config=$(cat << 'GPUEOF'
+    # GPU CONFIGURATION (auto-generated)
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+GPUEOF
+)
+    elif [[ "$GPU_TYPE" == "amd" ]]; then
+        # AMD GPU requires device passthrough
+        gpu_config=$(cat << 'GPUEOF'
+    # GPU CONFIGURATION (auto-generated) - AMD ROCm
+    # AMD GPUs require explicit device mapping
+    devices:
+      - /dev/kfd:/dev/kfd
+      - /dev/dri:/dev/dri
+    security_opt:
+      - seccomp:unconfined
+    group_add:
+      - video
+      - render
+GPUEOF
+)
+    fi
+
+    if [[ -n "$gpu_config" ]]; then
+        # Find the slurm service and add GPU config after 'privileged: true'
+        # This is a safe insertion point that exists in the current docker-compose.yml
+        if grep -q "privileged: true" docker-compose.yml; then
+            # Create a temporary file with the GPU config inserted
+            local temp_file=$(mktemp)
+
+            # Use awk to insert GPU config after 'privileged: true' in the slurm service
+            awk -v gpu="$gpu_config" '
+            /privileged: true/ {
+                print
+                # Check if this is likely the slurm service (has slurm in recent lines)
+                if (in_slurm_service) {
+                    print gpu
+                    gpu_added = 1
+                }
+                next
+            }
+            /__DOCKER_PREFIX__-slurm:|'$DOCKER_PREFIX'-slurm:/ {
+                in_slurm_service = 1
+            }
+            /^  [a-zA-Z_-]+:$/ && !/__DOCKER_PREFIX__-slurm:|'$DOCKER_PREFIX'-slurm:/ {
+                in_slurm_service = 0
+            }
+            { print }
+            ' docker-compose.yml > "$temp_file"
+
+            # Check if awk succeeded
+            if [[ -s "$temp_file" ]]; then
+                mv "$temp_file" docker-compose.yml
+                echo -e "${GREEN}  ✓ GPU configuration added to docker-compose.yml${NC}"
+            else
+                rm -f "$temp_file"
+                echo -e "${YELLOW}  ⚠️  Could not automatically add GPU config${NC}"
+                echo -e "${YELLOW}  Please manually add the following to the slurm service:${NC}"
+                echo "$gpu_config"
+            fi
+        else
+            echo -e "${YELLOW}  ⚠️  Could not find insertion point for GPU config${NC}"
+            echo -e "${YELLOW}  Please manually add the following to the slurm service:${NC}"
+            echo "$gpu_config"
+        fi
+    fi
 }
 
 # Build Docker images
 build_images() {
     echo -e "${CYAN}🔨 Building Docker images...${NC}"
-    
+
     echo -e "Building images for $DISPLAY_NAME..."
     echo -e "${YELLOW}Using --no-cache to ensure fresh build with latest configuration...${NC}"
     echo -e "${CYAN}💡 This ensures Python/R dependencies from environment config are properly installed${NC}"
-    if docker-compose build --no-cache --parallel; then
+
+    # Prepare GPU build arguments
+    local build_args=""
+    if [[ "$GPU_DOCKER_READY" == true ]] && [[ "$GPU_TYPE" != "none" ]]; then
+        echo -e "${GREEN}  Building with ${GPU_TYPE} GPU support${NC}"
+        build_args="--build-arg GPU_TYPE=${GPU_TYPE}"
+
+        if [[ "$GPU_TYPE" == "nvidia" ]]; then
+            # Use a compatible CUDA version
+            build_args="${build_args} --build-arg CUDA_VERSION=12.0"
+            echo -e "${CYAN}  CUDA version: 12.0${NC}"
+        elif [[ "$GPU_TYPE" == "amd" ]]; then
+            build_args="${build_args} --build-arg ROCM_VERSION=6.0"
+            echo -e "${CYAN}  ROCm version: 6.0${NC}"
+        fi
+    else
+        echo -e "${CYAN}  Building CPU-only image (no GPU support)${NC}"
+        build_args="--build-arg GPU_TYPE=none"
+    fi
+
+    # Build with GPU args
+    if docker-compose build --no-cache --parallel $build_args; then
         echo -e "${GREEN}✓ Docker images built successfully${NC}"
+
+        if [[ "$GPU_DOCKER_READY" == true ]] && [[ "$GPU_TYPE" != "none" ]]; then
+            echo -e "${GREEN}  GPU support: ${GPU_TYPE} (${GPU_COUNT} GPU(s))${NC}"
+        fi
     else
         echo -e "${RED}❌ Failed to build Docker images${NC}"
         echo -e "${YELLOW}💡 You can try building manually later with:${NC}"
-        echo -e "${YELLOW}   docker-compose build --no-cache${NC}"
+
+        if [[ "$GPU_DOCKER_READY" == true ]] && [[ "$GPU_TYPE" != "none" ]]; then
+            echo -e "${YELLOW}   docker-compose build --no-cache ${build_args}${NC}"
+        else
+            echo -e "${YELLOW}   docker-compose build --no-cache${NC}"
+        fi
     fi
-    
+
     echo
 }
 
