@@ -376,14 +376,15 @@ async def create_pipeline(pipeline_data: Dict[str, Any]) -> Tuple[str, str]:
                             logger.info(f"  ✗ File {missing_file_hash[:12]}... still not available")
                             return pipeline_hash, f"Pipeline previously failed: {error_msg}"
                     else:
-                        # Not file or method related - check if ALL errors are retriable
-                        # If ANY error is non-retriable, don't retry - it will fail again
-                        from dshpc_api.services.job_service import is_retriable_error
+                        # Not file or method related - check if ALL errors are AUTO-retriable
+                        # If ANY error is not auto-retriable (e.g. disk space), don't auto-retry
+                        # User can still manually resubmit for retriable-but-not-auto errors
+                        from dshpc_api.services.job_service import is_auto_retriable_error
 
                         pipeline_error = existing_pipeline.get("error", "Unknown error")
-                        all_errors_retriable = True
+                        all_errors_auto_retriable = True
                         has_any_error = False
-                        first_non_retriable_error = None
+                        first_non_auto_retriable_error = None
 
                         # Check all underlying jobs for errors (most accurate)
                         for node_id, node_data in existing_pipeline.get("nodes", {}).items():
@@ -399,31 +400,31 @@ async def create_pipeline(pipeline_data: Dict[str, Any]) -> Tuple[str, str]:
                                         job_error = job.get("error", "")
                                         if job_error:
                                             has_any_error = True
-                                            if not is_retriable_error(job_error):
-                                                all_errors_retriable = False
-                                                if not first_non_retriable_error:
-                                                    first_non_retriable_error = job_error
+                                            if not is_auto_retriable_error(job_error):
+                                                all_errors_auto_retriable = False
+                                                if not first_non_auto_retriable_error:
+                                                    first_non_auto_retriable_error = job_error
 
                                 # Also check node-level error
                                 node_error = node_data.get("error", "")
                                 if node_error:
                                     has_any_error = True
-                                    if not is_retriable_error(node_error):
-                                        all_errors_retriable = False
-                                        if not first_non_retriable_error:
-                                            first_non_retriable_error = node_error
+                                    if not is_auto_retriable_error(node_error):
+                                        all_errors_auto_retriable = False
+                                        if not first_non_auto_retriable_error:
+                                            first_non_auto_retriable_error = node_error
 
                         # Check pipeline-level error
                         if pipeline_error and pipeline_error != "Unknown error":
                             has_any_error = True
-                            if not is_retriable_error(pipeline_error):
-                                all_errors_retriable = False
-                                if not first_non_retriable_error:
-                                    first_non_retriable_error = pipeline_error
+                            if not is_auto_retriable_error(pipeline_error):
+                                all_errors_auto_retriable = False
+                                if not first_non_auto_retriable_error:
+                                    first_non_auto_retriable_error = pipeline_error
 
-                        # Decision: retry only if ALL errors are retriable, or no errors found
-                        if has_any_error and all_errors_retriable:
-                            logger.info(f"  ♻️  Pipeline failed with all-retriable errors - deleting for retry")
+                        # Decision: auto-retry only if ALL errors are auto-retriable, or no errors found
+                        if has_any_error and all_errors_auto_retriable:
+                            logger.info(f"  ♻️  Pipeline failed with all auto-retriable errors - deleting for retry")
                             await db.pipelines.delete_one({"pipeline_hash": pipeline_hash})
                             # Continue to create new pipeline below
                         elif not has_any_error or "validation error" in pipeline_error.lower() or pipeline_error == "Unknown error":
@@ -509,14 +510,15 @@ async def get_pipeline_status(pipeline_hash: str, auto_requeue: bool = True) -> 
         requeue_reason = None
 
         if current_status in [PipelineStatus.FAILED.value, PipelineStatus.CANCELLED.value, "failed", "cancelled"]:
-            # Check if ALL errors are retriable before requeuing
-            # If ANY error is non-retriable, don't requeue - that job will fail again
-            from dshpc_api.services.job_service import is_retriable_error
+            # Check if ALL errors are AUTO-retriable before requeuing
+            # If ANY error is not auto-retriable (e.g. disk space), don't auto-requeue
+            # User can still manually resubmit for retriable-but-not-auto errors
+            from dshpc_api.services.job_service import is_auto_retriable_error
 
             pipeline_error = pipeline.get("error", "")
-            all_errors_retriable = True
+            all_errors_auto_retriable = True
             has_any_error = False
-            first_non_retriable_error = None
+            first_non_auto_retriable_error = None
 
             # Collect all errors from failed jobs across all nodes
             for node_id, node_data in pipeline.get("nodes", {}).items():
@@ -534,44 +536,45 @@ async def get_pipeline_status(pipeline_hash: str, auto_requeue: bool = True) -> 
                             job_error = job.get("error", "")
                             if job_error:
                                 has_any_error = True
-                                if not is_retriable_error(job_error):
-                                    all_errors_retriable = False
-                                    if not first_non_retriable_error:
-                                        first_non_retriable_error = job_error
+                                if not is_auto_retriable_error(job_error):
+                                    all_errors_auto_retriable = False
+                                    if not first_non_auto_retriable_error:
+                                        first_non_auto_retriable_error = job_error
 
                     # Also check node-level error if no job errors found
                     node_error = node_data.get("error", "")
                     if node_error:
                         has_any_error = True
-                        if not is_retriable_error(node_error):
-                            all_errors_retriable = False
-                            if not first_non_retriable_error:
-                                first_non_retriable_error = node_error
+                        if not is_auto_retriable_error(node_error):
+                            all_errors_auto_retriable = False
+                            if not first_non_auto_retriable_error:
+                                first_non_auto_retriable_error = node_error
 
             # Check pipeline-level error too
             if pipeline_error:
                 has_any_error = True
-                if not is_retriable_error(pipeline_error):
-                    all_errors_retriable = False
-                    if not first_non_retriable_error:
-                        first_non_retriable_error = pipeline_error
+                if not is_auto_retriable_error(pipeline_error):
+                    all_errors_auto_retriable = False
+                    if not first_non_auto_retriable_error:
+                        first_non_auto_retriable_error = pipeline_error
 
             # For cancelled status (scancel, etc.), always allow requeue
             if current_status in [PipelineStatus.CANCELLED.value, "cancelled"]:
                 should_requeue = True
                 requeue_reason = f"requeued from {current_status} on query"
-            elif has_any_error and all_errors_retriable:
-                # ALL errors are retriable - safe to requeue
+            elif has_any_error and all_errors_auto_retriable:
+                # ALL errors are auto-retriable - safe to requeue automatically
                 should_requeue = True
-                requeue_reason = f"requeued from {current_status} (all errors retriable) on query"
+                requeue_reason = f"requeued from {current_status} (all errors auto-retriable) on query"
             elif not has_any_error:
                 # No errors found - might be stale state, allow requeue
                 should_requeue = True
                 requeue_reason = f"requeued from {current_status} (no error details) on query"
             else:
-                # At least one non-retriable error - don't requeue
-                display_error = first_non_retriable_error or pipeline_error or "unknown"
-                logger.info(f"⛔ Pipeline {pipeline_hash} has non-retriable error, not requeuing: {display_error[:80]}...")
+                # At least one non-auto-retriable error - don't auto-requeue
+                # (User can still manually resubmit if the error is retriable)
+                display_error = first_non_auto_retriable_error or pipeline_error or "unknown"
+                logger.info(f"⛔ Pipeline {pipeline_hash} not auto-requeuing (manual resubmit may be possible): {display_error[:80]}...")
 
         elif current_status in [PipelineStatus.RUNNING.value, PipelineStatus.PENDING.value, "running", "pending"]:
             # Check if stalled (no updates for 10+ minutes)

@@ -170,6 +170,51 @@ def is_retriable_error(error_message: str) -> bool:
     return False
 
 
+def is_auto_retriable_error(error_message: str) -> bool:
+    """
+    Check if error should trigger AUTOMATIC retry by the system.
+
+    This is a SUBSET of is_retriable_error(). These are errors where:
+    - The failure is due to infrastructure/transient issues
+    - Auto-retry is likely to succeed without manual intervention
+    - The system should automatically retry
+
+    NOT auto-retried (but user CAN manually resubmit via API):
+    - Disk space errors (need admin to free space first)
+    - OOM errors (need admin to increase memory limits)
+    - User cancellations
+
+    Args:
+        error_message: Error message to check
+
+    Returns:
+        True if system should auto-retry, False otherwise
+    """
+    if not error_message:
+        return False
+
+    error_lower = error_message.lower()
+
+    # Patterns that should NOT trigger auto-retry
+    # User can still manually resubmit after fixing the issue
+    no_auto_retry_patterns = [
+        # Disk space - needs manual cleanup
+        "no space left", "disk space", "insufficient disk",
+        "diskspaceerror", "enospc",
+        # OOM - needs memory increase (handled separately by OOM retry mechanism)
+        "out of memory", "oom",
+        # User cancellations
+        "cancelled by user", "scancel",
+    ]
+
+    for pattern in no_auto_retry_patterns:
+        if pattern in error_lower:
+            return False
+
+    # If it's retriable but not in the exclusion list, auto-retry
+    return is_retriable_error(error_message)
+
+
 def compute_job_hash(
     file_hash: Optional[str] = None,
     file_inputs: Optional[Dict[str, str]] = None,

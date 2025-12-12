@@ -219,8 +219,10 @@ def prepare_job_script(job_hash: str, job: JobSubmission) -> str:
     is_ok, message, free_bytes = check_disk_space("/tmp")
     if not is_ok:
         logger.error(f"Disk space check failed: {message}")
-        # Raise with exit code 75 (EX_TEMPFAIL) to mark as retriable
-        raise DiskSpaceError(f"Insufficient disk space (retriable, exit code: 75): {message}", free_bytes)
+        # Raise DiskSpaceError - this is RETRIABLE (user can resubmit after freeing space)
+        # but NOT auto-retried (system won't automatically retry)
+        # The "disk space" text triggers is_retriable_error() but NOT service_failure_patterns
+        raise DiskSpaceError(f"Insufficient disk space: {message}", free_bytes)
     elif "WARNING" in message:
         logger.warning(f"Disk space warning: {message}")
 

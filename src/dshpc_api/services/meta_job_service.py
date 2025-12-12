@@ -26,7 +26,7 @@ from dshpc_api.services.method_service import check_method_functionality
 from dshpc_api.utils.parameter_utils import sort_parameters
 from dshpc_api.utils.sorting_utils import sort_file_inputs, sort_chain
 from dshpc_api.utils.file_input_resolver import resolve_and_inject_file_inputs
-from dshpc_api.services.job_service import is_method_unavailable_error, is_file_not_found_error, is_retriable_error
+from dshpc_api.services.job_service import is_method_unavailable_error, is_file_not_found_error, is_retriable_error, is_auto_retriable_error
 import asyncio
 import logging
 
@@ -785,20 +785,42 @@ async def process_meta_job_chain(meta_job_hash: str):
     except Exception as e:
         error_str = str(e)
 
-        # Check if this is a retriable error (connection issues, network failures)
-        # These should NOT mark the meta-job as permanently failed
-        if is_retriable_error(error_str):
-            logger.warning(f"Retriable error processing meta-job {meta_job_hash}: {e}")
+        # Check if this is an AUTO-retriable error (connection issues, network failures)
+        # These should keep the meta-job in RUNNING state for automatic recovery
+        if is_auto_retriable_error(error_str):
+            logger.warning(f"Auto-retriable error processing meta-job {meta_job_hash}: {e}")
             logger.info(f"  Meta-job will remain in current state for recovery system to retry")
 
             # Update only the error message and timestamp, keep status as RUNNING
-            # The recovery system will detect this and retry
+            # The recovery system will detect this and retry automatically
             await meta_jobs_db.meta_jobs.update_one(
                 {"meta_job_hash": meta_job_hash},
                 {"$set": {
-                    "error": f"Temporary failure (retriable): {error_str}",
+                    "error": f"Temporary failure (auto-retriable): {error_str}",
                     "updated_at": datetime.utcnow()
                 }}
+            )
+            return
+
+        # Check if this is a MANUALLY retriable error (disk space, OOM)
+        # These should mark as FAILED but user can resubmit after fixing the issue
+        if is_retriable_error(error_str):
+            logger.warning(f"Retriable error (manual resubmit required) for meta-job {meta_job_hash}: {e}")
+
+            # Build update dict - mark as failed but with retriable error message
+            update_dict = {
+                "status": MetaJobStatus.FAILED,
+                "error": f"Failed (retriable - manual resubmit after fixing issue): {error_str}",
+                "updated_at": datetime.utcnow()
+            }
+
+            # Also update the current step status to "failed" if we know which step failed
+            if current_step_for_error is not None:
+                update_dict[f"chain.{current_step_for_error}.status"] = "failed"
+
+            await meta_jobs_db.meta_jobs.update_one(
+                {"meta_job_hash": meta_job_hash},
+                {"$set": update_dict}
             )
             return
 
@@ -1022,14 +1044,14 @@ async def get_meta_job_info(meta_job_hash: str, auto_requeue: bool = True) -> Op
         requeue_reason = None
 
         if current_status in [MetaJobStatus.FAILED, MetaJobStatus.CANCELLED, "failed", "cancelled"]:
-            # Check if ALL errors are retriable before requeuing
-            # If ANY error is non-retriable, don't requeue - that job will fail again
-            from dshpc_api.services.job_service import is_retriable_error
+            # Check if ALL errors are AUTO-retriable before requeuing
+            # If ANY error is not auto-retriable, don't requeue automatically
+            # (User can still manually resubmit for retriable-but-not-auto errors like disk space)
 
             meta_job_error = meta_job.get("error", "")
-            all_errors_retriable = True
+            all_errors_auto_retriable = True
             has_any_error = False
-            first_non_retriable_error = None
+            first_non_auto_retriable_error = None
 
             # Check all underlying jobs for errors
             jobs_db = await get_jobs_db()
@@ -1042,35 +1064,36 @@ async def get_meta_job_info(meta_job_hash: str, auto_requeue: bool = True) -> Op
                 job_error = job.get("error", "")
                 if job_error:
                     has_any_error = True
-                    if not is_retriable_error(job_error):
-                        all_errors_retriable = False
-                        if not first_non_retriable_error:
-                            first_non_retriable_error = job_error
+                    if not is_auto_retriable_error(job_error):
+                        all_errors_auto_retriable = False
+                        if not first_non_auto_retriable_error:
+                            first_non_auto_retriable_error = job_error
 
             # Also check meta-job level error
             if meta_job_error:
                 has_any_error = True
-                if not is_retriable_error(meta_job_error):
-                    all_errors_retriable = False
-                    if not first_non_retriable_error:
-                        first_non_retriable_error = meta_job_error
+                if not is_auto_retriable_error(meta_job_error):
+                    all_errors_auto_retriable = False
+                    if not first_non_auto_retriable_error:
+                        first_non_auto_retriable_error = meta_job_error
 
             # For cancelled status (scancel, etc.), always allow requeue
             if current_status in [MetaJobStatus.CANCELLED, "cancelled"]:
                 should_requeue = True
                 requeue_reason = f"requeued from {current_status} on query"
-            elif has_any_error and all_errors_retriable:
-                # ALL errors are retriable - safe to requeue
+            elif has_any_error and all_errors_auto_retriable:
+                # ALL errors are auto-retriable - safe to requeue automatically
                 should_requeue = True
-                requeue_reason = f"requeued from {current_status} (all errors retriable) on query"
+                requeue_reason = f"requeued from {current_status} (all errors auto-retriable) on query"
             elif not has_any_error:
                 # No errors found - might be stale state, allow requeue
                 should_requeue = True
                 requeue_reason = f"requeued from {current_status} (no error details) on query"
             else:
-                # At least one non-retriable error - don't requeue
-                display_error = first_non_retriable_error or meta_job_error or "unknown"
-                logger.info(f"⛔ Meta-job {meta_job_hash} has non-retriable error, not requeuing: {display_error[:80]}...")
+                # At least one non-auto-retriable error - don't requeue automatically
+                # (This includes disk space errors - user can still manually resubmit)
+                display_error = first_non_auto_retriable_error or meta_job_error or "unknown"
+                logger.info(f"⛔ Meta-job {meta_job_hash} not auto-requeuing (manual resubmit may be possible): {display_error[:80]}...")
 
         elif current_status in [MetaJobStatus.RUNNING, MetaJobStatus.PENDING, "running", "pending"]:
             # Check if stalled (no updates for 10+ minutes)
