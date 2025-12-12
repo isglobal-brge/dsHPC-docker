@@ -783,9 +783,29 @@ async def process_meta_job_chain(meta_job_hash: str):
         logger.info(f"Meta-job {meta_job_hash} completed successfully")
         
     except Exception as e:
+        error_str = str(e)
+
+        # Check if this is a retriable error (connection issues, network failures)
+        # These should NOT mark the meta-job as permanently failed
+        if is_retriable_error(error_str):
+            logger.warning(f"Retriable error processing meta-job {meta_job_hash}: {e}")
+            logger.info(f"  Meta-job will remain in current state for recovery system to retry")
+
+            # Update only the error message and timestamp, keep status as RUNNING
+            # The recovery system will detect this and retry
+            await meta_jobs_db.meta_jobs.update_one(
+                {"meta_job_hash": meta_job_hash},
+                {"$set": {
+                    "error": f"Temporary failure (retriable): {error_str}",
+                    "updated_at": datetime.utcnow()
+                }}
+            )
+            return
+
+        # Non-retriable error - mark as permanently failed
         logger.error(f"Error processing meta-job {meta_job_hash}: {e}")
 
-        # Build update dict - always update status and error
+        # Build update dict - mark as failed
         update_dict = {
             "status": MetaJobStatus.FAILED,
             "error": str(e),

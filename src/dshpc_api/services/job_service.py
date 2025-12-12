@@ -145,6 +145,8 @@ def is_retriable_error(error_message: str) -> bool:
         "sigterm",
         # Service/network failures
         "service unavailable", "connection refused", "connection reset",
+        "connect call failed", "no route to host", "network is unreachable",
+        "cannot connect to host",
         "internal server error", "timeout", "timed out",
         "name or service not known", "autoreconnect",
         "serverselectiontimeouterror",
@@ -154,6 +156,9 @@ def is_retriable_error(error_message: str) -> bool:
         # Job disappeared (service restart)
         "disappeared from slurm", "no exit code",
         "likely service restart", "failed without error details",
+        # Disk space issues (temporary, can retry after cleanup)
+        "no space left", "disk space", "insufficient disk",
+        "diskspaceerror", "enospc",
         # Retriable flag
         "will retry", "transient error", "retriable",
     ]

@@ -149,6 +149,62 @@ def cascade_cancel_meta_jobs(job_hash: str) -> tuple[int, int]:
     return meta_cancelled_count, pipeline_cancelled_count
 
 
+# Track last disk cleanup time to avoid running too frequently
+_last_disk_cleanup_time = None
+_DISK_CLEANUP_INTERVAL_SECONDS = 3600  # Clean at most once per hour
+
+
+def _check_disk_space_sync():
+    """
+    Check disk space and take action if low.
+
+    This function:
+    1. Logs disk space status periodically
+    2. Cleans up old job files if space is critically low
+    3. Warns about low disk space conditions
+
+    Run every check cycle but only clean up once per hour max.
+    """
+    global _last_disk_cleanup_time
+    import time
+    from slurm_api.utils.disk_utils import (
+        check_disk_space, clean_old_job_files,
+        CRITICAL_FREE_SPACE_BYTES, WARNING_FREE_SPACE_BYTES
+    )
+
+    try:
+        # Check both /tmp and root filesystem
+        for path in ["/tmp", "/"]:
+            is_ok, message, free_bytes = check_disk_space(path)
+
+            if not is_ok:
+                logger.error(f"⚠️ DISK SPACE CRITICAL on {path}: {message}")
+
+                # Auto-cleanup if critically low and haven't cleaned recently
+                now = time.time()
+                if (_last_disk_cleanup_time is None or
+                        now - _last_disk_cleanup_time > _DISK_CLEANUP_INTERVAL_SECONDS):
+
+                    logger.warning("🧹 Attempting automatic cleanup of old job files...")
+                    files_deleted, bytes_freed = clean_old_job_files(max_age_hours=12)
+
+                    if files_deleted > 0:
+                        logger.info(
+                            f"🧹 Cleanup completed: {files_deleted} files deleted, "
+                            f"{bytes_freed / (1024*1024):.1f}MB freed"
+                        )
+                    else:
+                        logger.warning("🧹 No old files to clean up")
+
+                    _last_disk_cleanup_time = now
+
+            elif "WARNING" in message:
+                logger.warning(f"⚠️ DISK SPACE WARNING on {path}: {message}")
+
+    except Exception as e:
+        logger.error(f"Error checking disk space: {e}")
+
+
 def _sync_ghost_running_jobs():
     """
     Synchronize MongoDB 'Running' jobs with actual Slurm queue state.
@@ -1012,7 +1068,11 @@ def _check_jobs_once_sync():
     from slurm_api.services.job_service import is_files_db_available, PENDING_UPLOADS_DIR
 
     try:
-        # ========== Part 0: Sync ghost running jobs (MUST run first!) ==========
+        # ========== Part 0a: Check disk space ==========
+        # Monitor disk space and log warnings/errors. Clean up if needed.
+        _check_disk_space_sync()
+
+        # ========== Part 0b: Sync ghost running jobs (MUST run first!) ==========
         # This detects jobs marked as RUNNING in MongoDB but not in Slurm queue
         # Critical after Slurm restart - prevents cascade of incorrect retries
         _sync_ghost_running_jobs()

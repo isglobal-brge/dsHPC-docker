@@ -212,7 +212,18 @@ def prepare_job_script(job_hash: str, job: JobSubmission) -> str:
     logger.info(f"prepare_job_script called for job {job_hash}")
     logger.info(f"  file_hash: {job.file_hash}")
     logger.info(f"  file_inputs: {job.file_inputs}")
-    
+
+    # Check disk space BEFORE creating workspace
+    # This prevents jobs from failing mid-execution due to disk full
+    from slurm_api.utils.disk_utils import check_disk_space, DiskSpaceError
+    is_ok, message, free_bytes = check_disk_space("/tmp")
+    if not is_ok:
+        logger.error(f"Disk space check failed: {message}")
+        # Raise with exit code 75 (EX_TEMPFAIL) to mark as retriable
+        raise DiskSpaceError(f"Insufficient disk space (retriable, exit code: 75): {message}", free_bytes)
+    elif "WARNING" in message:
+        logger.warning(f"Disk space warning: {message}")
+
     # Create a unique workspace for the job
     workspace_dir = create_job_workspace()
     logger.info(f"  workspace: {workspace_dir}")
