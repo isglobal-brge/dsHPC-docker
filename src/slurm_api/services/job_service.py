@@ -530,9 +530,10 @@ def prepare_job_script(job_hash: str, job: JobSubmission) -> str:
             f.write(f"#SBATCH --time={time_limit}\n")
 
         # GPUs: use method's setting if specified
+        # Use --gres=gpu:N format for maximum compatibility with Slurm GRES
         gpus = resources.get("gpus")
         if gpus:
-            f.write(f"#SBATCH --gpus={gpus}\n")
+            f.write(f"#SBATCH --gres=gpu:{gpus}\n")
 
         # Capture output to a file
         output_path = f"/tmp/output_{job_hash}.txt"
